@@ -23,11 +23,21 @@ class SecureVault(context: Context) {
 
     fun loadFeishuSecret(): String? = prefs.getString("feishu_app_secret", null)
 
-    fun saveFeishuTokens(accessToken: String, refreshToken: String?) {
+    fun saveFeishuTokens(accessToken: String, refreshToken: String?, expiresAtEpochMillis: Long?) {
         prefs.edit()
             .putString("feishu_access_token", accessToken)
             .putString("feishu_refresh_token", refreshToken)
+            .putLong("feishu_expires_at", expiresAtEpochMillis ?: 0L)
             .apply()
+    }
+
+    fun loadFeishuTokens(): FeishuTokenSet? {
+        val accessToken = prefs.getString("feishu_access_token", null) ?: return null
+        return FeishuTokenSet(
+            accessToken = accessToken,
+            refreshToken = prefs.getString("feishu_refresh_token", null),
+            expiresAtEpochMillis = prefs.getLong("feishu_expires_at", 0L).takeIf { it > 0L }
+        )
     }
 
     fun clearFeishu() {
@@ -35,6 +45,7 @@ class SecureVault(context: Context) {
             .remove("feishu_app_secret")
             .remove("feishu_access_token")
             .remove("feishu_refresh_token")
+            .remove("feishu_expires_at")
             .apply()
     }
 }
