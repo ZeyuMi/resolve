@@ -10,6 +10,7 @@
   "dependencies": {
     "@resolve/core": "0.1.0",
     "@resolve/crypto": "0.1.0",
+    "@supabase/supabase-js": "^2.50.0",
     "firebase": "^11.10.0"
   },
   "devDependencies": {

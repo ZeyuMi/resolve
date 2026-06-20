@@ -1,0 +1,36 @@
+project_id = "resolve"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 15
+
+[realtime]
+enabled = true
+
+[auth]
+enabled = true
+site_url = "resolve://auth"
+additional_redirect_urls = [
+  "resolve://auth/callback",
+  "http://127.0.0.1:36321/auth/callback"
+]
+jwt_expiry = 3600
+enable_refresh_token_rotation = true
+refresh_token_reuse_interval = 10
+
+[functions.health]
+verify_jwt = false
+
+[functions.feishu-connector]
+verify_jwt = true
+
+[functions.feishu-sync-cron]
+verify_jwt = false

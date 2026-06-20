@@ -5,6 +5,7 @@
   "description": "Private cross-device command system with encrypted sync and Feishu Calendar integration.",
   "type": "module",
   "workspaces": [
+    "apps/backend",
     "apps/mac",
     "packages/core",
     "packages/crypto",
