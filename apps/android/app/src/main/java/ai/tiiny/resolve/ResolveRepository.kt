@@ -22,12 +22,14 @@ class ResolveRepository(context: Context) {
         .put("threads", JSONArray(state.threads.map(::encodeThread)))
         .put("calendarEvents", JSONArray(state.calendarEvents.map(::encodeCalendarEvent)))
         .put("feishuSettings", encodeFeishuSettings(state.feishuSettings))
+        .put("backendSettings", encodeBackendSettings(state.backendSettings))
 
     private fun decodeState(json: JSONObject) = ResolveState(
         items = json.optJSONArray("items").orEmpty().mapJson(::decodeItem),
         threads = json.optJSONArray("threads").orEmpty().mapJson(::decodeThread),
         calendarEvents = json.optJSONArray("calendarEvents").orEmpty().mapJson(::decodeCalendarEvent),
-        feishuSettings = decodeFeishuSettings(json.optJSONObject("feishuSettings") ?: JSONObject())
+        feishuSettings = decodeFeishuSettings(json.optJSONObject("feishuSettings") ?: JSONObject()),
+        backendSettings = decodeBackendSettings(json.optJSONObject("backendSettings") ?: JSONObject())
     )
 
     private fun encodeItem(item: ResolveItem) = JSONObject()
@@ -116,6 +118,25 @@ class ResolveRepository(context: Context) {
         pastDays = json.optInt("pastDays", 14),
         futureDays = json.optInt("futureDays", 90),
         status = enumValueOrDefault(json.optString("status"), FeishuStatus.NotConnected),
+        lastSyncedAt = json.optNullableString("lastSyncedAt")?.let(::instantOrNull),
+        lastError = json.optNullableString("lastError")
+    )
+
+    private fun encodeBackendSettings(settings: BackendSettings) = JSONObject()
+        .put("supabaseUrl", settings.supabaseUrl)
+        .put("anonKey", settings.anonKey)
+        .put("email", settings.email)
+        .put("status", settings.status.name)
+        .put("feishuConnected", settings.feishuConnected)
+        .putOpt("lastSyncedAt", settings.lastSyncedAt?.toString())
+        .putOpt("lastError", settings.lastError)
+
+    private fun decodeBackendSettings(json: JSONObject) = BackendSettings(
+        supabaseUrl = json.optString("supabaseUrl"),
+        anonKey = json.optString("anonKey"),
+        email = json.optString("email"),
+        status = enumValueOrDefault(json.optString("status"), BackendStatus.NotConfigured),
+        feishuConnected = json.optBoolean("feishuConnected", false),
         lastSyncedAt = json.optNullableString("lastSyncedAt")?.let(::instantOrNull),
         lastError = json.optNullableString("lastError")
     )

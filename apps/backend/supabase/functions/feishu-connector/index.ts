@@ -7,7 +7,7 @@ import {
   feishuConnectorDisabledBody,
   isFeishuServerConnectorAllowed
 } from "../_shared/security.ts";
-import { readServerCalendarEvents, syncFeishuForUser } from "../_shared/feishuSync.ts";
+import { createFeishuEventForUser, readServerCalendarEvents, syncFeishuForUser } from "../_shared/feishuSync.ts";
 import { encodeFilter, getAuthenticatedUser, restInsert, restPatch, restSelect, restUpsert } from "../_shared/supabaseRest.ts";
 
 type ConnectorRequest =
@@ -25,6 +25,16 @@ type ConnectorRequest =
       action: "list_events";
       startsAt?: string;
       endsAt?: string;
+    }
+  | {
+      action: "create_event";
+      title: string;
+      description?: string;
+      location?: string;
+      startsAt: string;
+      endsAt?: string;
+      calendarId?: string;
+      timezone?: string;
     };
 
 Deno.serve(async (request) => {
@@ -56,6 +66,8 @@ Deno.serve(async (request) => {
       return jsonResponse({
         events: await readServerCalendarEvents(user.id, body.startsAt, body.endsAt)
       });
+    case "create_event":
+      return jsonResponse(await createFeishuEventForUser(user.id, body));
     case "disconnect":
       return jsonResponse(await disconnect(user.id));
     default:

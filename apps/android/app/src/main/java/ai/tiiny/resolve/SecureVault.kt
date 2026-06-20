@@ -48,4 +48,29 @@ class SecureVault(context: Context) {
             .remove("feishu_expires_at")
             .apply()
     }
+
+    fun saveBackendSession(accessToken: String, refreshToken: String?, expiresAtEpochMillis: Long?) {
+        prefs.edit()
+            .putString("backend_access_token", accessToken)
+            .putString("backend_refresh_token", refreshToken)
+            .putLong("backend_expires_at", expiresAtEpochMillis ?: 0L)
+            .apply()
+    }
+
+    fun loadBackendSession(): BackendSession? {
+        val accessToken = prefs.getString("backend_access_token", null) ?: return null
+        return BackendSession(
+            accessToken = accessToken,
+            refreshToken = prefs.getString("backend_refresh_token", null),
+            expiresAtEpochMillis = prefs.getLong("backend_expires_at", 0L).takeIf { it > 0L }
+        )
+    }
+
+    fun clearBackendSession() {
+        prefs.edit()
+            .remove("backend_access_token")
+            .remove("backend_refresh_token")
+            .remove("backend_expires_at")
+            .apply()
+    }
 }

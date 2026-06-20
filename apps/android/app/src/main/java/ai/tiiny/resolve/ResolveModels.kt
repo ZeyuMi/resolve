@@ -10,6 +10,7 @@ enum class ItemStatus { Active, Done, Archived }
 enum class ItemRoute { Calendar, Strategy, Archive, Delete, Task }
 enum class CalendarViewMode { Day, Week, Month }
 enum class FeishuStatus { NotConnected, Connected, TokenExpired, PermissionError }
+enum class BackendStatus { NotConfigured, SignedOut, Connected, Error }
 
 data class ResolveItem(
     val id: String = "item_${UUID.randomUUID()}",
@@ -69,11 +70,33 @@ data class FeishuTokenSet(
     }
 }
 
+data class BackendSettings(
+    val supabaseUrl: String = "",
+    val anonKey: String = "",
+    val email: String = "",
+    val status: BackendStatus = BackendStatus.NotConfigured,
+    val feishuConnected: Boolean = false,
+    val lastSyncedAt: Instant? = null,
+    val lastError: String? = null
+)
+
+data class BackendSession(
+    val accessToken: String,
+    val refreshToken: String?,
+    val expiresAtEpochMillis: Long?
+) {
+    fun shouldRefresh(): Boolean {
+        val expiresAt = expiresAtEpochMillis ?: return false
+        return expiresAt < System.currentTimeMillis() + 60_000
+    }
+}
+
 data class ResolveState(
     val items: List<ResolveItem>,
     val threads: List<StrategyThread>,
     val calendarEvents: List<CalendarEvent>,
-    val feishuSettings: FeishuSettings = FeishuSettings()
+    val feishuSettings: FeishuSettings = FeishuSettings(),
+    val backendSettings: BackendSettings = BackendSettings()
 )
 
 data class CalendarDraft(

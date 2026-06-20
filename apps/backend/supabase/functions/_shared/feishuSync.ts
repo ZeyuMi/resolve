@@ -1,4 +1,10 @@
-import { FeishuServerClient, type FeishuServerConfig, type FeishuTokenSet } from "./feishuApi.ts";
+import {
+  FeishuServerClient,
+  type CreateFeishuServerEventInput,
+  type FeishuServerConfig,
+  type FeishuServerEvent,
+  type FeishuTokenSet
+} from "./feishuApi.ts";
 import { serverDecryptJson, serverEncryptJson } from "./serverCrypto.ts";
 import { encodeFilter, restPatch, restSelect, restUpsert } from "./supabaseRest.ts";
 
@@ -76,34 +82,7 @@ export async function syncFeishuForUser(userId: string): Promise<SyncResult> {
 
   const rows: CalendarEventRow[] = [];
   for (const event of events.filter((item) => item.eventId)) {
-    const encrypted = await serverEncryptJson({
-      title: event.title ?? "Untitled Feishu event",
-      description: event.description,
-      location: event.location,
-      recurrence: event.recurrence,
-      feishuRaw: event.raw
-    });
-    rows.push({
-      user_id: userId,
-      id: feishuEventRowId(calendarId, event.eventId),
-      encryption_scheme: "server_calendar_v1",
-      provider: "feishu",
-      external_calendar_id: calendarId,
-      external_event_id: event.eventId,
-      status: event.status === "cancelled" ? "remote_deleted" : event.canEdit === false ? "readonly" : "synced",
-      starts_at: event.startsAt,
-      ends_at: event.endsAt ?? null,
-      is_all_day: Boolean(event.isAllDay),
-      created_at: syncedAt,
-      updated_at: event.updatedAt ?? syncedAt,
-      remote_updated_at: event.updatedAt ?? null,
-      last_synced_at: syncedAt,
-      can_edit: event.canEdit ?? null,
-      can_delete: event.canDelete ?? null,
-      encrypted_payload: encrypted.encrypted,
-      payload_nonce: encrypted.nonce,
-      payload_version: 1
-    });
+    rows.push(await toCalendarEventRow(userId, calendarId, event, syncedAt));
   }
 
   if (rows.length) {
@@ -170,6 +149,44 @@ export async function syncFeishuForUser(userId: string): Promise<SyncResult> {
   };
 }
 
+export async function createFeishuEventForUser(
+  userId: string,
+  input: CreateFeishuServerEventInput & { calendarId?: string }
+) {
+  const connection = await loadConnection(userId);
+  const config = await decryptConfig(connection);
+  let tokenSet = await decryptToken(connection);
+  let client = new FeishuServerClient(config, tokenSet);
+
+  if (isTokenExpired(tokenSet)) {
+    tokenSet = await client.refreshAccessToken();
+    await saveToken(userId, tokenSet);
+    client = new FeishuServerClient(config, tokenSet);
+  }
+
+  const primaryCalendar = await client.getPrimaryCalendar();
+  const calendarId = input.calendarId ?? connection.default_calendar_id ?? primaryCalendar.calendarId;
+  const event = await client.createEvent(calendarId, input);
+  const syncedAt = new Date().toISOString();
+  const row = await toCalendarEventRow(userId, calendarId, event, syncedAt);
+  await restUpsert("resolve_calendar_events", row, "user_id,id");
+  await restPatch(
+    "resolve_feishu_connections",
+    `user_id=eq.${encodeFilter(userId)}`,
+    {
+      status: "connected",
+      default_calendar_id: calendarId,
+      last_server_sync_at: syncedAt,
+      updated_at: syncedAt
+    }
+  );
+
+  return {
+    event: await calendarEventEnvelope(row),
+    syncedAt
+  };
+}
+
 export async function readServerCalendarEvents(userId: string, startsAt?: string, endsAt?: string) {
   const filters = [
     "select=*",
@@ -183,26 +200,7 @@ export async function readServerCalendarEvents(userId: string, startsAt?: string
 
   const rows = await restSelect<CalendarEventRow>("resolve_calendar_events", filters.join("&"));
   return Promise.all(
-    rows.map(async (row) => ({
-      meta: {
-        id: row.id,
-        provider: row.provider,
-        externalCalendarId: row.external_calendar_id,
-        externalEventId: row.external_event_id,
-        status: row.status,
-        startsAt: row.starts_at,
-        endsAt: row.ends_at,
-        isAllDay: row.is_all_day,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        remoteUpdatedAt: row.remote_updated_at,
-        lastSyncedAt: row.last_synced_at,
-        canEdit: row.can_edit,
-        canDelete: row.can_delete,
-        encryptionScheme: row.encryption_scheme
-      },
-      payload: await serverDecryptJson(row.encrypted_payload, row.payload_nonce)
-    }))
+    rows.map(calendarEventEnvelope)
   );
 }
 
@@ -250,4 +248,63 @@ function isTokenExpired(tokenSet: FeishuTokenSet) {
 
 function feishuEventRowId(calendarId: string, eventId: string) {
   return `feishu_${calendarId}_${eventId}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+async function toCalendarEventRow(
+  userId: string,
+  calendarId: string,
+  event: FeishuServerEvent,
+  syncedAt: string
+): Promise<CalendarEventRow> {
+  const encrypted = await serverEncryptJson({
+    title: event.title ?? "Untitled Feishu event",
+    description: event.description,
+    location: event.location,
+    recurrence: event.recurrence,
+    feishuRaw: event.raw
+  });
+  return {
+    user_id: userId,
+    id: feishuEventRowId(calendarId, event.eventId),
+    encryption_scheme: "server_calendar_v1",
+    provider: "feishu",
+    external_calendar_id: calendarId,
+    external_event_id: event.eventId,
+    status: event.status === "cancelled" ? "remote_deleted" : event.canEdit === false ? "readonly" : "synced",
+    starts_at: event.startsAt,
+    ends_at: event.endsAt ?? null,
+    is_all_day: Boolean(event.isAllDay),
+    created_at: syncedAt,
+    updated_at: event.updatedAt ?? syncedAt,
+    remote_updated_at: event.updatedAt ?? null,
+    last_synced_at: syncedAt,
+    can_edit: event.canEdit ?? null,
+    can_delete: event.canDelete ?? null,
+    encrypted_payload: encrypted.encrypted,
+    payload_nonce: encrypted.nonce,
+    payload_version: 1
+  };
+}
+
+async function calendarEventEnvelope(row: CalendarEventRow) {
+  return {
+    meta: {
+      id: row.id,
+      provider: row.provider,
+      externalCalendarId: row.external_calendar_id,
+      externalEventId: row.external_event_id,
+      status: row.status,
+      startsAt: row.starts_at,
+      endsAt: row.ends_at,
+      isAllDay: row.is_all_day,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      remoteUpdatedAt: row.remote_updated_at,
+      lastSyncedAt: row.last_synced_at,
+      canEdit: row.can_edit,
+      canDelete: row.can_delete,
+      encryptionScheme: row.encryption_scheme
+    },
+    payload: await serverDecryptJson(row.encrypted_payload, row.payload_nonce)
+  };
 }

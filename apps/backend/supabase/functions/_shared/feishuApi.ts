@@ -35,6 +35,15 @@ export interface FeishuServerCalendar {
   accessRole?: string;
 }
 
+export interface CreateFeishuServerEventInput {
+  title: string;
+  description?: string;
+  location?: string;
+  startsAt: string;
+  endsAt?: string;
+  timezone?: string;
+}
+
 const defaultApiBaseUrl = "https://open.feishu.cn/open-apis";
 
 export function buildFeishuAuthorizeUrl(config: Pick<FeishuServerConfig, "appId" | "redirectUri">, state: string) {
@@ -139,6 +148,25 @@ export class FeishuServerClient {
       nextPageToken: data.page_token,
       nextSyncToken: data.sync_token
     };
+  }
+
+  async createEvent(calendarId: string, input: CreateFeishuServerEventInput): Promise<FeishuServerEvent> {
+    const startsAt = input.startsAt;
+    const endsAt = input.endsAt ?? new Date(new Date(startsAt).getTime() + 60 * 60 * 1000).toISOString();
+    const data = await this.request<{ event?: unknown }>(
+      `/calendar/v4/calendars/${encodeURIComponent(calendarId)}/events`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          summary: input.title,
+          description: input.description,
+          location: input.location ? { name: input.location } : undefined,
+          start_time: toFeishuTime(startsAt, input.timezone),
+          end_time: toFeishuTime(endsAt, input.timezone)
+        })
+      }
+    );
+    return mapEvent(calendarId, data.event);
   }
 
   private async request<T>(path: string, init: RequestInit = {}) {
@@ -268,4 +296,11 @@ function fromFeishuTime(value: Record<string, unknown>) {
 
 function toUnixSeconds(iso: string) {
   return Math.floor(new Date(iso).getTime() / 1000).toString();
+}
+
+function toFeishuTime(iso: string, timezone = "Asia/Shanghai") {
+  return {
+    timestamp: toUnixSeconds(iso),
+    timezone
+  };
 }
