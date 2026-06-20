@@ -14,6 +14,7 @@ export interface FeishuSettingsState {
 
 const feishuSettingsKey = "resolve:feishu-settings:v1";
 const feishuTokenKey = "resolve:feishu-token:v1";
+export const nativeFeishuRedirectUri = "http://127.0.0.1:36321/oauth/feishu/callback";
 
 export function loadFeishuSettings(): FeishuSettingsState {
   const defaults = defaultFeishuSettings();
@@ -23,7 +24,14 @@ export function loadFeishuSettings(): FeishuSettingsState {
 }
 
 export function saveFeishuSettings(settings: FeishuSettingsState) {
-  localStorage.setItem(feishuSettingsKey, JSON.stringify(settings));
+  localStorage.setItem(
+    feishuSettingsKey,
+    JSON.stringify({
+      ...settings,
+      appSecret: isTauriRuntime() ? "" : settings.appSecret,
+      redirectUri: settings.redirectUri || localFeishuRedirectUri()
+    })
+  );
 }
 
 export function defaultFeishuSettings(): FeishuSettingsState {
@@ -39,8 +47,13 @@ export function defaultFeishuSettings(): FeishuSettingsState {
 }
 
 export function localFeishuRedirectUri() {
-  if (typeof window === "undefined") return "http://127.0.0.1:5173/oauth/feishu/callback";
+  if (typeof window === "undefined") return nativeFeishuRedirectUri;
+  if (isTauriRuntime()) return nativeFeishuRedirectUri;
   return `${window.location.origin}/oauth/feishu/callback`;
+}
+
+export function isTauriRuntime() {
+  return typeof window !== "undefined" && "__TAURI_IPC__" in (window as Window & { __TAURI_IPC__?: unknown });
 }
 
 export function feishuApiBaseUrl() {
@@ -55,7 +68,7 @@ export function feishuConfig(settings: FeishuSettingsState): FeishuConfig {
   return {
     appId: settings.appId,
     appSecret: settings.appSecret,
-    redirectUri: settings.redirectUri,
+    redirectUri: settings.redirectUri || localFeishuRedirectUri(),
     ...(apiBaseUrl ? { apiBaseUrl } : {})
   };
 }

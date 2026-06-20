@@ -4,9 +4,12 @@ import {
   Brain,
   CalendarDays,
   Check,
+  Copy,
   ChevronLeft,
   ChevronRight,
   Clock3,
+  ExternalLink,
+  KeyRound,
   LayoutList,
   Lock,
   Paperclip,
@@ -15,6 +18,7 @@ import {
   Search,
   Send,
   Settings,
+  ShieldCheck,
   Trash2,
   X
 } from "lucide-react";
@@ -44,9 +48,12 @@ import {
   canUseFeishuConnection,
   clearFeishuToken,
   feishuConfig,
+  isTauriRuntime,
   isTokenExpired,
   loadFeishuSettings,
   loadFeishuToken,
+  localFeishuRedirectUri,
+  nativeFeishuRedirectUri,
   saveFeishuSettings,
   saveFeishuToken,
   type FeishuSettingsState
@@ -59,6 +66,12 @@ import {
   normalizeState
 } from "./data/resolveState";
 import { registerMacPlatformHandlers, type MacTrayAction } from "./platform/macPlatform";
+import {
+  installNativeHttpBridge,
+  loadSecureFeishuCredentials,
+  runNativeFeishuOAuth,
+  saveSecureFeishuCredentials
+} from "./platform/nativeIntegrations";
 
 const feishuSyncIntervalMs = 30 * 1000;
 const feishuCalendarActiveSyncIntervalMs = 8 * 1000;
@@ -584,6 +597,7 @@ export function App() {
   const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [feishuSettings, setFeishuSettings] = useState(loadFeishuSettings);
+  const [feishuConnecting, setFeishuConnecting] = useState(false);
   const [selectedThreadId, setSelectedThreadId] = useState(() => state.strategyThreads[0]?.meta.id ?? "");
   const [strategyTaskText, setStrategyTaskText] = useState("");
   const [strategyDraft, setStrategyDraft] = useState<StrategyDraft>({ title: "", currentHypothesis: "" });
@@ -643,12 +657,47 @@ export function App() {
     .sort((a, b) => b.meta.createdAt.localeCompare(a.meta.createdAt));
 
   useEffect(() => {
+    void installNativeHttpBridge().catch((error) => {
+      console.warn("Could not install native HTTP bridge", error);
+    });
+  }, []);
+
+  useEffect(() => {
     stateRef.current = state;
   }, [state]);
 
   useEffect(() => {
     feishuSettingsRef.current = feishuSettings;
   }, [feishuSettings]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let cancelled = false;
+
+    async function hydrateFeishuCredentials() {
+      try {
+        const credentials = await loadSecureFeishuCredentials();
+        if (cancelled || (!credentials.appId && !credentials.appSecret)) return;
+        setFeishuSettings((current) => {
+          const next = {
+            ...current,
+            ...credentials,
+            redirectUri: current.redirectUri || nativeFeishuRedirectUri
+          };
+          feishuSettingsRef.current = next;
+          saveFeishuSettings(next);
+          return next;
+        });
+      } catch (error) {
+        console.warn("Could not load Feishu credentials from Keychain", error);
+      }
+    }
+
+    void hydrateFeishuCredentials();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1194,19 +1243,76 @@ export function App() {
   }
 
   function handleSaveFeishu(next: FeishuSettingsState) {
-    setFeishuSettings(next);
-    saveFeishuSettings(next);
+    const normalized = {
+      ...next,
+      redirectUri: next.redirectUri || localFeishuRedirectUri()
+    };
+    setFeishuSettings(normalized);
+    saveFeishuSettings(normalized);
+    void saveSecureFeishuCredentials(normalized).catch((error) => {
+      console.warn("Could not save Feishu credentials to Keychain", error);
+    });
   }
 
-  function handleConnectFeishu() {
-    if (!feishuSettings.appId || !feishuSettings.appSecret || !feishuSettings.redirectUri) {
-      showToast("Fill App ID, App Secret, and Redirect URI first");
+  async function handleConnectFeishu() {
+    const settings = {
+      ...feishuSettingsRef.current,
+      redirectUri: feishuSettingsRef.current.redirectUri || localFeishuRedirectUri()
+    };
+
+    if (!settings.appId || !settings.appSecret) {
+      const next = {
+        ...settings,
+        status: "permission_error" as const,
+        lastError: "Add your Feishu custom app credentials once, then click Connect."
+      };
+      handleSaveFeishu(next);
+      showToast("Add Feishu App ID and Secret once");
       return;
     }
-    const stateToken = makeId("oauth");
-    sessionStorage.setItem("feishu-oauth-state", stateToken);
-    const url = FeishuOpenApiClient.buildAuthorizeUrl(feishuSettings, stateToken, feishuOAuthScopes);
-    window.location.assign(url);
+
+    setFeishuConnecting(true);
+
+    try {
+      if (isTauriRuntime()) {
+        showToast("Opening Feishu");
+        const oauth = await runNativeFeishuOAuth(settings.appId, feishuOAuthScopes);
+        const nextSettings = {
+          ...settings,
+          redirectUri: oauth.redirect_uri,
+          lastError: undefined
+        };
+        handleSaveFeishu(nextSettings);
+        const tokenSet = await FeishuOpenApiClient.exchangeCode(feishuConfig(nextSettings), oauth.code);
+        saveFeishuToken(tokenSet);
+        const connected = {
+          ...nextSettings,
+          status: "connected" as const,
+          lastError: undefined
+        };
+        setFeishuSettings(connected);
+        saveFeishuSettings(connected);
+        setTab("calendar");
+        await syncFeishuCalendar(connected, tokenSet);
+        return;
+      }
+
+      const stateToken = makeId("oauth");
+      sessionStorage.setItem("feishu-oauth-state", stateToken);
+      const url = FeishuOpenApiClient.buildAuthorizeUrl(settings, stateToken, feishuOAuthScopes);
+      window.location.assign(url);
+    } catch (error) {
+      const next = {
+        ...settings,
+        status: "permission_error" as const,
+        lastError: feishuErrorMessage(error)
+      };
+      setFeishuSettings(next);
+      saveFeishuSettings(next);
+      showToast("Feishu connection failed");
+    } finally {
+      setFeishuConnecting(false);
+    }
   }
 
   async function resolveFeishuClient(settings: FeishuSettingsState, tokenSet: TokenSet) {
@@ -1366,8 +1472,6 @@ export function App() {
       <main className="app-main">
         <TopBar
           tab={tab}
-          todoCount={todoItems.length}
-          calendarCount={state.calendarEvents.length}
           feishuSettings={feishuSettings}
           onOpenSettings={() => setTab("settings")}
         />
@@ -1461,6 +1565,7 @@ export function App() {
           {tab === "settings" && (
             <SettingsView
               settings={feishuSettings}
+              connecting={feishuConnecting}
               onChange={handleSaveFeishu}
               onConnect={handleConnectFeishu}
               onSync={() => void syncFeishuCalendar()}
@@ -1484,14 +1589,10 @@ export function App() {
 
 function TopBar({
   tab,
-  todoCount,
-  calendarCount,
   feishuSettings,
   onOpenSettings
 }: {
   tab: Tab;
-  todoCount: number;
-  calendarCount: number;
   feishuSettings: FeishuSettingsState;
   onOpenSettings: () => void;
 }) {
@@ -1509,8 +1610,6 @@ function TopBar({
         <h1>{title}</h1>
       </div>
       <div className="top-actions">
-        <StatusPill tone="success" label={`Todo ${todoCount}`} />
-        <StatusPill tone="calendar" label={`Calendar ${calendarCount}`} />
         <SyncStatusBadge settings={feishuSettings} />
         <button className="icon-button" onClick={onOpenSettings} aria-label="Settings">
           <Settings size={18} />
@@ -1923,9 +2022,13 @@ function TodoArchiveSection({
                     {item.meta.dueAt && <small>{todoDateLabel(item.meta.dueAt)}</small>}
                   </div>
                   {!isCompleted && (
-                    <button className="archive-restore-button" onClick={() => onRestore(item.meta.id)}>
+                    <button
+                      className="archive-restore-button"
+                      aria-label={`Restore ${payload.title}`}
+                      title="Restore"
+                      onClick={() => onRestore(item.meta.id)}
+                    >
                       <RefreshCw size={13} />
-                      Restore
                     </button>
                   )}
                 </article>
@@ -2551,78 +2654,164 @@ function StrategyView({
 
 function SettingsView({
   settings,
+  connecting,
   onChange,
   onConnect,
   onSync,
   onDisconnect
 }: {
   settings: FeishuSettingsState;
+  connecting: boolean;
   onChange: (settings: FeishuSettingsState) => void;
-  onConnect: () => void;
+  onConnect: () => void | Promise<void>;
   onSync: () => void;
   onDisconnect: () => void;
 }) {
+  const [advancedOpen, setAdvancedOpen] = useState(() => !settings.appId || !settings.appSecret);
+  const [callbackCopied, setCallbackCopied] = useState(false);
+  const configured = Boolean(settings.appId && settings.appSecret);
+  const connected = settings.status === "connected";
+  const callbackUri = settings.redirectUri || localFeishuRedirectUri();
+  const storageLabel = isTauriRuntime() ? "macOS Keychain" : "local browser storage";
+  const lastSyncLabel = settings.lastSyncedAt ? `Last synced ${relativeAgeLabel(settings.lastSyncedAt)}` : "Not synced yet";
+
   function patch(patchValue: Partial<FeishuSettingsState>) {
     onChange({ ...settings, ...patchValue });
   }
 
+  async function copyCallbackUri() {
+    try {
+      await navigator.clipboard.writeText(callbackUri);
+      setCallbackCopied(true);
+      window.setTimeout(() => setCallbackCopied(false), 1400);
+    } catch {
+      setCallbackCopied(false);
+    }
+  }
+
   return (
     <div className="settings-view">
-      <SectionCard icon={<CalendarDays size={17} />} title="Feishu Calendar">
-        <div className="settings-grid">
-          <SettingsRow label="Status">
-            <SyncStatusBadge settings={settings} />
-          </SettingsRow>
-          <SettingsRow label="App ID">
-            <input value={settings.appId} onChange={(event) => patch({ appId: event.target.value })} />
-          </SettingsRow>
-          <SettingsRow label="App Secret">
-            <input
-              value={settings.appSecret}
-              onChange={(event) => patch({ appSecret: event.target.value })}
-              type="password"
-              autoComplete="off"
-            />
-          </SettingsRow>
-          <SettingsRow label="Redirect URI">
-            <input value={settings.redirectUri} onChange={(event) => patch({ redirectUri: event.target.value })} />
-          </SettingsRow>
-          <SettingsRow label="Default Calendar">
-            <input value={settings.defaultCalendar} onChange={(event) => patch({ defaultCalendar: event.target.value })} />
-          </SettingsRow>
-          <SettingsRow label="Sync Range">
-            <div className="range-row">
-              <input
-                type="number"
-                value={settings.pastDays}
-                onChange={(event) => patch({ pastDays: Number(event.target.value) })}
-              />
-              <span>past</span>
-              <input
-                type="number"
-                value={settings.futureDays}
-                onChange={(event) => patch({ futureDays: Number(event.target.value) })}
-              />
-              <span>future</span>
-            </div>
-          </SettingsRow>
+      <section className="feishu-connect-card">
+        <div className="feishu-connect-hero">
+          <div className="feishu-connect-icon">
+            <CalendarDays size={22} />
+          </div>
+          <div className="feishu-connect-copy">
+            <div className="eyebrow">Calendar Account</div>
+            <h2>Feishu Calendar</h2>
+            <p>
+              {connected
+                ? "Resolve is syncing your Feishu calendar in the background."
+                : configured
+                  ? "Ready to authenticate with your Feishu custom app."
+                  : "Add your custom app credentials once, then connect with one click."}
+            </p>
+          </div>
+          <SyncStatusBadge settings={settings} />
         </div>
+
+        <div className="feishu-status-strip">
+          <div>
+            <ShieldCheck size={16} />
+            <span>{configured ? `Credentials saved in ${storageLabel}` : "Custom app credentials required once"}</span>
+          </div>
+          <div>
+            <RefreshCw size={16} />
+            <span>{lastSyncLabel}</span>
+          </div>
+        </div>
+
+        {!configured && (
+          <div className="settings-callout">
+            <KeyRound size={17} />
+            <div>
+              <strong>Use your own Feishu Custom App</strong>
+              <p>Resolve will remember the App ID and Secret locally. They are not uploaded to Firestore.</p>
+            </div>
+          </div>
+        )}
+
         <div className="settings-actions">
-          <button className="primary-button" onClick={onConnect}>
-            <Send size={16} />
-            Connect Feishu
+          <button className="primary-button" onClick={() => void onConnect()} disabled={connecting}>
+            <ExternalLink size={16} />
+            {connecting ? "Waiting for Feishu" : connected ? "Reconnect Feishu" : "Connect with Feishu"}
           </button>
-          <button className="secondary-button" onClick={onSync}>
+          <button className="secondary-button" onClick={onSync} disabled={!connected || connecting}>
             <RefreshCw size={16} />
             Sync Now
           </button>
-          <button className="ghost-button" onClick={onDisconnect}>
+          <button className="ghost-button" onClick={onDisconnect} disabled={connecting}>
             <X size={16} />
             Disconnect
           </button>
         </div>
+
+        <button className={`advanced-toggle ${advancedOpen ? "open" : ""}`} onClick={() => setAdvancedOpen((value) => !value)}>
+          <span>
+            <ChevronRight size={15} />
+            Custom App Configuration
+          </span>
+          <small>{configured ? "Configured" : "Required"}</small>
+        </button>
+
+        {advancedOpen && (
+          <div className="settings-grid advanced-settings-grid">
+            <SettingsRow label="App ID">
+              <input
+                value={settings.appId}
+                onChange={(event) => patch({ appId: event.target.value.trim() })}
+                placeholder="cli_xxxxxxxxx"
+                autoComplete="off"
+              />
+            </SettingsRow>
+            <SettingsRow label="App Secret">
+              <input
+                value={settings.appSecret}
+                onChange={(event) => patch({ appSecret: event.target.value.trim() })}
+                type="password"
+                placeholder={settings.appSecret ? "Saved" : "Required once"}
+                autoComplete="off"
+              />
+            </SettingsRow>
+            <SettingsRow label="Callback">
+              <div className="callback-row">
+                <input value={callbackUri} readOnly />
+                <button className="icon-button" onClick={() => void copyCallbackUri()} aria-label="Copy callback URI">
+                  <Copy size={15} />
+                </button>
+              </div>
+              <small>{callbackCopied ? "Copied" : "Set this URI in Feishu developer console once."}</small>
+            </SettingsRow>
+            <SettingsRow label="Default Calendar">
+              <input
+                value={settings.defaultCalendar}
+                onChange={(event) => patch({ defaultCalendar: event.target.value.trim() || "primary" })}
+                placeholder="primary"
+              />
+            </SettingsRow>
+            <SettingsRow label="Sync Range">
+              <div className="range-row">
+                <input
+                  type="number"
+                  min={1}
+                  value={settings.pastDays}
+                  onChange={(event) => patch({ pastDays: Number(event.target.value) })}
+                />
+                <span>days back</span>
+                <input
+                  type="number"
+                  min={7}
+                  value={settings.futureDays}
+                  onChange={(event) => patch({ futureDays: Number(event.target.value) })}
+                />
+                <span>days ahead</span>
+              </div>
+            </SettingsRow>
+          </div>
+        )}
+
         {settings.lastError && <p className="settings-error">{settings.lastError}</p>}
-      </SectionCard>
+      </section>
 
     </div>
   );
