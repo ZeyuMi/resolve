@@ -33,6 +33,7 @@ export interface SupabaseEncryptedStrategyThreadRow {
 export interface SupabaseEncryptedCalendarEventRow {
   user_id: string;
   id: string;
+  encryption_scheme?: "vault_v1" | "server_calendar_v1";
   provider: "feishu" | "local";
   external_calendar_id?: string | null;
   external_event_id?: string | null;

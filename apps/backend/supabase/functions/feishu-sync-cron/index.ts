@@ -5,8 +5,10 @@ import {
   feishuConnectorDisabledBody,
   isFeishuServerConnectorAllowed
 } from "../_shared/security.ts";
+import { syncFeishuForUser } from "../_shared/feishuSync.ts";
+import { restSelect } from "../_shared/supabaseRest.ts";
 
-Deno.serve((request) => {
+Deno.serve(async (request) => {
   if (request.method !== "POST") {
     return methodNotAllowed(["POST"]);
   }
@@ -18,13 +20,24 @@ Deno.serve((request) => {
     });
   }
 
-  return jsonResponse(
-    {
-      error: "not_implemented",
-      cron: "skipped",
-      message:
-        "Server-side Feishu cron sync requires explicit product/security approval because it can see Feishu plaintext at runtime."
-    },
-    { status: 501 }
+  const connections = await restSelect<{ user_id: string }>(
+    "resolve_feishu_connections",
+    "select=user_id&mode=eq.server_connector_opt_in&status=eq.connected&server_encrypted_token_set=not.is.null"
   );
+  const results = [];
+  for (const connection of connections) {
+    try {
+      results.push(await syncFeishuForUser(connection.user_id));
+    } catch (error) {
+      results.push({
+        userId: connection.user_id,
+        error: error instanceof Error ? error.message : "Feishu sync failed."
+      });
+    }
+  }
+
+  return jsonResponse({
+    syncedUsers: results.length,
+    results
+  });
 });

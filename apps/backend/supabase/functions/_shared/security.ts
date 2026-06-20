@@ -1,9 +1,9 @@
 /// <reference path="./deno.d.ts" />
 
 export const strictE2eeStatement = [
-  "Resolve is running in strict E2EE mode.",
-  "The cloud backend must not fetch, transform, log, or persist plaintext Todo, Strategy, Calendar, or Feishu event content.",
-  "Feishu server-side sync is disabled unless RESOLVE_ALLOW_FEISHU_SERVER_CONNECTOR is explicitly set to true."
+  "Resolve keeps Todo and Strategy in strict E2EE mode.",
+  "Calendar can use the server-side Feishu connector only when explicitly enabled.",
+  "When enabled, the Edge Function runtime can see Feishu event plaintext while calling Feishu APIs, but database storage remains server-secret encrypted."
 ].join(" ");
 
 export function isFeishuServerConnectorAllowed() {
@@ -17,6 +17,6 @@ export function feishuConnectorDisabledBody() {
     reason: strictE2eeStatement,
     safePath: "Keep Feishu sync on Mac/Android clients, then upload encrypted calendar payloads to Supabase.",
     optInRisk:
-      "If enabled later, the Feishu connector can keep tokens off devices, but cloud function runtime will see Feishu event plaintext while calling Feishu APIs."
+      "Enable RESOLVE_ALLOW_FEISHU_SERVER_CONNECTOR=true only if calendar runtime plaintext on the backend is acceptable."
   };
 }

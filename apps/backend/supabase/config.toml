@@ -32,5 +32,8 @@ verify_jwt = false
 [functions.feishu-connector]
 verify_jwt = true
 
+[functions.feishu-oauth-callback]
+verify_jwt = false
+
 [functions.feishu-sync-cron]
 verify_jwt = false

@@ -6,9 +6,10 @@ Resolve is a personal command system, not a generic team workspace.
 The active MVP information architecture is Todo, Calendar, and Strategy. Capture
 goes straight into Todo; there is no user-facing Inbox or Today page.
 
-The current backend direction is Supabase-first, with strict end-to-end
-encryption for user content. Firestore remains as an older sync adapter during
-the migration, but new backend work should target Supabase.
+The current backend direction is Supabase-first. Todo and Strategy remain strict
+end-to-end encrypted. Calendar has an optional server-managed Feishu connector
+for convenience; in that mode, the backend can see Feishu event plaintext while
+calling Feishu APIs, then encrypts calendar payloads at rest.
 
 ```text
 Mac Tauri / Android
@@ -20,8 +21,8 @@ Supabase Auth / Postgres / Realtime
   metadata needed for ordering and sync
   encryptedPayload only for sensitive content
 Feishu OpenAPI
-  strict E2EE mode: client-side sync only
-  optional token broker mode: disabled until explicitly accepted
+  strict E2EE mode: client-side sync
+  server connector mode: runtime calendar plaintext, encrypted-at-rest storage
 ```
 
 ## Supabase Tables
@@ -46,7 +47,8 @@ encryption.
 
 ## Zero Plaintext Rule
 
-Cloud storage must not contain plaintext personal content.
+Cloud storage must not contain plaintext personal content. Calendar is allowed
+to be visible to Edge Function runtime only in server connector mode.
 
 Forbidden cloud columns include:
 
@@ -64,7 +66,9 @@ currentHypothesis
 ```
 
 The TypeScript Supabase adapter has a runtime guard that refuses to upsert rows
-containing these keys.
+containing these keys into client-vault sync tables. Server-managed calendar rows
+use `encryption_scheme = 'server_calendar_v1'` and `RESOLVE_SERVER_SECRET`
+encryption.
 
 ## Sync
 
@@ -76,20 +80,21 @@ day cell or from a Todo creates a local `local_pending_create` event that is
 queued for Feishu sync. Linking a Todo to Strategy does not remove it from Todo;
 Strategy subtasks are represented as Todo items with `strategyThreadId`.
 
-Feishu handling in strict E2EE mode:
+Feishu handling:
 
-- App ID and App Secret can be stored locally in macOS Keychain or Android
-  Keystore-backed storage.
-- access_token and refresh_token stay local or are stored in Supabase only as
-  vault-key encrypted blobs.
-- Supabase may store encrypted Feishu config/status but cannot decrypt it.
-- Mac/Android call Feishu directly, then upload encrypted calendar payloads.
+- Strict mode: Mac/Android call Feishu directly, then upload vault-key encrypted
+  calendar payloads.
+- Server connector mode: Supabase Edge Functions store Feishu App Secret and
+  tokens encrypted with `RESOLVE_SERVER_SECRET`, pull Feishu events, write
+  `server_calendar_v1` calendar rows, and expose decrypted calendar events only
+  to authenticated apps.
 
-Server-side Feishu sync is not compatible with strict E2EE. If a Supabase Edge
-Function calls Feishu OpenAPI, the function runtime can see event plaintext
-before encryption. That mode is therefore guarded behind
-`RESOLVE_ALLOW_FEISHU_SERVER_CONNECTOR=true` and is intentionally not
-implemented yet.
+Server connector mode is guarded behind:
+
+```text
+RESOLVE_ALLOW_FEISHU_SERVER_CONNECTOR=true
+RESOLVE_SERVER_SECRET=<random secret>
+```
 
 ## Conflict Policy
 

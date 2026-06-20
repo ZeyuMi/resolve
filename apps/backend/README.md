@@ -4,35 +4,49 @@ Supabase backend for Resolve.
 
 ## Security Model
 
-Default mode is strict E2EE:
+Default mode is mixed privacy:
 
 - Mac and Android keep a local plaintext cache.
 - A user vault key lives only in secure device storage or recovery material.
-- Todo, Strategy, Calendar, comments, attachments metadata, Feishu raw event
-  payloads, and sync tokens are encrypted before network upload.
+- Todo, Strategy, comments, and attachment metadata are encrypted before network
+  upload with the user vault key.
+- Calendar can be server-managed for convenience. In that mode, Feishu event
+  plaintext is visible to the Edge Function at runtime, then encrypted at rest
+  with `RESOLVE_SERVER_SECRET`.
 - Supabase stores metadata plus `encrypted_payload`, `payload_nonce`, and
   `payload_version`.
 - Supabase RLS ensures authenticated users can only access their own rows.
 
 RLS is not the privacy boundary. Client-side encryption is.
 
-## Feishu
+## Feishu Server Connector
 
-The default backend does not pull Feishu events server-side.
-
-Reason: strict E2EE means the cloud cannot see personal data. A server-side
-Feishu connector would receive plaintext calendar events from Feishu before it
-could encrypt them, so it is disabled by default.
-
-The guarded Edge Functions return a clear error unless this environment variable
-is explicitly set:
+The backend can pull Feishu events server-side when explicitly enabled:
 
 ```bash
 RESOLVE_ALLOW_FEISHU_SERVER_CONNECTOR=true
+RESOLVE_SERVER_SECRET=<random 32+ character secret>
 ```
 
-Even then, the connector is intentionally a stub until the runtime plaintext
-tradeoff is explicitly accepted.
+Supported actions on `feishu-connector`:
+
+- `configure`: store Feishu App ID / App Secret encrypted with
+  `RESOLVE_SERVER_SECRET`.
+- `start_oauth`: return a Feishu authorization URL.
+- `sync_now`: pull Feishu events and write `server_calendar_v1` rows.
+- `list_events`: return decrypted server-managed calendar events to an
+  authenticated app.
+- `disconnect`: remove the server token set.
+
+OAuth callback:
+
+```text
+https://<project-ref>.supabase.co/functions/v1/feishu-oauth-callback
+```
+
+Register that URL in the Feishu custom app redirect URI list.
+
+Todo and Strategy data never use the Feishu server connector.
 
 ## Local Development
 
@@ -50,6 +64,7 @@ supabase link --project-ref <project-ref>
 supabase db push
 supabase functions deploy health
 supabase functions deploy feishu-connector
+supabase functions deploy feishu-oauth-callback
 supabase functions deploy feishu-sync-cron
 ```
 

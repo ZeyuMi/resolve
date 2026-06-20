@@ -90,6 +90,7 @@ export class SupabaseEncryptedSync {
           .from("resolve_calendar_events")
           .select("*")
           .eq("user_id", this.userId)
+          .eq("encryption_scheme", "vault_v1")
           .order("starts_at", { ascending: true })
       ) as Promise<SupabaseEncryptedCalendarEventRow[]>
     ]);
@@ -241,6 +242,7 @@ export class SupabaseEncryptedSync {
     return {
       user_id: this.userId,
       id: event.meta.id,
+      encryption_scheme: "vault_v1",
       provider: event.meta.provider,
       external_calendar_id: event.meta.externalCalendarId ?? null,
       external_event_id: event.meta.externalEventId ?? null,
