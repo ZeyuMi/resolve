@@ -1,0 +1,12 @@
+node_modules
+dist
+.DS_Store
+.env
+.env.*
+*.log
+apps/mac/src-tauri/target
+apps/mac/src-tauri/icons/*.iconset
+apps/android/.gradle
+apps/android/build
+apps/android/app/build
+local-data

@@ -1,0 +1,3134 @@
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  Archive,
+  Brain,
+  CalendarDays,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Clock3,
+  LayoutList,
+  Lock,
+  Paperclip,
+  Plus,
+  RefreshCw,
+  Search,
+  Send,
+  Settings,
+  Trash2,
+  X
+} from "lucide-react";
+import {
+  emptyEncryptedFields,
+  makeId,
+  nowIso,
+  relativeAgeLabel,
+  type CalendarEventPayload,
+  type DecryptedCalendarEvent,
+  type DecryptedItem,
+  type DecryptedStrategyThread,
+  type ItemPayload,
+  type StrategyNotePayload
+} from "@resolve/core";
+import { type ResolveState } from "@resolve/sync";
+import {
+  feishuCalendarScopes,
+  FeishuOpenApiClient,
+  type FeishuCalendar,
+  type FeishuEvent,
+  type TokenSet
+} from "@resolve/feishu";
+import type { CalendarDraft, CalendarEventEditDraft, CalendarViewMode, StrategyDraft, Tab } from "./appTypes";
+import { createAppRepository } from "./data/appRepository";
+import {
+  canUseFeishuConnection,
+  clearFeishuToken,
+  feishuConfig,
+  isTokenExpired,
+  loadFeishuSettings,
+  loadFeishuToken,
+  saveFeishuSettings,
+  saveFeishuToken,
+  type FeishuSettingsState
+} from "./data/feishuLocalStore";
+import {
+  activeTodoStatuses,
+  createCalendarEvent,
+  createStrategyThread,
+  createTodoItem,
+  normalizeState
+} from "./data/resolveState";
+import { registerMacPlatformHandlers, type MacTrayAction } from "./platform/macPlatform";
+
+const feishuSyncIntervalMs = 30 * 1000;
+const feishuCalendarActiveSyncIntervalMs = 8 * 1000;
+const feishuOAuthScopes = feishuCalendarScopes
+  .map((scope) => scope.key)
+  .filter((scope) => scope !== "calendar:calendar:read" && scope !== "contact:user.email:readonly");
+
+function calendarEventId(calendarId: string, eventId: string) {
+  return `feishu_${calendarId}_${eventId}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+function calendarEventFromFeishu(
+  event: FeishuEvent,
+  options: {
+    sourceItemId?: string;
+    strategyThreadId?: string;
+    existing?: DecryptedCalendarEvent;
+  } = {}
+): DecryptedCalendarEvent {
+  const timestamp = nowIso();
+  return {
+    meta: {
+      id: options.existing?.meta.id ?? calendarEventId(event.calendarId, event.eventId),
+      provider: "feishu",
+      externalCalendarId: event.calendarId,
+      externalEventId: event.eventId,
+      status: event.canEdit === false ? "readonly" : "synced",
+      startsAt: event.startsAt,
+      endsAt: event.endsAt,
+      isAllDay: event.isAllDay,
+      createdAt: options.existing?.meta.createdAt ?? timestamp,
+      updatedAt: timestamp,
+      remoteUpdatedAt: event.updatedAt,
+      lastSyncedAt: timestamp,
+      sourceItemId: options.sourceItemId ?? options.existing?.meta.sourceItemId,
+      strategyThreadId: options.strategyThreadId ?? options.existing?.meta.strategyThreadId,
+      canEdit: event.canEdit,
+      canDelete: event.canDelete,
+      ...emptyEncryptedFields
+    },
+    payload: {
+      title: event.title ?? "Untitled Feishu event",
+      description: event.description,
+      location: event.location,
+      recurrence: event.recurrence,
+      feishuRaw: event.raw
+    }
+  };
+}
+
+function isCancelledFeishuEvent(event: FeishuEvent) {
+  return event.status === "cancelled" || !event.eventId;
+}
+
+function calendarExternalKey(event: Pick<DecryptedCalendarEvent["meta"], "externalCalendarId" | "externalEventId">) {
+  return event.externalCalendarId && event.externalEventId
+    ? `${event.externalCalendarId}:${event.externalEventId}`
+    : undefined;
+}
+
+function displayCalendarEventKey(event: DecryptedCalendarEvent) {
+  const payload = event.payload as CalendarEventPayload;
+  return [
+    event.meta.startsAt,
+    event.meta.endsAt ?? "",
+    event.meta.isAllDay ? "all-day" : "timed",
+    (payload.title ?? "").trim().toLocaleLowerCase()
+  ].join("|");
+}
+
+function sameCalendarEventIdentity(left: DecryptedCalendarEvent, right: DecryptedCalendarEvent) {
+  const leftKey = calendarExternalKey(left.meta);
+  const rightKey = calendarExternalKey(right.meta);
+  if (leftKey && rightKey) return leftKey === rightKey;
+  return left.meta.id === right.meta.id;
+}
+
+function replaceCalendarEvent(events: DecryptedCalendarEvent[], nextEvent: DecryptedCalendarEvent) {
+  let replaced = false;
+  const nextEvents = events.map((event) => {
+    if (!sameCalendarEventIdentity(event, nextEvent)) return event;
+    replaced = true;
+    return nextEvent;
+  });
+  return replaced ? nextEvents : [nextEvent, ...nextEvents];
+}
+
+function dedupeCalendarEvents(events: DecryptedCalendarEvent[]) {
+  const keyed = new Map<string, DecryptedCalendarEvent>();
+  const localEvents: DecryptedCalendarEvent[] = [];
+
+  events.forEach((event) => {
+    const key = calendarExternalKey(event.meta);
+    if (!key) {
+      localEvents.push(event);
+      return;
+    }
+
+    const existing = keyed.get(key);
+    if (!existing || event.meta.updatedAt.localeCompare(existing.meta.updatedAt) >= 0) {
+      keyed.set(key, event);
+    }
+  });
+
+  return [...Array.from(keyed.values()), ...localEvents];
+}
+
+function dedupeDisplayCalendarEvents(events: DecryptedCalendarEvent[]) {
+  const seen = new Map<string, DecryptedCalendarEvent>();
+  events.forEach((event) => {
+    const key = displayCalendarEventKey(event);
+    const existing = seen.get(key);
+    if (!existing || event.meta.updatedAt.localeCompare(existing.meta.updatedAt) >= 0) {
+      seen.set(key, event);
+    }
+  });
+  return Array.from(seen.values());
+}
+
+function preferCalendarDuplicate(candidate: DecryptedCalendarEvent, existing: DecryptedCalendarEvent) {
+  const candidateHasRecurrence = Boolean((candidate.payload as CalendarEventPayload).recurrence);
+  const existingHasRecurrence = Boolean((existing.payload as CalendarEventPayload).recurrence);
+  if (candidateHasRecurrence !== existingHasRecurrence) return candidateHasRecurrence ? candidate : existing;
+  return candidate.meta.updatedAt.localeCompare(existing.meta.updatedAt) >= 0 ? candidate : existing;
+}
+
+function dedupeSyncedCalendarDuplicates(events: DecryptedCalendarEvent[]) {
+  const seen = new Map<string, DecryptedCalendarEvent>();
+  const passthrough: DecryptedCalendarEvent[] = [];
+  const syncedDisplayKeys = new Set(
+    events
+      .filter((event) => event.meta.provider === "feishu" && event.meta.externalEventId)
+      .map(displayCalendarEventKey)
+  );
+
+  events.forEach((event) => {
+    if (
+      event.meta.status === "local_pending_create" &&
+      !event.meta.externalEventId &&
+      syncedDisplayKeys.has(displayCalendarEventKey(event))
+    ) {
+      return;
+    }
+
+    const shouldDedupe =
+      event.meta.provider === "feishu" &&
+      !["local_pending_create", "local_pending_update", "local_pending_delete"].includes(event.meta.status);
+
+    if (!shouldDedupe) {
+      passthrough.push(event);
+      return;
+    }
+
+    const key = displayCalendarEventKey(event);
+    const existing = seen.get(key);
+    seen.set(key, existing ? preferCalendarDuplicate(event, existing) : event);
+  });
+
+  return [...Array.from(seen.values()), ...passthrough];
+}
+
+function isStalePendingCreate(event: DecryptedCalendarEvent, now = Date.now()) {
+  return (
+    event.meta.provider === "feishu" &&
+    event.meta.status === "local_pending_create" &&
+    !event.meta.externalEventId &&
+    now - new Date(event.meta.updatedAt).getTime() > 2 * 60_000
+  );
+}
+
+function eventOverlapsWindow(event: DecryptedCalendarEvent, startsAt: string, endsAt: string) {
+  const eventStart = new Date(event.meta.startsAt).getTime();
+  const eventEnd = new Date(event.meta.endsAt ?? event.meta.startsAt).getTime();
+  return eventEnd >= new Date(startsAt).getTime() && eventStart <= new Date(endsAt).getTime();
+}
+
+function calendarEventVisibleInWindow(event: DecryptedCalendarEvent, startsAt: string, endsAt: string) {
+  if (eventOverlapsWindow(event, startsAt, endsAt)) return true;
+  const recurrence = typeof event.payload.recurrence === "string" ? event.payload.recurrence : undefined;
+  if (!recurrence) return false;
+  return expandRecurringCalendarEvent(event, recurrence, new Date(startsAt), new Date(endsAt)).length > 0;
+}
+
+function mergeFeishuEvents(
+  current: DecryptedCalendarEvent[],
+  remoteEvents: DecryptedCalendarEvent[],
+  options: {
+    syncedCalendarIds: Set<string>;
+    windowStartsAt: string;
+    windowEndsAt: string;
+    deletedRemoteKeys: Set<string>;
+  } = {
+    syncedCalendarIds: new Set(),
+    windowStartsAt: new Date(0).toISOString(),
+    windowEndsAt: new Date(8_640_000_000_000_000).toISOString(),
+    deletedRemoteKeys: new Set()
+  }
+) {
+  const currentEvents = dedupeCalendarEvents(current).filter((event) => !isStalePendingCreate(event));
+  const remoteByKey = new Map(
+    dedupeCalendarEvents(remoteEvents)
+      .map((event) => [calendarExternalKey(event.meta), event])
+      .filter((entry): entry is [string, DecryptedCalendarEvent] => Boolean(entry[0]))
+  );
+  const merged = currentEvents.map((event) => {
+    const key = calendarExternalKey(event.meta);
+    if (!key) return event;
+    if (options.deletedRemoteKeys.has(key)) return undefined;
+    const remote = remoteByKey.get(key);
+    if (!remote) {
+      const shouldPruneMissingRemote =
+        event.meta.provider === "feishu" &&
+        event.meta.externalCalendarId &&
+        options.syncedCalendarIds.has(event.meta.externalCalendarId) &&
+        calendarEventVisibleInWindow(event, options.windowStartsAt, options.windowEndsAt) &&
+        !["local_pending_create", "local_pending_update", "local_pending_delete"].includes(event.meta.status);
+      return shouldPruneMissingRemote ? undefined : event;
+    }
+    remoteByKey.delete(key);
+    return calendarEventFromFeishu(remote.payload.feishuRaw ? remoteToFeishuEvent(remote) : remoteToFeishuEvent(remote), {
+      existing: event
+    });
+  }).filter((event): event is DecryptedCalendarEvent => Boolean(event));
+  return dedupeSyncedCalendarDuplicates(dedupeCalendarEvents([...Array.from(remoteByKey.values()), ...merged]));
+}
+
+function remoteToFeishuEvent(event: DecryptedCalendarEvent): FeishuEvent {
+  return {
+    calendarId: event.meta.externalCalendarId ?? "primary",
+    eventId: event.meta.externalEventId ?? event.meta.id,
+    title: event.payload.title,
+    description: event.payload.description,
+    location: event.payload.location,
+    startsAt: event.meta.startsAt,
+    endsAt: event.meta.endsAt,
+    isAllDay: event.meta.isAllDay,
+    updatedAt: event.meta.remoteUpdatedAt,
+    status: typeof event.payload.feishuRaw === "object" && event.payload.feishuRaw && "status" in event.payload.feishuRaw
+      ? String((event.payload.feishuRaw as { status?: unknown }).status)
+      : undefined,
+    recurrence: typeof event.payload.recurrence === "string" ? event.payload.recurrence : undefined,
+    canEdit: event.meta.canEdit,
+    canDelete: event.meta.canDelete,
+    raw: event.payload.feishuRaw
+  };
+}
+
+function addDaysToIso(base: Date, days: number) {
+  const next = new Date(base);
+  next.setDate(base.getDate() + days);
+  return next.toISOString();
+}
+
+function feishuErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function readableFeishuCalendars(client: FeishuOpenApiClient, primary: FeishuCalendar, defaultCalendarId?: string) {
+  try {
+    const calendars = await client.listCalendars();
+    const defaultCalendar =
+      defaultCalendarId && defaultCalendarId !== "primary"
+        ? { calendarId: defaultCalendarId, type: "primary" } satisfies FeishuCalendar
+        : undefined;
+    const all = [primary, ...(defaultCalendar ? [defaultCalendar] : []), ...calendars];
+    const unique = new Map(all.map((calendar) => [calendar.calendarId, calendar]));
+    const supported = Array.from(unique.values()).filter((calendar) =>
+      !calendar.type || ["primary", "shared", "resource"].includes(calendar.type)
+    );
+    return supported.length ? supported : [primary];
+  } catch {
+    return defaultCalendarId && defaultCalendarId !== "primary"
+      ? [primary, { calendarId: defaultCalendarId, type: "primary" }]
+      : [primary];
+  }
+}
+
+async function resolveWritableCalendarId(settings: FeishuSettingsState, client: FeishuOpenApiClient) {
+  if (settings.defaultCalendar && settings.defaultCalendar !== "primary") return settings.defaultCalendar;
+  const primary = await client.getPrimaryCalendar();
+  return primary.calendarId;
+}
+
+function normalizePrimaryCalendarAliases(events: DecryptedCalendarEvent[], primaryCalendarId: string) {
+  return events.map((event) =>
+    event.meta.provider === "feishu" && event.meta.externalCalendarId === "primary"
+      ? {
+          ...event,
+          meta: {
+            ...event.meta,
+            externalCalendarId: primaryCalendarId
+          }
+        }
+      : event
+  );
+}
+
+function formatDateInput(date: Date) {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function dateKey(iso: string) {
+  return formatDateInput(new Date(iso));
+}
+
+function monthDays(monthCursor: Date) {
+  const first = new Date(monthCursor.getFullYear(), monthCursor.getMonth(), 1);
+  const start = new Date(first);
+  start.setDate(first.getDate() - first.getDay());
+  return Array.from({ length: 42 }, (_, index) => {
+    const day = new Date(start);
+    day.setDate(start.getDate() + index);
+    return day;
+  });
+}
+
+function weekDays(selectedDate: string) {
+  const date = new Date(`${selectedDate}T00:00:00`);
+  const start = new Date(date);
+  start.setDate(date.getDate() - date.getDay());
+  return Array.from({ length: 7 }, (_, index) => {
+    const day = new Date(start);
+    day.setDate(start.getDate() + index);
+    return day;
+  });
+}
+
+function eventTimeLabel(iso: string) {
+  return new Date(iso).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+}
+
+function timeSelectOptions() {
+  return Array.from({ length: 96 }, (_, index) => {
+    const totalMinutes = index * 15;
+    const hour = `${Math.floor(totalMinutes / 60)}`.padStart(2, "0");
+    const minute = `${totalMinutes % 60}`.padStart(2, "0");
+    return `${hour}:${minute}`;
+  });
+}
+
+function compareCalendarEvents(a: DecryptedCalendarEvent, b: DecryptedCalendarEvent) {
+  const byStart = new Date(a.meta.startsAt).getTime() - new Date(b.meta.startsAt).getTime();
+  if (byStart !== 0) return byStart;
+  const byEnd = new Date(a.meta.endsAt ?? a.meta.startsAt).getTime() - new Date(b.meta.endsAt ?? b.meta.startsAt).getTime();
+  if (byEnd !== 0) return byEnd;
+  return a.payload.title.localeCompare(b.payload.title, "zh-CN");
+}
+
+function visibleCalendarEvent(event: DecryptedCalendarEvent) {
+  const raw = event.payload.feishuRaw as Record<string, unknown> | undefined;
+  return (
+    !["archived_locally", "remote_deleted", "local_pending_delete"].includes(event.meta.status) &&
+    raw?.status !== "cancelled"
+  );
+}
+
+function expandRecurringCalendarEvents(events: DecryptedCalendarEvent[], rangeStart: Date, rangeEnd: Date) {
+  return events.flatMap((event) => {
+    const recurrence = typeof event.payload.recurrence === "string" ? event.payload.recurrence : undefined;
+    if (!recurrence) return [event];
+    return expandRecurringCalendarEvent(event, recurrence, rangeStart, rangeEnd);
+  });
+}
+
+function expandRecurringCalendarEvent(
+  event: DecryptedCalendarEvent,
+  recurrence: string,
+  rangeStart: Date,
+  rangeEnd: Date
+) {
+  const rule = parseRRule(recurrence);
+  const freq = rule.FREQ;
+  if (!freq) return [event];
+
+  const interval = Math.max(Number(rule.INTERVAL ?? "1") || 1, 1);
+  const count = rule.COUNT ? Number(rule.COUNT) : undefined;
+  const until = rule.UNTIL ? parseRRuleUntil(rule.UNTIL) : undefined;
+  const start = new Date(event.meta.startsAt);
+  const end = new Date(event.meta.endsAt ?? event.meta.startsAt);
+  const duration = end.getTime() - start.getTime();
+  const byDays = parseByDay(rule.BYDAY);
+  const byMonthDays = parseByMonthDay(rule.BYMONTHDAY);
+  const occurrences: DecryptedCalendarEvent[] = [];
+  let cursor = new Date(start);
+  let generated = 0;
+  let guard = 0;
+
+  while (cursor < rangeEnd && guard < 2500) {
+    guard += 1;
+    if (until && cursor > until) break;
+    if (count && generated >= count) break;
+
+    const occurrenceStarts = occurrenceStartsForCursor(cursor, start, freq, byDays, byMonthDays)
+      .filter((date) => date >= start)
+      .sort((a, b) => a.getTime() - b.getTime());
+
+    for (const occurrenceStart of occurrenceStarts) {
+      if (until && occurrenceStart > until) continue;
+      if (count && generated >= count) break;
+      generated += 1;
+      const occurrenceEnd = new Date(occurrenceStart.getTime() + duration);
+      if (occurrenceEnd < rangeStart || occurrenceStart >= rangeEnd) continue;
+      occurrences.push({
+        ...event,
+        meta: {
+          ...event.meta,
+          id: `${event.meta.id}_${occurrenceStart.toISOString()}`,
+          startsAt: occurrenceStart.toISOString(),
+          endsAt: occurrenceEnd.toISOString()
+        }
+      });
+    }
+
+    cursor = advanceRecurringCursor(cursor, freq, interval);
+  }
+
+  return occurrences.length ? occurrences : [event];
+}
+
+function parseRRule(recurrence: string) {
+  return Object.fromEntries(
+    recurrence.split(";").map((part) => {
+      const [key, value] = part.split("=");
+      return [key, value];
+    })
+  ) as Record<string, string | undefined>;
+}
+
+function parseRRuleUntil(value: string) {
+  if (/^\d{8}T\d{6}Z$/.test(value)) {
+    return new Date(`${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}T${value.slice(9, 11)}:${value.slice(11, 13)}:${value.slice(13, 15)}Z`);
+  }
+  if (/^\d{8}$/.test(value)) {
+    return new Date(`${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}T23:59:59`);
+  }
+  return new Date(value);
+}
+
+function parseByDay(value?: string) {
+  if (!value) return undefined;
+  const map: Record<string, number> = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
+  const days = value.split(",").map((day) => map[day.replace(/^-?\d+/, "")]).filter((day) => day != null);
+  return days.length ? days : undefined;
+}
+
+function parseByMonthDay(value?: string) {
+  if (!value) return undefined;
+  const days = value.split(",").map(Number).filter((day) => Number.isFinite(day) && day > 0);
+  return days.length ? days : undefined;
+}
+
+function occurrenceStartsForCursor(
+  cursor: Date,
+  start: Date,
+  freq: string,
+  byDays?: number[],
+  byMonthDays?: number[]
+) {
+  if (freq === "WEEKLY" && byDays?.length) {
+    return byDays.map((day) => {
+      const date = new Date(cursor);
+      date.setDate(cursor.getDate() + ((day - cursor.getDay() + 7) % 7));
+      date.setHours(start.getHours(), start.getMinutes(), start.getSeconds(), start.getMilliseconds());
+      return date;
+    });
+  }
+  if (freq === "MONTHLY" && byMonthDays?.length) {
+    return byMonthDays.map((day) => {
+      const date = new Date(cursor.getFullYear(), cursor.getMonth(), day);
+      date.setHours(start.getHours(), start.getMinutes(), start.getSeconds(), start.getMilliseconds());
+      return date;
+    }).filter((date) => date.getMonth() === cursor.getMonth());
+  }
+  return [new Date(cursor)];
+}
+
+function advanceRecurringCursor(cursor: Date, freq: string, interval: number) {
+  const next = new Date(cursor);
+  if (freq === "DAILY") next.setDate(next.getDate() + interval);
+  else if (freq === "WEEKLY") next.setDate(next.getDate() + interval * 7);
+  else if (freq === "MONTHLY") next.setMonth(next.getMonth() + interval);
+  else if (freq === "YEARLY") next.setFullYear(next.getFullYear() + interval);
+  else next.setDate(next.getDate() + interval);
+  return next;
+}
+
+function todoDateLabel(iso: string) {
+  const date = new Date(iso);
+  const dateText = date.toLocaleDateString("zh-CN", { month: "short", day: "numeric", weekday: "short" });
+  return `${dateText} ${eventTimeLabel(iso)}`;
+}
+
+function quickDateOptions(base = new Date()) {
+  const today = new Date(base);
+  const tomorrow = new Date(base);
+  tomorrow.setDate(today.getDate() + 1);
+  const nextWeek = new Date(base);
+  nextWeek.setDate(today.getDate() + 7);
+  return [
+    { label: "Today", value: formatDateInput(today) },
+    { label: "Tomorrow", value: formatDateInput(tomorrow) },
+    { label: "Next week", value: formatDateInput(nextWeek) }
+  ];
+}
+
+function inputTimeValue(iso?: string) {
+  if (!iso) return "09:00";
+  return new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+}
+
+export function App() {
+  const repository = useRef(createAppRepository());
+  const [state, setState] = useState<ResolveState>(() => {
+    const next = normalizeState(repository.current.load());
+    repository.current.save(next);
+    return next;
+  });
+  const [tab, setTab] = useState<Tab>("todo");
+  const [captureText, setCaptureText] = useState("");
+  const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const [feishuSettings, setFeishuSettings] = useState(loadFeishuSettings);
+  const [selectedThreadId, setSelectedThreadId] = useState(() => state.strategyThreads[0]?.meta.id ?? "");
+  const [strategyTaskText, setStrategyTaskText] = useState("");
+  const [strategyDraft, setStrategyDraft] = useState<StrategyDraft>({ title: "", currentHypothesis: "" });
+  const [calendarDraft, setCalendarDraft] = useState<CalendarDraft | null>(null);
+  const [calendarViewMode, setCalendarViewMode] = useState<CalendarViewMode>("month");
+  const [monthCursor, setMonthCursor] = useState(() => new Date());
+  const [selectedDate, setSelectedDate] = useState(() => formatDateInput(new Date()));
+  const [selectedCalendarEventKey, setSelectedCalendarEventKey] = useState<string | null>(null);
+  const [selectedTodoId, setSelectedTodoId] = useState<string | null>(null);
+  const [selectedStrategyTodoId, setSelectedStrategyTodoId] = useState<string | null>(null);
+  const [showCompleted, setShowCompleted] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
+  const stateRef = useRef(state);
+  const feishuSettingsRef = useRef(feishuSettings);
+  const syncInFlightRef = useRef(false);
+  const syncQueuedRef = useRef(false);
+
+  const taskItems = useMemo(
+    () =>
+      state.items
+        .filter((item) => item.meta.type === "task")
+        .sort((a, b) => {
+          const aDate = a.meta.dueAt ?? a.meta.updatedAt;
+          const bDate = b.meta.dueAt ?? b.meta.updatedAt;
+          return aDate.localeCompare(bDate);
+        }),
+    [state.items]
+  );
+  const todoItems = useMemo(
+    () =>
+      taskItems
+        .filter((item) => activeTodoStatuses.has(item.meta.status))
+        .sort((a, b) => {
+          if (a.meta.dueAt && !b.meta.dueAt) return -1;
+          if (!a.meta.dueAt && b.meta.dueAt) return 1;
+          return (a.meta.dueAt ?? a.meta.updatedAt).localeCompare(b.meta.dueAt ?? b.meta.updatedAt);
+        }),
+    [taskItems]
+  );
+  const completedTodos = useMemo(
+    () => taskItems.filter((item) => item.meta.status === "done").sort((a, b) => b.meta.updatedAt.localeCompare(a.meta.updatedAt)),
+    [taskItems]
+  );
+  const archivedTodos = useMemo(
+    () => taskItems.filter((item) => item.meta.status === "archived").sort((a, b) => b.meta.updatedAt.localeCompare(a.meta.updatedAt)),
+    [taskItems]
+  );
+  const selectedThread = state.strategyThreads.find((thread) => thread.meta.id === selectedThreadId);
+  const strategyTodos = todoItems.filter((item) => item.meta.strategyThreadId === selectedThreadId);
+  const selectedTodo = taskItems.find((item) => item.meta.id === selectedTodoId);
+  const selectedStrategyTodo = taskItems.find(
+    (item) => item.meta.id === selectedStrategyTodoId && item.meta.strategyThreadId === selectedThreadId
+  );
+  const strategySignals = state.items
+    .filter((item) => item.meta.type === "strategy_note")
+    .filter((item) => item.meta.strategyThreadId === selectedThreadId)
+    .sort((a, b) => b.meta.createdAt.localeCompare(a.meta.createdAt));
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  useEffect(() => {
+    feishuSettingsRef.current = feishuSettings;
+  }, [feishuSettings]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isTyping = Boolean(target?.closest("input, textarea, select, [contenteditable='true']"));
+      const wantsCapture =
+        (event.altKey && event.code === "Space") ||
+        ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") ||
+        (!isTyping && event.key === "/");
+
+      if (wantsCapture) {
+        event.preventDefault();
+        if (!window.matchMedia("(max-width: 760px)").matches) {
+          setQuickCaptureOpen(true);
+          return;
+        }
+        const input = Array.from(document.querySelectorAll<HTMLTextAreaElement>("[data-command-input]")).find(
+          (element) => {
+            const rect = element.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          }
+        );
+        input?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    let cleanup = () => {};
+    void registerMacPlatformHandlers({
+      onQuickCapture: () => setQuickCaptureOpen(true),
+      onTrayAction: (action) => handleMacTrayAction(action)
+    }).then((unlisten) => {
+      cleanup = unlisten;
+    });
+    return () => cleanup();
+  }, []);
+
+  useEffect(() => {
+    if (!feishuSettings.appId || !feishuSettings.appSecret || !loadFeishuToken()) return;
+    const syncQuietly = () => void syncFeishuCalendar(feishuSettingsRef.current, loadFeishuToken(), { silent: true });
+    syncQuietly();
+    const interval = window.setInterval(syncQuietly, feishuSyncIntervalMs);
+    const onFocus = () => syncQuietly();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") syncQuietly();
+    };
+    const onOnline = () => syncQuietly();
+    const onPageShow = () => syncQuietly();
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("pageshow", onPageShow);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("pageshow", onPageShow);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [feishuSettings.status, feishuSettings.appId, feishuSettings.appSecret]);
+
+  useEffect(() => {
+    if (tab !== "calendar" || !feishuSettings.appId || !feishuSettings.appSecret || !loadFeishuToken()) return;
+    const syncQuietly = () => void syncFeishuCalendar(feishuSettingsRef.current, loadFeishuToken(), { silent: true });
+    const interval = window.setInterval(syncQuietly, feishuCalendarActiveSyncIntervalMs);
+    return () => window.clearInterval(interval);
+  }, [tab, feishuSettings.status, feishuSettings.appId, feishuSettings.appSecret]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code");
+    if (!code) return;
+    const oauthCode = code;
+
+    const returnedState = params.get("state");
+    const expectedState = sessionStorage.getItem("feishu-oauth-state");
+    window.history.replaceState({}, document.title, "/");
+
+    async function finishOAuth() {
+      if (!returnedState || returnedState !== expectedState) {
+        const next = {
+          ...feishuSettings,
+          status: "permission_error" as const,
+          lastError: "Feishu OAuth state mismatch. Please reconnect."
+        };
+        setFeishuSettings(next);
+        saveFeishuSettings(next);
+        showToast("Feishu OAuth state mismatch");
+        return;
+      }
+
+      if (!feishuSettings.appId || !feishuSettings.appSecret) {
+        const next = {
+          ...feishuSettings,
+          status: "permission_error" as const,
+          lastError: "Fill App ID and App Secret before finishing OAuth."
+        };
+        setFeishuSettings(next);
+        saveFeishuSettings(next);
+        showToast("Fill Feishu App ID and Secret first");
+        return;
+      }
+
+      try {
+        const tokenSet = await FeishuOpenApiClient.exchangeCode(feishuConfig(feishuSettings), oauthCode);
+        saveFeishuToken(tokenSet);
+        const next = {
+          ...feishuSettings,
+          status: "connected" as const,
+          lastError: undefined
+        };
+        setFeishuSettings(next);
+        saveFeishuSettings(next);
+        setTab("calendar");
+        await syncFeishuCalendar(next, tokenSet);
+      } catch (error) {
+        const next = {
+          ...feishuSettings,
+          status: "permission_error" as const,
+          lastError: feishuErrorMessage(error)
+        };
+        setFeishuSettings(next);
+        saveFeishuSettings(next);
+        showToast("Feishu connection failed");
+      } finally {
+        sessionStorage.removeItem("feishu-oauth-state");
+      }
+    }
+
+    void finishOAuth();
+  }, []);
+
+  function persist(next: ResolveState) {
+    repository.current.save(next);
+    stateRef.current = next;
+    setState(next);
+  }
+
+  function showToast(message: string) {
+    setToast(message);
+    window.setTimeout(() => setToast(null), 2200);
+  }
+
+  function handleMacTrayAction(action: MacTrayAction) {
+    if (action === "quick_capture") {
+      setQuickCaptureOpen(true);
+      return;
+    }
+    if (action === "open_calendar") {
+      setTab("calendar");
+      return;
+    }
+    if (action === "open_strategy") {
+      setTab("strategy");
+      return;
+    }
+    if (action === "settings") {
+      setTab("settings");
+      return;
+    }
+    if (action === "sync_feishu") {
+      void syncFeishuCalendar();
+      return;
+    }
+    setTab("todo");
+  }
+
+  function handleCapture() {
+    const title = captureText.trim();
+    if (!title) return;
+    const todo = createTodoItem({ title });
+    persist({
+      ...state,
+      items: [todo, ...state.items]
+    });
+    setCaptureText("");
+    setQuickCaptureOpen(false);
+    setTab("todo");
+    showToast("Added to Todo");
+  }
+
+  function updateTodo(itemId: string, patch: Partial<DecryptedItem["meta"]>) {
+    persist({
+      ...state,
+      items: state.items.map((item) =>
+        item.meta.id === itemId
+          ? {
+              ...item,
+              meta: {
+                ...item.meta,
+                ...patch,
+                updatedAt: nowIso()
+              }
+            }
+          : item
+      )
+    });
+  }
+
+  function updateTodoPayload(itemId: string, patch: Partial<ItemPayload>) {
+    persist({
+      ...state,
+      items: state.items.map((item) =>
+        item.meta.id === itemId
+          ? {
+              ...item,
+              meta: {
+                ...item.meta,
+                updatedAt: nowIso()
+              },
+              payload: {
+                ...(item.payload as ItemPayload),
+                ...patch
+              }
+            }
+          : item
+      )
+    });
+  }
+
+  function restoreTodo(itemId: string) {
+    updateTodo(itemId, { status: "active" });
+    showToast("Restored to Todo");
+  }
+
+  function openCalendarDraft(todo?: DecryptedItem, date = selectedDate) {
+    setCalendarDraft({
+      todoId: todo?.meta.id,
+      date,
+      time: "09:00",
+      title: todo ? (todo.payload as ItemPayload).title : "",
+      description: ""
+    });
+    setTab("calendar");
+  }
+
+  function patchCalendarDraft(patch: Partial<CalendarDraft> | null) {
+    if (!patch) {
+      setCalendarDraft(null);
+      return;
+    }
+    setCalendarDraft((current) => (current ? { ...current, ...patch } : current));
+  }
+
+  async function saveCalendarDraft() {
+    const draft = calendarDraft;
+    if (!draft?.title.trim()) return;
+    const startsAt = new Date(`${draft.date}T${draft.time}:00`).toISOString();
+    const endsAt = new Date(new Date(startsAt).getTime() + 30 * 60_000).toISOString();
+    const currentState = stateRef.current;
+    const sourceTodo = currentState.items.find((item) => item.meta.id === draft.todoId);
+    const optimisticEvent = createCalendarEvent({
+      title: draft.title.trim(),
+      startsAt,
+      endsAt,
+      description: draft.description.trim() || undefined,
+      sourceItemId: draft.todoId,
+      strategyThreadId: sourceTodo?.meta.strategyThreadId
+    });
+    persist({
+      ...currentState,
+      items: currentState.items.map((item) =>
+        item.meta.id === draft.todoId
+          ? {
+              ...item,
+              meta: {
+                ...item.meta,
+                dueAt: startsAt,
+                updatedAt: nowIso()
+              }
+            }
+          : item
+      ),
+      calendarEvents: [optimisticEvent, ...currentState.calendarEvents]
+    });
+    setSelectedDate(draft.date);
+    setSelectedCalendarEventKey(null);
+    setCalendarDraft(null);
+    showToast("Added locally; syncing Feishu");
+
+    const tokenSet = loadFeishuToken();
+    const settings = feishuSettingsRef.current;
+    if (canUseFeishuConnection(settings, tokenSet)) {
+      try {
+        const client = await resolveFeishuClient(settings, tokenSet);
+        const writableCalendarId = await resolveWritableCalendarId(settings, client);
+        const remote = await client.createEvent(writableCalendarId, {
+          title: draft.title.trim(),
+          startsAt,
+          endsAt,
+          description: draft.description.trim() || undefined
+        });
+        const syncedEvent = calendarEventFromFeishu(remote, {
+          existing: optimisticEvent,
+          sourceItemId: draft.todoId,
+          strategyThreadId: sourceTodo?.meta.strategyThreadId
+        });
+        const latestState = stateRef.current;
+        persist({
+          ...latestState,
+          calendarEvents: dedupeSyncedCalendarDuplicates(
+            dedupeCalendarEvents(replaceCalendarEvent(latestState.calendarEvents, syncedEvent))
+          )
+        });
+        showToast("Created in Feishu");
+        void syncFeishuCalendar(settings, loadFeishuToken(), { silent: true });
+      } catch (error) {
+        const latestState = stateRef.current;
+        const failedEvent = {
+          ...optimisticEvent,
+          meta: {
+            ...optimisticEvent.meta,
+            status: "error" as const,
+            updatedAt: nowIso()
+          }
+        };
+        persist({
+          ...latestState,
+          calendarEvents: replaceCalendarEvent(latestState.calendarEvents, failedEvent)
+        });
+        const next = {
+          ...settings,
+          status: "permission_error" as const,
+          lastError: feishuErrorMessage(error)
+        };
+        setFeishuSettings(next);
+        saveFeishuSettings(next);
+        showToast("Feishu create failed; saved locally");
+      }
+      return;
+    }
+
+    showToast("Saved locally; reconnect Feishu to sync");
+  }
+
+  async function deleteCalendarEvent(event: DecryptedCalendarEvent) {
+    const canDeleteRemote =
+      event.meta.provider === "feishu" &&
+      event.meta.status !== "readonly" &&
+      event.meta.canDelete !== false &&
+      Boolean(event.meta.externalCalendarId && event.meta.externalEventId);
+
+    if (!canDeleteRemote) {
+      const currentState = stateRef.current;
+      persist({
+        ...currentState,
+        calendarEvents: currentState.calendarEvents.filter((item) => !sameCalendarEventIdentity(item, event))
+      });
+      setSelectedCalendarEventKey(null);
+      showToast("Hidden locally");
+      return;
+    }
+
+    const beforeDeleteState = stateRef.current;
+    persist({
+      ...beforeDeleteState,
+      calendarEvents: beforeDeleteState.calendarEvents.filter((item) => !sameCalendarEventIdentity(item, event))
+    });
+    setSelectedCalendarEventKey(null);
+    showToast("Deleting from Feishu");
+
+    const tokenSet = loadFeishuToken();
+    const settings = feishuSettingsRef.current;
+    if (!canUseFeishuConnection(settings, tokenSet)) {
+      const latestState = stateRef.current;
+      persist({
+        ...latestState,
+        calendarEvents: [
+          {
+            ...event,
+            meta: {
+              ...event.meta,
+              status: "local_pending_delete",
+              updatedAt: nowIso()
+            }
+          },
+          ...latestState.calendarEvents
+        ]
+      });
+      showToast("Marked for Feishu delete; reconnect first");
+      return;
+    }
+
+    try {
+      const client = await resolveFeishuClient(settings, tokenSet);
+      await client.deleteEvent(event.meta.externalCalendarId!, event.meta.externalEventId!);
+      showToast("Deleted from Feishu");
+      void syncFeishuCalendar(settings, loadFeishuToken(), { silent: true });
+    } catch (error) {
+      const message = feishuErrorMessage(error);
+      const latestState = stateRef.current;
+      persist({
+        ...latestState,
+        calendarEvents: [
+          {
+            ...event,
+            meta: {
+              ...event.meta,
+              status: "error",
+              updatedAt: nowIso()
+            }
+          },
+          ...latestState.calendarEvents
+        ]
+      });
+      const next = {
+        ...settings,
+        status: "permission_error" as const,
+        lastError: message
+      };
+      setFeishuSettings(next);
+      saveFeishuSettings(next);
+      showToast("Feishu delete failed");
+    }
+  }
+
+  async function updateCalendarEvent(event: DecryptedCalendarEvent, draft: CalendarEventEditDraft) {
+    const title = draft.title.trim();
+    if (!title) return;
+    if (event.meta.status === "readonly" || event.meta.canEdit === false) {
+      showToast("Readonly Feishu event");
+      return;
+    }
+
+    const startsAt = new Date(`${draft.date}T${draft.time}:00`).toISOString();
+    const currentEnd = new Date(event.meta.endsAt ?? event.meta.startsAt).getTime();
+    const currentStart = new Date(event.meta.startsAt).getTime();
+    const duration = Math.max(currentEnd - currentStart, 30 * 60_000);
+    const endsAt = new Date(new Date(startsAt).getTime() + duration).toISOString();
+    const payload = event.payload as CalendarEventPayload;
+    const canSyncRemote = Boolean(
+      event.meta.provider === "feishu" &&
+      event.meta.externalCalendarId &&
+      event.meta.externalEventId
+    );
+    const optimisticEvent: DecryptedCalendarEvent = {
+      ...event,
+      meta: {
+        ...event.meta,
+        startsAt,
+        endsAt,
+        status: canSyncRemote ? "local_pending_update" : event.meta.status,
+        updatedAt: nowIso()
+      },
+      payload: {
+        ...payload,
+        title,
+        description: draft.description.trim() || undefined
+      }
+    };
+    const currentState = stateRef.current;
+    persist({
+      ...currentState,
+      calendarEvents: replaceCalendarEvent(currentState.calendarEvents, optimisticEvent)
+    });
+    setSelectedDate(draft.date);
+    setSelectedCalendarEventKey(displayCalendarEventKey(optimisticEvent));
+
+    const settings = feishuSettingsRef.current;
+    const tokenSet = loadFeishuToken();
+    if (!canSyncRemote || !canUseFeishuConnection(settings, tokenSet)) {
+      showToast(canSyncRemote ? "Saved locally; reconnect Feishu to sync" : "Updated locally");
+      return;
+    }
+
+    try {
+      const client = await resolveFeishuClient(settings, tokenSet);
+      const remote = await client.updateEvent(event.meta.externalCalendarId!, event.meta.externalEventId!, {
+        title,
+        startsAt,
+        endsAt,
+        description: draft.description.trim() || undefined
+      });
+      const syncedEvent = calendarEventFromFeishu(remote, { existing: optimisticEvent });
+      const latestState = stateRef.current;
+      persist({
+        ...latestState,
+        calendarEvents: dedupeSyncedCalendarDuplicates(
+          dedupeCalendarEvents(replaceCalendarEvent(latestState.calendarEvents, syncedEvent))
+        )
+      });
+      setSelectedCalendarEventKey(displayCalendarEventKey(syncedEvent));
+      showToast("Updated in Feishu");
+      void syncFeishuCalendar(settings, loadFeishuToken(), { silent: true });
+    } catch (error) {
+      const latestState = stateRef.current;
+      persist({
+        ...latestState,
+        calendarEvents: replaceCalendarEvent(latestState.calendarEvents, {
+          ...optimisticEvent,
+          meta: {
+            ...optimisticEvent.meta,
+            status: "error",
+            updatedAt: nowIso()
+          }
+        })
+      });
+      const next = {
+        ...settings,
+        status: "permission_error" as const,
+        lastError: feishuErrorMessage(error)
+      };
+      setFeishuSettings(next);
+      saveFeishuSettings(next);
+      showToast("Feishu update failed");
+    }
+  }
+
+  function attachTodoToStrategy(todoId: string, threadId: string) {
+    updateTodo(todoId, { strategyThreadId: threadId || undefined });
+    showToast(threadId ? "Linked to Strategy" : "Strategy link cleared");
+  }
+
+  function addStrategyTask() {
+    const title = strategyTaskText.trim();
+    if (!title || !selectedThreadId) return;
+    const todo = createTodoItem({ title, strategyThreadId: selectedThreadId });
+    persist({
+      ...state,
+      items: [todo, ...state.items]
+    });
+    setStrategyTaskText("");
+    showToast("Subtask added to Todo");
+  }
+
+  function addStrategyThread() {
+    const title = strategyDraft.title.trim();
+    if (!title) return;
+    const thread = createStrategyThread({
+      title,
+      currentHypothesis: strategyDraft.currentHypothesis.trim() || undefined
+    });
+    persist({
+      ...state,
+      strategyThreads: [thread, ...state.strategyThreads]
+    });
+    setSelectedThreadId(thread.meta.id);
+    setStrategyDraft({ title: "", currentHypothesis: "" });
+    showToast("Strategy direction added");
+  }
+
+  function handleSaveFeishu(next: FeishuSettingsState) {
+    setFeishuSettings(next);
+    saveFeishuSettings(next);
+  }
+
+  function handleConnectFeishu() {
+    if (!feishuSettings.appId || !feishuSettings.appSecret || !feishuSettings.redirectUri) {
+      showToast("Fill App ID, App Secret, and Redirect URI first");
+      return;
+    }
+    const stateToken = makeId("oauth");
+    sessionStorage.setItem("feishu-oauth-state", stateToken);
+    const url = FeishuOpenApiClient.buildAuthorizeUrl(feishuSettings, stateToken, feishuOAuthScopes);
+    window.location.assign(url);
+  }
+
+  async function resolveFeishuClient(settings: FeishuSettingsState, tokenSet: TokenSet) {
+    let nextToken = tokenSet;
+    let client = new FeishuOpenApiClient(feishuConfig(settings), nextToken);
+    if (isTokenExpired(nextToken)) {
+      nextToken = await client.refreshAccessToken();
+      saveFeishuToken(nextToken);
+      client = new FeishuOpenApiClient(feishuConfig(settings), nextToken);
+    }
+    return client;
+  }
+
+  async function syncFeishuCalendar(
+    settings = feishuSettingsRef.current,
+    tokenSet = loadFeishuToken(),
+    options: { silent?: boolean } = {}
+  ) {
+    if (syncInFlightRef.current) {
+      syncQueuedRef.current = true;
+      return;
+    }
+    if (!settings.appId || !settings.appSecret) {
+      if (!options.silent) showToast("Fill Feishu App ID and Secret first");
+      return;
+    }
+    if (!tokenSet) {
+      const next = {
+        ...settings,
+        status: "token_expired" as const,
+        lastError: "No local Feishu token. Connect Feishu first."
+      };
+      setFeishuSettings(next);
+      saveFeishuSettings(next);
+      if (!options.silent) showToast("Connect Feishu first");
+      return;
+    }
+
+    syncInFlightRef.current = true;
+    try {
+      const client = await resolveFeishuClient(settings, tokenSet);
+      const primary = await client.getPrimaryCalendar();
+      const calendarId = settings.defaultCalendar === "primary" ? primary.calendarId : settings.defaultCalendar || primary.calendarId;
+      const calendars = await readableFeishuCalendars(client, primary, calendarId);
+      const now = new Date();
+      const startsAt = addDaysToIso(now, -settings.pastDays);
+      const endsAt = addDaysToIso(now, settings.futureDays);
+      const events: FeishuEvent[] = [];
+      const syncedCalendarIds = new Set<string>();
+      const deletedRemoteKeys = new Set<string>();
+
+      for (const calendar of calendars) {
+        syncedCalendarIds.add(calendar.calendarId);
+        let pageToken: string | undefined;
+        do {
+          const page = await client.listEvents({ calendarId: calendar.calendarId, anchorTime: startsAt, pageToken, pageSize: 1000 });
+          page.events.forEach((event) => {
+            const key = `${event.calendarId}:${event.eventId}`;
+            if (isCancelledFeishuEvent(event)) {
+              deletedRemoteKeys.add(key);
+            } else {
+              events.push(event);
+            }
+          });
+          pageToken = page.nextPageToken;
+        } while (pageToken);
+      }
+
+      const currentState = stateRef.current;
+      const normalizedCalendarEvents = normalizePrimaryCalendarAliases(currentState.calendarEvents, calendarId);
+      const remoteEvents = events.map((event) => {
+        const existing = normalizedCalendarEvents.find(
+          (item) =>
+            item.meta.externalCalendarId === event.calendarId &&
+            item.meta.externalEventId === event.eventId
+        );
+        return calendarEventFromFeishu(event, { existing });
+      });
+      const timestamp = nowIso();
+      persist({
+        ...currentState,
+        calendarEvents: mergeFeishuEvents(normalizedCalendarEvents, remoteEvents, {
+          syncedCalendarIds,
+          windowStartsAt: startsAt,
+          windowEndsAt: endsAt,
+          deletedRemoteKeys
+        })
+      });
+
+      const next = {
+        ...settings,
+        defaultCalendar: calendarId,
+        status: "connected" as const,
+        lastSyncedAt: timestamp,
+        lastError: undefined
+      };
+      setFeishuSettings(next);
+      saveFeishuSettings(next);
+      if (!options.silent) showToast(`Feishu synced ${events.length} events`);
+    } catch (error) {
+      const next = {
+        ...settings,
+        status: "permission_error" as const,
+        lastError: feishuErrorMessage(error)
+      };
+      setFeishuSettings(next);
+      saveFeishuSettings(next);
+      if (!options.silent) showToast("Feishu sync failed");
+    } finally {
+      syncInFlightRef.current = false;
+      if (syncQueuedRef.current) {
+        syncQueuedRef.current = false;
+        window.setTimeout(() => {
+          void syncFeishuCalendar(feishuSettingsRef.current, loadFeishuToken(), { silent: true });
+        }, 250);
+      }
+    }
+  }
+
+  function handleDisconnectFeishu() {
+    clearFeishuToken();
+    const next = {
+      ...feishuSettings,
+      status: "not_connected" as const,
+      lastSyncedAt: undefined,
+      lastError: undefined
+    };
+    setFeishuSettings(next);
+    saveFeishuSettings(next);
+    showToast("Feishu disconnected locally");
+  }
+
+  return (
+    <div className="app-shell">
+      <aside className="focus-sidebar">
+        <div className="sidebar-brand">
+          <ResolveMark />
+          <div>
+            <strong>Resolve</strong>
+            <span>Tasks, calendar, strategy</span>
+          </div>
+        </div>
+
+        <div className="sidebar-scroll">
+          <CaptureBox value={captureText} onChange={setCaptureText} onSave={handleCapture} />
+          <SidebarNav
+            active={tab}
+            todoCount={todoItems.length}
+            calendarCount={state.calendarEvents.length}
+            strategyCount={state.strategyThreads.length}
+            onChange={setTab}
+          />
+          <SyncPanel feishuSettings={feishuSettings} onSync={() => void syncFeishuCalendar()} />
+        </div>
+      </aside>
+
+      <main className="app-main">
+        <TopBar
+          tab={tab}
+          todoCount={todoItems.length}
+          calendarCount={state.calendarEvents.length}
+          feishuSettings={feishuSettings}
+          onOpenSettings={() => setTab("settings")}
+        />
+
+        <section className="workspace">
+          {tab === "todo" && (
+            <TodoView
+              todos={todoItems}
+              completedTodos={completedTodos}
+              archivedTodos={archivedTodos}
+              threads={state.strategyThreads}
+              calendarEvents={state.calendarEvents}
+              selectedTodo={selectedTodo}
+              showCompleted={showCompleted}
+              showArchived={showArchived}
+              onOpenCalendar={openCalendarDraft}
+              onAttachStrategy={attachTodoToStrategy}
+              onComplete={(todo) => {
+                updateTodo(todo.meta.id, { status: "done" });
+                if (selectedTodoId === todo.meta.id) setSelectedTodoId(null);
+              }}
+              onArchive={(todo) => {
+                updateTodo(todo.meta.id, { status: "archived" });
+                if (selectedTodoId === todo.meta.id) setSelectedTodoId(null);
+              }}
+              onRestore={restoreTodo}
+              onSelectTodo={(todo) => setSelectedTodoId(todo.meta.id)}
+              onCloseDetail={() => setSelectedTodoId(null)}
+              onUpdateTodoMeta={updateTodo}
+              onUpdateTodoPayload={updateTodoPayload}
+              onToggleCompleted={() => setShowCompleted((value) => !value)}
+              onToggleArchived={() => setShowArchived((value) => !value)}
+            />
+          )}
+          {tab === "calendar" && (
+            <CalendarView
+              events={state.calendarEvents}
+              viewMode={calendarViewMode}
+              monthCursor={monthCursor}
+              selectedDate={selectedDate}
+              selectedEventKey={selectedCalendarEventKey}
+              draft={calendarDraft}
+              onViewMode={setCalendarViewMode}
+              onMonthCursor={setMonthCursor}
+              onSelectedDate={(date) => {
+                setSelectedDate(date);
+                setSelectedCalendarEventKey(null);
+              }}
+              onSelectedEventKey={setSelectedCalendarEventKey}
+              onOpenDraft={(date) => {
+                setSelectedCalendarEventKey(null);
+                openCalendarDraft(undefined, date);
+              }}
+              onDraft={patchCalendarDraft}
+              onSaveDraft={saveCalendarDraft}
+              onUpdateEvent={(event, draft) => void updateCalendarEvent(event, draft)}
+              onDeleteEvent={(event) => void deleteCalendarEvent(event)}
+            />
+          )}
+          {tab === "strategy" && (
+            <StrategyView
+              threads={state.strategyThreads}
+              selectedThreadId={selectedThreadId}
+              selectedThread={selectedThread}
+              strategyTodos={strategyTodos}
+              strategySignals={strategySignals}
+              taskText={strategyTaskText}
+              strategyDraft={strategyDraft}
+              onSelectThread={setSelectedThreadId}
+              onTaskText={setStrategyTaskText}
+              onStrategyDraft={setStrategyDraft}
+              onAddThread={addStrategyThread}
+              onAddTask={addStrategyTask}
+              selectedTodo={selectedStrategyTodo}
+              calendarEvents={state.calendarEvents}
+              onSelectTodo={(todo) => setSelectedStrategyTodoId(todo.meta.id)}
+              onCloseDetail={() => setSelectedStrategyTodoId(null)}
+              onOpenCalendar={openCalendarDraft}
+              onComplete={(todo) => {
+                updateTodo(todo.meta.id, { status: "done" });
+                if (selectedStrategyTodoId === todo.meta.id) setSelectedStrategyTodoId(null);
+              }}
+              onArchive={(todo) => {
+                updateTodo(todo.meta.id, { status: "archived" });
+                if (selectedStrategyTodoId === todo.meta.id) setSelectedStrategyTodoId(null);
+              }}
+              onUpdateTodoMeta={updateTodo}
+              onUpdateTodoPayload={updateTodoPayload}
+            />
+          )}
+          {tab === "settings" && (
+            <SettingsView
+              settings={feishuSettings}
+              onChange={handleSaveFeishu}
+              onConnect={handleConnectFeishu}
+              onSync={() => void syncFeishuCalendar()}
+              onDisconnect={handleDisconnectFeishu}
+            />
+          )}
+        </section>
+      </main>
+      <MobileCaptureBar value={captureText} onChange={setCaptureText} onSave={handleCapture} />
+      <QuickCaptureOverlay
+        open={quickCaptureOpen}
+        value={captureText}
+        onChange={setCaptureText}
+        onSave={handleCapture}
+        onClose={() => setQuickCaptureOpen(false)}
+      />
+      {toast && <Toast message={toast} />}
+    </div>
+  );
+}
+
+function TopBar({
+  tab,
+  todoCount,
+  calendarCount,
+  feishuSettings,
+  onOpenSettings
+}: {
+  tab: Tab;
+  todoCount: number;
+  calendarCount: number;
+  feishuSettings: FeishuSettingsState;
+  onOpenSettings: () => void;
+}) {
+  const title = {
+    todo: "Todo",
+    calendar: "Calendar",
+    strategy: "Strategy",
+    settings: "Settings"
+  }[tab];
+
+  return (
+    <header className="top-bar">
+      <div>
+        <div className="eyebrow">Resolve</div>
+        <h1>{title}</h1>
+      </div>
+      <div className="top-actions">
+        <StatusPill tone="success" label={`Todo ${todoCount}`} />
+        <StatusPill tone="calendar" label={`Calendar ${calendarCount}`} />
+        <SyncStatusBadge settings={feishuSettings} />
+        <button className="icon-button" onClick={onOpenSettings} aria-label="Settings">
+          <Settings size={18} />
+        </button>
+      </div>
+    </header>
+  );
+}
+
+function ResolveMark() {
+  return (
+    <div className="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 32 32" role="img">
+        <circle cx="16" cy="16" r="10.6" fill="#fff" />
+        <circle cx="16" cy="16" r="9.1" fill="none" stroke="#2D5BE3" strokeWidth="3.2" />
+        <path
+          d="M10.2 16.1l4 4 7.6-8.3"
+          fill="none"
+          stroke="#2D5BE3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="3.45"
+        />
+      </svg>
+    </div>
+  );
+}
+
+function CaptureBox({
+  value,
+  onChange,
+  onSave
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  onSave: () => void;
+}) {
+  return (
+    <section className="capture-box">
+      <div className="capture-title">
+        <Search size={18} />
+        <span>快速记录</span>
+      </div>
+      <textarea
+        data-command-input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            onSave();
+          }
+          if (event.key === "Escape") onChange("");
+        }}
+        placeholder="记一下..."
+      />
+      <div className="capture-actions">
+        <button className="primary-button" onClick={onSave}>
+          <Send size={16} />
+          Save
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function MobileCaptureBar({
+  value,
+  onChange,
+  onSave
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  onSave: () => void;
+}) {
+  return (
+    <form
+      className="mobile-capture-bar"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSave();
+      }}
+    >
+      <Search size={17} />
+      <textarea
+        data-command-input
+        value={value}
+        rows={1}
+        onChange={(event) => onChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            onSave();
+          }
+          if (event.key === "Escape") onChange("");
+        }}
+        placeholder="记一下..."
+      />
+      <button className="primary-button" aria-label="Save capture" type="submit">
+        <Send size={16} />
+      </button>
+    </form>
+  );
+}
+
+function QuickCaptureOverlay({
+  open,
+  value,
+  onChange,
+  onSave,
+  onClose
+}: {
+  open: boolean;
+  value: string;
+  onChange: (value: string) => void;
+  onSave: () => void;
+  onClose: () => void;
+}) {
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    window.requestAnimationFrame(() => inputRef.current?.focus());
+  }, [open]);
+
+  if (!open) return null;
+
+  return (
+    <div className="quick-capture-backdrop" onClick={onClose}>
+      <section
+        className="quick-capture"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Quick capture"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <Search className="quick-capture-icon" size={20} />
+        <textarea
+          ref={inputRef}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              onSave();
+            }
+            if (event.key === "Escape") onClose();
+          }}
+          placeholder="记一下..."
+        />
+        <div className="quick-capture-actions">
+          <button className="icon-button" onClick={onClose} aria-label="Close quick capture">
+            <X size={16} />
+          </button>
+          <button className="primary-button" onClick={onSave} aria-label="Save quick capture">
+            <Send size={16} />
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function SyncPanel({ feishuSettings, onSync }: { feishuSettings: FeishuSettingsState; onSync: () => void }) {
+  return (
+    <section className="sync-panel">
+      <div className="panel-head">
+        <Lock size={16} />
+        <span>Private Vault</span>
+      </div>
+      <div className="sync-lines">
+        <span>Firestore: encrypted payload only</span>
+        <span>Feishu token: local preview storage; Keychain in desktop build</span>
+        <span>
+          Feishu:{" "}
+          {feishuSettings.lastSyncedAt
+            ? `Synced ${relativeAgeLabel(feishuSettings.lastSyncedAt)}`
+            : "Not connected"}
+        </span>
+        {feishuSettings.lastError && <span className="error-line">{feishuSettings.lastError}</span>}
+      </div>
+      <button className="ghost-button" onClick={onSync}>
+        <RefreshCw size={15} />
+        Sync Now
+      </button>
+    </section>
+  );
+}
+
+function TodoView({
+  todos,
+  completedTodos,
+  archivedTodos,
+  threads,
+  calendarEvents,
+  selectedTodo,
+  showCompleted,
+  showArchived,
+  onOpenCalendar,
+  onAttachStrategy,
+  onComplete,
+  onArchive,
+  onRestore,
+  onSelectTodo,
+  onCloseDetail,
+  onUpdateTodoMeta,
+  onUpdateTodoPayload,
+  onToggleCompleted,
+  onToggleArchived
+}: {
+  todos: DecryptedItem[];
+  completedTodos: DecryptedItem[];
+  archivedTodos: DecryptedItem[];
+  threads: DecryptedStrategyThread[];
+  calendarEvents: DecryptedCalendarEvent[];
+  selectedTodo?: DecryptedItem;
+  showCompleted: boolean;
+  showArchived: boolean;
+  onOpenCalendar: (todo: DecryptedItem) => void;
+  onAttachStrategy: (todoId: string, threadId: string) => void;
+  onComplete: (todo: DecryptedItem) => void;
+  onArchive: (todo: DecryptedItem) => void;
+  onRestore: (todoId: string) => void;
+  onSelectTodo: (todo: DecryptedItem) => void;
+  onCloseDetail: () => void;
+  onUpdateTodoMeta: (itemId: string, patch: Partial<DecryptedItem["meta"]>) => void;
+  onUpdateTodoPayload: (itemId: string, patch: Partial<ItemPayload>) => void;
+  onToggleCompleted: () => void;
+  onToggleArchived: () => void;
+}) {
+  const calendarByTodo = new Map(
+    calendarEvents
+      .filter((event) => event.meta.sourceItemId)
+      .map((event) => [event.meta.sourceItemId, event] as const)
+  );
+
+  return (
+    <div className={`todo-workspace ${selectedTodo ? "has-detail" : ""}`}>
+      <div className="todo-list-pane">
+        <div className="section-title-row">
+          <div>
+            <h2>Active</h2>
+            <p>主动推进、等待回应、战略子任务都在这里。</p>
+          </div>
+          <StatusPill tone="success" label={`${todos.length} active`} />
+        </div>
+        {todos.length ? (
+          todos.map((todo) => (
+            <TodoCard
+              key={todo.meta.id}
+              todo={todo}
+              threads={threads}
+              calendarEvent={calendarByTodo.get(todo.meta.id)}
+              selected={selectedTodo?.meta.id === todo.meta.id}
+              onComplete={onComplete}
+              onSelectTodo={onSelectTodo}
+            />
+          ))
+        ) : (
+          <EmptyState label="Todo 是空的" />
+        )}
+
+        <TodoArchiveSection
+          kind="completed"
+          title="Completed"
+          items={completedTodos}
+          open={showCompleted}
+          emptyLabel="还没有完成项"
+          onToggle={onToggleCompleted}
+          onRestore={onRestore}
+        />
+        <TodoArchiveSection
+          kind="archived"
+          title="Archived"
+          items={archivedTodos}
+          open={showArchived}
+          emptyLabel="还没有归档项"
+          onToggle={onToggleArchived}
+          onRestore={onRestore}
+        />
+      </div>
+      {selectedTodo && (
+        <TodoDetailPanel
+          todo={selectedTodo}
+          threads={threads}
+          calendarEvent={calendarByTodo.get(selectedTodo.meta.id)}
+          onClose={onCloseDetail}
+          onOpenCalendar={onOpenCalendar}
+          onUpdateMeta={onUpdateTodoMeta}
+          onUpdatePayload={onUpdateTodoPayload}
+          onArchive={onArchive}
+        />
+      )}
+    </div>
+  );
+}
+
+function TodoCard({
+  todo,
+  threads,
+  calendarEvent,
+  selected,
+  onComplete,
+  onSelectTodo
+}: {
+  todo: DecryptedItem;
+  threads: DecryptedStrategyThread[];
+  calendarEvent?: DecryptedCalendarEvent;
+  selected?: boolean;
+  onComplete: (todo: DecryptedItem) => void;
+  onSelectTodo: (todo: DecryptedItem) => void;
+}) {
+  const payload = todo.payload as ItemPayload;
+  const thread = threads.find((item) => item.meta.id === todo.meta.strategyThreadId);
+
+  return (
+    <article
+      className={`item-card todo-card ${selected ? "selected" : ""}`}
+      role="button"
+      tabIndex={0}
+      onClick={() => onSelectTodo(todo)}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelectTodo(todo);
+        }
+      }}
+    >
+      <button
+        className="completion-circle"
+        aria-label={`Complete ${payload.title}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onComplete(todo);
+        }}
+      >
+        <Check size={13} />
+      </button>
+      <div className="item-main">
+        <p>{payload.title}</p>
+        {todo.meta.dueAt && (
+          <div className="todo-date-pill">
+            <CalendarDays size={14} />
+            {todoDateLabel(todo.meta.dueAt)}
+          </div>
+        )}
+        <div className="meta-row">
+          <span>{relativeAgeLabel(todo.meta.createdAt)}</span>
+          {calendarEvent && <span>Feishu: {calendarEvent.meta.status}</span>}
+          {thread && <span>Strategy: {thread.payload.title}</span>}
+          {payload.attachments?.length ? <span>{payload.attachments.length} attachments</span> : null}
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function TodoArchiveSection({
+  kind,
+  title,
+  items,
+  open,
+  emptyLabel,
+  onToggle,
+  onRestore
+}: {
+  kind: "completed" | "archived";
+  title: string;
+  items: DecryptedItem[];
+  open: boolean;
+  emptyLabel: string;
+  onToggle: () => void;
+  onRestore: (todoId: string) => void;
+}) {
+  const isCompleted = kind === "completed";
+
+  return (
+    <section className={`collapsed-list ${kind}`}>
+      <button className={`collapsed-list-toggle ${open ? "open" : ""}`} onClick={onToggle}>
+        <span className="collapse-title">
+          <ChevronRight className="collapse-chevron" size={14} />
+          {title}
+        </span>
+        <small>{items.length}</small>
+      </button>
+      {open && (
+        <div className="collapsed-list-body">
+          {items.length ? (
+            items.map((item) => {
+              const payload = item.payload as ItemPayload;
+              return (
+                <article className={`mini-row ${kind}`} key={item.meta.id}>
+                  {isCompleted ? (
+                    <button
+                      className="completion-circle completed"
+                      aria-label={`Mark active ${payload.title}`}
+                      title="Mark active"
+                      onClick={() => onRestore(item.meta.id)}
+                    >
+                      <Check size={13} />
+                    </button>
+                  ) : (
+                    <span className="archive-glyph" aria-hidden="true">
+                      <Archive size={13} />
+                    </span>
+                  )}
+                  <div className="mini-row-main">
+                    <span className="mini-row-title">{payload.title}</span>
+                    {item.meta.dueAt && <small>{todoDateLabel(item.meta.dueAt)}</small>}
+                  </div>
+                  {!isCompleted && (
+                    <button className="archive-restore-button" onClick={() => onRestore(item.meta.id)}>
+                      <RefreshCw size={13} />
+                      Restore
+                    </button>
+                  )}
+                </article>
+              );
+            })
+          ) : (
+            <EmptyState label={emptyLabel} />
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function TodoDetailPanel({
+  todo,
+  threads,
+  calendarEvent,
+  onClose,
+  onOpenCalendar,
+  onUpdateMeta,
+  onUpdatePayload,
+  onArchive
+}: {
+  todo: DecryptedItem;
+  threads: DecryptedStrategyThread[];
+  calendarEvent?: DecryptedCalendarEvent;
+  onClose: () => void;
+  onOpenCalendar: (todo: DecryptedItem) => void;
+  onUpdateMeta: (itemId: string, patch: Partial<DecryptedItem["meta"]>) => void;
+  onUpdatePayload: (itemId: string, patch: Partial<ItemPayload>) => void;
+  onArchive: (todo: DecryptedItem) => void;
+}) {
+  const activeTodo = todo;
+  const payload = activeTodo.payload as ItemPayload;
+  const dueDate = activeTodo.meta.dueAt ? formatDateInput(new Date(activeTodo.meta.dueAt)) : "";
+  const dueTime = inputTimeValue(activeTodo.meta.dueAt);
+
+  function updateDue(nextDate: string, nextTime = dueTime) {
+    if (!nextDate) {
+      onUpdateMeta(activeTodo.meta.id, { dueAt: undefined });
+      return;
+    }
+    onUpdateMeta(activeTodo.meta.id, {
+      dueAt: new Date(`${nextDate}T${nextTime || "09:00"}:00`).toISOString()
+    });
+  }
+
+  return (
+    <aside className="todo-detail-panel">
+      <div className="detail-head">
+        <span>Todo Detail</span>
+        <button className="icon-button" onClick={onClose} aria-label="Close detail">
+          <X size={16} />
+        </button>
+      </div>
+      <label className="detail-field">
+        <span>Title</span>
+        <input
+          value={payload.title}
+          onChange={(event) => onUpdatePayload(activeTodo.meta.id, { title: event.target.value })}
+        />
+      </label>
+      <label className="detail-field">
+        <span>Comment</span>
+        <textarea
+          value={payload.notes ?? ""}
+          onChange={(event) => onUpdatePayload(activeTodo.meta.id, { notes: event.target.value })}
+          placeholder="补充上下文、下一步、判断依据..."
+        />
+      </label>
+      <div className="detail-field">
+        <span>Date</span>
+        <div className="detail-date-row">
+          <input type="date" value={dueDate} onChange={(event) => updateDue(event.target.value)} />
+          <input type="time" value={dueTime} onChange={(event) => updateDue(dueDate || formatDateInput(new Date()), event.target.value)} />
+        </div>
+        {calendarEvent && <small>Linked Feishu: {calendarEvent.meta.status}</small>}
+      </div>
+      <label className="detail-field">
+        <span>Strategy</span>
+        <select
+          value={todo.meta.strategyThreadId ?? ""}
+          onChange={(event) => onUpdateMeta(activeTodo.meta.id, { strategyThreadId: event.target.value || undefined })}
+        >
+          <option value="">No strategy</option>
+          {threads.map((thread) => (
+            <option key={thread.meta.id} value={thread.meta.id}>
+              {thread.payload.title}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="detail-field">
+        <span>Files</span>
+        <label className="file-drop">
+          <Paperclip size={16} />
+          <input
+            type="file"
+            multiple
+            onChange={(event) => {
+              const next = Array.from(event.target.files ?? []).map((file) => ({
+                id: makeId("file"),
+                name: file.name,
+                size: file.size,
+                addedAt: nowIso()
+              }));
+              onUpdatePayload(activeTodo.meta.id, {
+                attachments: [...(payload.attachments ?? []), ...next]
+              });
+              event.target.value = "";
+            }}
+          />
+          Attach local files
+        </label>
+        {payload.attachments?.length ? (
+          <div className="attachment-list">
+            {payload.attachments.map((file) => (
+              <span key={file.id}>{file.name}</span>
+            ))}
+          </div>
+        ) : (
+          <small>No attachments yet</small>
+        )}
+      </div>
+      <div className="detail-actions">
+        <button className="secondary-button" onClick={() => onOpenCalendar(activeTodo)}>
+          <CalendarDays size={15} />
+          Put on calendar
+        </button>
+        <button className="ghost-button" onClick={() => onArchive(activeTodo)}>
+          <Archive size={15} />
+          Archive
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+function CalendarView({
+  events,
+  viewMode,
+  monthCursor,
+  selectedDate,
+  selectedEventKey,
+  draft,
+  onViewMode,
+  onMonthCursor,
+  onSelectedDate,
+  onSelectedEventKey,
+  onOpenDraft,
+  onDraft,
+  onSaveDraft,
+  onUpdateEvent,
+  onDeleteEvent
+}: {
+  events: DecryptedCalendarEvent[];
+  viewMode: CalendarViewMode;
+  monthCursor: Date;
+  selectedDate: string;
+  selectedEventKey: string | null;
+  draft: CalendarDraft | null;
+  onViewMode: (mode: CalendarViewMode) => void;
+  onMonthCursor: (date: Date) => void;
+  onSelectedDate: (date: string) => void;
+  onSelectedEventKey: (key: string | null) => void;
+  onOpenDraft: (date: string) => void;
+  onDraft: (patch: Partial<CalendarDraft> | null) => void;
+  onSaveDraft: () => void;
+  onUpdateEvent: (event: DecryptedCalendarEvent, draft: CalendarEventEditDraft) => void;
+  onDeleteEvent: (event: DecryptedCalendarEvent) => void;
+}) {
+  const todayKey = formatDateInput(new Date());
+  const calendarGridRef = useRef<HTMLDivElement | null>(null);
+  const [visibleEventsPerCell, setVisibleEventsPerCell] = useState(3);
+  const [expandedDayKey, setExpandedDayKey] = useState<string | null>(null);
+  const days =
+    viewMode === "week"
+      ? weekDays(selectedDate)
+      : monthDays(monthCursor);
+  const rangeStart = viewMode === "year" ? new Date(monthCursor.getFullYear(), 0, 1) : days[0];
+  const rangeEnd =
+    viewMode === "year"
+      ? new Date(monthCursor.getFullYear() + 1, 0, 1)
+      : new Date(days[days.length - 1].getFullYear(), days[days.length - 1].getMonth(), days[days.length - 1].getDate() + 1);
+  const displayEvents = dedupeDisplayCalendarEvents(
+    expandRecurringCalendarEvents(events.filter(visibleCalendarEvent), rangeStart, rangeEnd)
+  );
+  const eventsByDate = new Map<string, DecryptedCalendarEvent[]>();
+  displayEvents.forEach((event) => {
+    const key = dateKey(event.meta.startsAt);
+    const list = eventsByDate.get(key) ?? [];
+    list.push(event);
+    eventsByDate.set(key, list);
+  });
+  eventsByDate.forEach((list, key) => {
+    eventsByDate.set(key, [...list].sort(compareCalendarEvents));
+  });
+
+  const selectedEvent = displayEvents.find((event) => displayCalendarEventKey(event) === selectedEventKey);
+  const expandedDayEvents = expandedDayKey ? eventsByDate.get(expandedDayKey) ?? [] : [];
+  const monthLabel =
+    viewMode === "week"
+      ? `${formatDateInput(days[0])} - ${formatDateInput(days[6])}`
+      : viewMode === "year"
+        ? `${monthCursor.getFullYear()}`
+        : monthCursor.toLocaleDateString("zh-CN", { year: "numeric", month: "long" });
+
+	  useEffect(() => {
+	    if (viewMode === "year") return;
+	    const updateVisibleCount = () => {
+	      const grid = calendarGridRef.current;
+	      if (!grid) return;
+	      const rows = viewMode === "week" ? 1 : 6;
+	      const cellHeight = grid.getBoundingClientRect().height / rows;
+	      if (viewMode === "month") {
+	        const monthSlots = cellHeight < 76 ? 1 : cellHeight < 112 ? 2 : 3;
+	        setVisibleEventsPerCell((current) => (current === monthSlots ? current : monthSlots));
+	        return;
+	      }
+	      const available = Math.max(cellHeight - 34, 0);
+	      const next = Math.max(viewMode === "week" ? 6 : 2, Math.floor(available / 25));
+	      const capped = Math.min(viewMode === "week" ? 18 : 10, next);
+      setVisibleEventsPerCell((current) => (current === capped ? current : capped));
+    };
+
+    updateVisibleCount();
+    const grid = calendarGridRef.current;
+    if (typeof ResizeObserver !== "undefined" && grid) {
+      const observer = new ResizeObserver(updateVisibleCount);
+      observer.observe(grid);
+      return () => observer.disconnect();
+    }
+
+    window.addEventListener("resize", updateVisibleCount);
+    return () => window.removeEventListener("resize", updateVisibleCount);
+  }, [viewMode, monthCursor]);
+
+  function movePeriod(delta: number) {
+    const next = new Date(monthCursor);
+    if (viewMode === "year") next.setFullYear(monthCursor.getFullYear() + delta);
+    else if (viewMode === "week") {
+      const selected = new Date(`${selectedDate}T00:00:00`);
+      selected.setDate(selected.getDate() + delta * 7);
+      onSelectedDate(formatDateInput(selected));
+      next.setFullYear(selected.getFullYear(), selected.getMonth(), 1);
+    } else next.setMonth(monthCursor.getMonth() + delta);
+    onMonthCursor(next);
+  }
+
+  function revealCalendarPopoverOnPhone() {
+    if (!window.matchMedia("(max-width: 760px)").matches) return;
+    window.requestAnimationFrame(() => {
+      document.querySelector(".calendar-popover")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+  }
+
+  function openDraftForDate(date: string) {
+    setExpandedDayKey(null);
+    onSelectedDate(date);
+    onSelectedEventKey(null);
+    onOpenDraft(date);
+    revealCalendarPopoverOnPhone();
+  }
+
+  function selectEvent(event: DecryptedCalendarEvent) {
+    setExpandedDayKey(null);
+    onDraft(null);
+    onSelectedDate(dateKey(event.meta.startsAt));
+    onSelectedEventKey(displayCalendarEventKey(event));
+    revealCalendarPopoverOnPhone();
+  }
+
+  function openDayList(date: string) {
+    onDraft(null);
+    onSelectedDate(date);
+    onSelectedEventKey(null);
+    setExpandedDayKey(date);
+    revealCalendarPopoverOnPhone();
+  }
+
+  function closeCalendarPopover() {
+    if (draft) onDraft(null);
+    onSelectedEventKey(null);
+    setExpandedDayKey(null);
+  }
+
+  useEffect(() => {
+    if (!draft && !selectedEventKey && !expandedDayKey) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeCalendarPopover();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [draft, selectedEventKey, expandedDayKey]);
+
+  return (
+    <div className="calendar-layout">
+      <section className="section-card calendar-month">
+        <div className="calendar-toolbar">
+          <button className="icon-button" onClick={() => movePeriod(-1)} aria-label="Previous period">
+            <ChevronLeft size={18} />
+          </button>
+          <div>
+            <div className="eyebrow">Feishu Calendar</div>
+            <h2>{monthLabel}</h2>
+          </div>
+          <div className="calendar-toolbar-actions">
+            <SegmentedControl
+              value={viewMode}
+              options={[
+                { value: "week", label: "Week" },
+                { value: "month", label: "Month" },
+                { value: "year", label: "Year" }
+              ]}
+              onChange={(value) => onViewMode(value as CalendarViewMode)}
+            />
+            <button className="icon-button" onClick={() => movePeriod(1)} aria-label="Next period">
+            <ChevronRight size={18} />
+            </button>
+          </div>
+        </div>
+        {viewMode === "year" ? (
+          <YearCalendar
+            year={monthCursor.getFullYear()}
+            eventsByDate={eventsByDate}
+            onSelectMonth={(month) => {
+              const next = new Date(monthCursor);
+              next.setMonth(month);
+              onMonthCursor(next);
+              onViewMode("month");
+            }}
+          />
+        ) : (
+          <>
+            <div className="weekday-row">
+              {["日", "一", "二", "三", "四", "五", "六"].map((day) => (
+                <span key={day}>{day}</span>
+              ))}
+            </div>
+            <div className={`calendar-grid ${viewMode === "week" ? "week-grid" : ""}`} ref={calendarGridRef}>
+	              {days.map((day) => {
+	                const key = formatDateInput(day);
+	                const dayEvents = eventsByDate.get(key) ?? [];
+	                const eventSlots = visibleEventsPerCell;
+	                const hasMoreEvents = dayEvents.length > eventSlots;
+	                const visibleInlineEvents = hasMoreEvents ? Math.max(0, eventSlots - 1) : eventSlots;
+	                const hiddenEventCount = dayEvents.length - visibleInlineEvents;
+	                const isCurrentMonth = day.getMonth() === monthCursor.getMonth();
+	                const isSelected = key === selectedDate;
+	                const isPast = key < todayKey;
+                const isToday = key === todayKey;
+                return (
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    className={`calendar-cell ${isCurrentMonth ? "" : "muted"} ${isPast ? "past" : ""} ${isToday ? "today" : ""} ${isSelected ? "selected" : ""}`}
+                    key={key}
+                    onClick={() => openDraftForDate(key)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        openDraftForDate(key);
+                      }
+                    }}
+	                  >
+	                    <span>{viewMode === "week" ? day.toLocaleDateString("zh-CN", { month: "short", day: "numeric" }) : day.getDate()}</span>
+		                    <div className="calendar-cell-events">
+		                      {dayEvents.slice(0, visibleInlineEvents).map((event) => (
+		                        <button
+		                          className={`calendar-event-chip ${displayCalendarEventKey(event) === selectedEventKey ? "selected" : ""}`}
+	                          key={displayCalendarEventKey(event)}
+                          onClick={(clickEvent) => {
+                            clickEvent.stopPropagation();
+                            selectEvent(event);
+                          }}
+                          type="button"
+                        >
+		                          {(event.payload as CalendarEventPayload).title}
+		                        </button>
+			                      ))}
+		                    </div>
+		                    {hasMoreEvents && (
+		                      <button
+		                        className="calendar-more-label"
+		                        aria-label={`还有 ${hiddenEventCount} 项`}
+		                        title={`还有 ${hiddenEventCount} 项`}
+		                        onClick={(clickEvent) => {
+		                          clickEvent.stopPropagation();
+		                          openDayList(key);
+		                        }}
+		                        type="button"
+		                      >
+		                        <span className="calendar-more-full">还有 {hiddenEventCount} 项</span>
+		                        <span className="calendar-more-compact">+{hiddenEventCount}</span>
+		                        <span className="calendar-more-tiny">{hiddenEventCount}</span>
+		                      </button>
+		                    )}
+		                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </section>
+
+	      {(draft || selectedEvent || expandedDayKey) && (
+	        <div className="calendar-popover-backdrop" onClick={closeCalendarPopover}>
+	          <div className="calendar-popover" onClick={(event) => event.stopPropagation()}>
+	            {draft && (
+	              <CalendarDraftDetailPanel
+                draft={draft}
+                title={draft.todoId ? "Todo -> Calendar" : "New Event"}
+                onChange={onDraft}
+                onClose={() => onDraft(null)}
+                onSave={onSaveDraft}
+              />
+            )}
+            {selectedEvent && (
+              <CalendarEventDetailPanel
+                event={selectedEvent}
+                onClose={() => onSelectedEventKey(null)}
+                onUpdate={(draft) => onUpdateEvent(selectedEvent, draft)}
+	                onDelete={onDeleteEvent}
+	              />
+	            )}
+	            {!draft && !selectedEvent && expandedDayKey && (
+	              <CalendarDayEventListPanel
+	                date={expandedDayKey}
+	                events={expandedDayEvents}
+	                onClose={closeCalendarPopover}
+	                onSelect={selectEvent}
+	              />
+	            )}
+	          </div>
+	        </div>
+	      )}
+    </div>
+  );
+}
+
+function StrategyView({
+  threads,
+  selectedThreadId,
+  selectedThread,
+  strategyTodos,
+  strategySignals,
+  taskText,
+  strategyDraft,
+  selectedTodo,
+  calendarEvents,
+  onSelectThread,
+  onTaskText,
+  onStrategyDraft,
+  onAddThread,
+  onAddTask,
+  onSelectTodo,
+  onCloseDetail,
+  onOpenCalendar,
+  onComplete,
+  onArchive,
+  onUpdateTodoMeta,
+  onUpdateTodoPayload
+}: {
+  threads: DecryptedStrategyThread[];
+  selectedThreadId: string;
+  selectedThread?: DecryptedStrategyThread;
+  strategyTodos: DecryptedItem[];
+  strategySignals: DecryptedItem[];
+  taskText: string;
+  strategyDraft: StrategyDraft;
+  selectedTodo?: DecryptedItem;
+  calendarEvents: DecryptedCalendarEvent[];
+  onSelectThread: (id: string) => void;
+  onTaskText: (text: string) => void;
+  onStrategyDraft: (draft: StrategyDraft) => void;
+  onAddThread: () => void;
+  onAddTask: () => void;
+  onSelectTodo: (todo: DecryptedItem) => void;
+  onCloseDetail: () => void;
+  onOpenCalendar: (todo: DecryptedItem) => void;
+  onComplete: (todo: DecryptedItem) => void;
+  onArchive: (todo: DecryptedItem) => void;
+  onUpdateTodoMeta: (itemId: string, patch: Partial<DecryptedItem["meta"]>) => void;
+  onUpdateTodoPayload: (itemId: string, patch: Partial<ItemPayload>) => void;
+}) {
+  const calendarByTodo = new Map(
+    calendarEvents
+      .filter((event) => event.meta.sourceItemId)
+      .map((event) => [event.meta.sourceItemId, event] as const)
+  );
+
+  return (
+    <div className={`strategy-layout ${selectedTodo ? "has-task-detail" : ""}`}>
+      <aside className="thread-list">
+        <div className="new-thread-box">
+          <input
+            value={strategyDraft.title}
+            onChange={(event) => onStrategyDraft({ ...strategyDraft, title: event.target.value })}
+            placeholder="新的战略方向"
+          />
+          <textarea
+            value={strategyDraft.currentHypothesis}
+            onChange={(event) => onStrategyDraft({ ...strategyDraft, currentHypothesis: event.target.value })}
+            placeholder="当前假设（可选）"
+          />
+          <button className="primary-button" onClick={onAddThread}>
+            <Plus size={15} />
+            Add Direction
+          </button>
+        </div>
+        {threads.map((thread) => (
+          <StrategyThreadCard
+            key={thread.meta.id}
+            thread={thread}
+            active={thread.meta.id === selectedThreadId}
+            onClick={() => {
+              onSelectThread(thread.meta.id);
+              onCloseDetail();
+            }}
+          />
+        ))}
+      </aside>
+      <section className="thread-detail">
+        {selectedThread ? (
+          <>
+            <div className="thread-heading">
+              <div>
+                <div className="eyebrow">Strategy Panel</div>
+                <h2>{selectedThread.payload.title}</h2>
+                <p>{selectedThread.payload.currentHypothesis}</p>
+              </div>
+              <StatusPill tone="strategy" label={selectedThread.meta.status} />
+            </div>
+
+            <div className="note-composer">
+              <input
+                value={taskText}
+                onChange={(event) => onTaskText(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") onAddTask();
+                }}
+                placeholder="添加战略子任务，会同步出现在 Todo"
+              />
+              <button className="primary-button" onClick={onAddTask}>
+                <Plus size={16} />
+                Add Subtask
+              </button>
+            </div>
+
+            <SectionCard icon={<LayoutList size={17} />} title="Subtasks in Todo">
+              {strategyTodos.length ? (
+                strategyTodos.map((todo) => (
+                  <article
+                    className={`strategy-note ${selectedTodo?.meta.id === todo.meta.id ? "selected" : ""}`}
+                    key={todo.meta.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => onSelectTodo(todo)}
+                    onKeyDown={(event) => {
+                      if (event.target !== event.currentTarget) return;
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        onSelectTodo(todo);
+                      }
+                    }}
+                  >
+                    <button
+                      className="completion-circle"
+                      aria-label={`Complete ${(todo.payload as ItemPayload).title}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onComplete(todo);
+                      }}
+                    >
+                      <Check size={13} />
+                    </button>
+                    <div>
+                      <StatusPill tone="success" label="Todo" />
+                      <h3>{(todo.payload as ItemPayload).title}</h3>
+                      {todo.meta.dueAt && (
+                        <p className="strategy-note-date">
+                          <CalendarDays size={13} />
+                          {todoDateLabel(todo.meta.dueAt)}
+                        </p>
+                      )}
+                    </div>
+                    <ChevronRight className="strategy-note-arrow" size={16} />
+                  </article>
+                ))
+              ) : (
+                <EmptyState label="这个战略线程还没有子任务" />
+              )}
+            </SectionCard>
+
+            {strategySignals.length > 0 && (
+              <SectionCard icon={<Brain size={17} />} title="Signals">
+                {strategySignals.map((note) => (
+                  <CompactItem key={note.meta.id} item={note} />
+                ))}
+              </SectionCard>
+            )}
+          </>
+        ) : (
+          <EmptyState label="选择一个战略线程" />
+        )}
+      </section>
+      {selectedTodo && (
+        <TodoDetailPanel
+          todo={selectedTodo}
+          threads={threads}
+          calendarEvent={calendarByTodo.get(selectedTodo.meta.id)}
+          onClose={onCloseDetail}
+          onOpenCalendar={onOpenCalendar}
+          onUpdateMeta={onUpdateTodoMeta}
+          onUpdatePayload={onUpdateTodoPayload}
+          onArchive={onArchive}
+        />
+      )}
+    </div>
+  );
+}
+
+function SettingsView({
+  settings,
+  onChange,
+  onConnect,
+  onSync,
+  onDisconnect
+}: {
+  settings: FeishuSettingsState;
+  onChange: (settings: FeishuSettingsState) => void;
+  onConnect: () => void;
+  onSync: () => void;
+  onDisconnect: () => void;
+}) {
+  function patch(patchValue: Partial<FeishuSettingsState>) {
+    onChange({ ...settings, ...patchValue });
+  }
+
+  return (
+    <div className="settings-view">
+      <SectionCard icon={<CalendarDays size={17} />} title="Feishu Calendar">
+        <div className="settings-grid">
+          <SettingsRow label="Status">
+            <SyncStatusBadge settings={settings} />
+          </SettingsRow>
+          <SettingsRow label="App ID">
+            <input value={settings.appId} onChange={(event) => patch({ appId: event.target.value })} />
+          </SettingsRow>
+          <SettingsRow label="App Secret">
+            <input
+              value={settings.appSecret}
+              onChange={(event) => patch({ appSecret: event.target.value })}
+              type="password"
+              autoComplete="off"
+            />
+          </SettingsRow>
+          <SettingsRow label="Redirect URI">
+            <input value={settings.redirectUri} onChange={(event) => patch({ redirectUri: event.target.value })} />
+          </SettingsRow>
+          <SettingsRow label="Default Calendar">
+            <input value={settings.defaultCalendar} onChange={(event) => patch({ defaultCalendar: event.target.value })} />
+          </SettingsRow>
+          <SettingsRow label="Sync Range">
+            <div className="range-row">
+              <input
+                type="number"
+                value={settings.pastDays}
+                onChange={(event) => patch({ pastDays: Number(event.target.value) })}
+              />
+              <span>past</span>
+              <input
+                type="number"
+                value={settings.futureDays}
+                onChange={(event) => patch({ futureDays: Number(event.target.value) })}
+              />
+              <span>future</span>
+            </div>
+          </SettingsRow>
+        </div>
+        <div className="settings-actions">
+          <button className="primary-button" onClick={onConnect}>
+            <Send size={16} />
+            Connect Feishu
+          </button>
+          <button className="secondary-button" onClick={onSync}>
+            <RefreshCw size={16} />
+            Sync Now
+          </button>
+          <button className="ghost-button" onClick={onDisconnect}>
+            <X size={16} />
+            Disconnect
+          </button>
+        </div>
+        {settings.lastError && <p className="settings-error">{settings.lastError}</p>}
+      </SectionCard>
+
+    </div>
+  );
+}
+
+function SectionCard({
+  icon,
+  title,
+  overflow,
+  children
+}: {
+  icon: ReactNode;
+  title: string;
+  overflow?: number;
+  children: ReactNode;
+}) {
+  return (
+    <section className="section-card">
+      <div className="section-card-head">
+        <div>
+          {icon}
+          <span>{title}</span>
+        </div>
+        {overflow ? <span className="more-label">+ {overflow} more</span> : null}
+      </div>
+      <div className="section-card-body">{children}</div>
+    </section>
+  );
+}
+
+function CalendarEventCard({
+  event,
+  selected,
+  onSelect,
+  onDelete
+}: {
+  event: DecryptedCalendarEvent;
+  selected?: boolean;
+  onSelect: () => void;
+  onDelete: (event: DecryptedCalendarEvent) => void;
+}) {
+  const payload = event.payload as CalendarEventPayload;
+  const deleteLabel = event.meta.status === "readonly" || event.meta.canDelete === false ? "Hide locally" : "Delete";
+  return (
+    <article className={`calendar-card ${selected ? "selected" : ""}`} onClick={onSelect}>
+      <span>{eventTimeLabel(event.meta.startsAt)}</span>
+      <div>
+        <h3>{payload.title}</h3>
+        <p>
+          {event.meta.provider}
+          {event.meta.status === "readonly" ? " · Readonly from Feishu" : ` · ${event.meta.status}`}
+        </p>
+      </div>
+      <button
+        className="icon-button calendar-delete-button"
+        aria-label={`${deleteLabel} ${payload.title}`}
+        title={deleteLabel}
+        onClick={(clickEvent) => {
+          clickEvent.stopPropagation();
+          onDelete(event);
+        }}
+      >
+        <Trash2 size={15} />
+      </button>
+    </article>
+  );
+}
+
+function CalendarDayEventListPanel({
+  date,
+  events,
+  onClose,
+  onSelect
+}: {
+  date: string;
+  events: DecryptedCalendarEvent[];
+  onClose: () => void;
+  onSelect: (event: DecryptedCalendarEvent) => void;
+}) {
+  const day = new Date(`${date}T00:00:00`);
+  const dayLabel = day.toLocaleDateString("zh-CN", {
+    month: "long",
+    day: "numeric",
+    weekday: "long"
+  });
+
+  return (
+    <SectionCard icon={<CalendarDays size={17} />} title="Day Events">
+      <div className="day-events-panel">
+        <div className="detail-head">
+          <div className="day-events-heading">
+            <h3>{dayLabel}</h3>
+            <p>{events.length} events</p>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="Close day events">
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="day-events-list">
+          {events.map((event) => {
+            const payload = event.payload as CalendarEventPayload;
+            return (
+              <button className="day-event-row" key={displayCalendarEventKey(event)} onClick={() => onSelect(event)}>
+                <time>{eventTimeLabel(event.meta.startsAt)}</time>
+                <span>{payload.title}</span>
+                {event.meta.status === "readonly" && <small>Readonly</small>}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </SectionCard>
+  );
+}
+
+function CalendarDraftDetailPanel({
+  draft,
+  title,
+  onChange,
+  onClose,
+  onSave
+}: {
+  draft: CalendarDraft;
+  title: string;
+  onChange: (patch: Partial<CalendarDraft> | null) => void;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  return (
+    <SectionCard icon={<Clock3 size={17} />} title={title}>
+      <div className="event-detail-panel">
+        <div className="detail-head">
+          <StatusPill tone="calendar" label="New Feishu event" />
+          <button className="icon-button" onClick={onClose} aria-label="Close new event">
+            <X size={16} />
+          </button>
+        </div>
+        <label className="detail-field">
+          <span>Title</span>
+          <input
+            value={draft.title}
+            onChange={(event) => onChange({ title: event.target.value })}
+            placeholder="日程标题"
+          />
+        </label>
+        <div className="detail-field">
+          <span>Date</span>
+          <div className="date-quick-row">
+            {quickDateOptions().map((option) => (
+              <button
+                className={draft.date === option.value ? "active" : ""}
+                key={option.value}
+                onClick={() => onChange({ date: option.value })}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <div className="detail-date-row">
+            <input
+              type="date"
+              value={draft.date}
+              onChange={(event) => onChange({ date: event.target.value })}
+            />
+            <select value={draft.time} onChange={(event) => onChange({ time: event.target.value })}>
+              {timeSelectOptions().map((time) => (
+                <option key={time} value={time}>
+                  {time}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <label className="detail-field">
+          <span>Description</span>
+          <textarea
+            value={draft.description}
+            onChange={(event) => onChange({ description: event.target.value })}
+            placeholder="会议上下文、准备事项、结论..."
+          />
+        </label>
+        <div className="detail-actions">
+          <button className="primary-button" onClick={onSave}>
+            <Send size={15} />
+            Create in Feishu
+          </button>
+          <button className="ghost-button" onClick={onClose}>
+            <X size={15} />
+            Cancel
+          </button>
+        </div>
+      </div>
+    </SectionCard>
+  );
+}
+
+function CalendarEventDetailPanel({
+  event,
+  onClose,
+  onUpdate,
+  onDelete
+}: {
+  event: DecryptedCalendarEvent;
+  onClose: () => void;
+  onUpdate: (draft: CalendarEventEditDraft) => void;
+  onDelete: (event: DecryptedCalendarEvent) => void;
+}) {
+  const payload = event.payload as CalendarEventPayload;
+  const [draft, setDraft] = useState<CalendarEventEditDraft>(() => ({
+    title: payload.title,
+    date: formatDateInput(new Date(event.meta.startsAt)),
+    time: inputTimeValue(event.meta.startsAt),
+    description: payload.description ?? ""
+  }));
+  const [isEditing, setIsEditing] = useState(false);
+  const readonly = event.meta.status === "readonly" || event.meta.canEdit === false;
+  const deleteLabel = event.meta.status === "readonly" || event.meta.canDelete === false ? "Hide locally" : "Delete";
+
+  useEffect(() => {
+    setDraft({
+      title: payload.title,
+      date: formatDateInput(new Date(event.meta.startsAt)),
+      time: inputTimeValue(event.meta.startsAt),
+      description: payload.description ?? ""
+    });
+    setIsEditing(false);
+  }, [event.meta.id, event.meta.startsAt, payload.title, payload.description]);
+
+  return (
+    <SectionCard icon={<Clock3 size={17} />} title="Event Detail">
+      <div className="event-detail-panel">
+        <div className="detail-head">
+          <StatusPill tone={readonly ? "muted" : "calendar"} label={readonly ? "Readonly from Feishu" : event.meta.status} />
+          <div className="detail-head-actions">
+            {!readonly && !isEditing && (
+              <button className="secondary-button" onClick={() => setIsEditing(true)}>
+                Edit
+              </button>
+            )}
+            <button className="icon-button" onClick={onClose} aria-label="Close event detail">
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+
+        {!isEditing ? (
+          <div className="event-readonly-summary">
+            <h3>{payload.title}</h3>
+            <div className="event-readonly-meta">
+              <CalendarDays size={15} />
+              <span>{todoDateLabel(event.meta.startsAt)}</span>
+            </div>
+            <div className="event-comment-block">
+              <span>Comment</span>
+              {payload.description ? <p>{payload.description}</p> : <p className="muted-comment">No comment</p>}
+            </div>
+          </div>
+        ) : (
+          <>
+            <label className="detail-field">
+              <span>Title</span>
+              <input
+                value={draft.title}
+                onChange={(changeEvent) => setDraft({ ...draft, title: changeEvent.target.value })}
+              />
+            </label>
+            <div className="detail-field">
+              <span>Date</span>
+              <div className="date-quick-row">
+                {quickDateOptions().map((option) => (
+                  <button
+                    className={draft.date === option.value ? "active" : ""}
+                    key={option.value}
+                    onClick={() => setDraft({ ...draft, date: option.value })}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <div className="detail-date-row">
+                <input
+                  type="date"
+                  value={draft.date}
+                  onChange={(changeEvent) => setDraft({ ...draft, date: changeEvent.target.value })}
+                />
+                <select
+                  value={draft.time}
+                  onChange={(changeEvent) => setDraft({ ...draft, time: changeEvent.target.value })}
+                >
+                  {timeSelectOptions().map((time) => (
+                    <option key={time} value={time}>
+                      {time}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <label className="detail-field">
+              <span>Description</span>
+              <textarea
+                value={draft.description}
+                onChange={(changeEvent) => setDraft({ ...draft, description: changeEvent.target.value })}
+                placeholder="会议上下文、准备事项、结论..."
+              />
+            </label>
+          </>
+        )}
+
+        <div className="detail-actions">
+          {isEditing ? (
+            <>
+              <button
+                className="primary-button"
+                onClick={() => {
+                  onUpdate(draft);
+                  setIsEditing(false);
+                }}
+              >
+                <Send size={15} />
+                Save to Feishu
+              </button>
+              <button className="ghost-button" onClick={() => setIsEditing(false)}>
+                <X size={15} />
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button className="ghost-button" onClick={() => onDelete(event)}>
+              <Trash2 size={15} />
+              {deleteLabel}
+            </button>
+          )}
+        </div>
+      </div>
+    </SectionCard>
+  );
+}
+
+function SegmentedControl({
+  value,
+  options,
+  onChange
+}: {
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="segmented-control">
+      {options.map((option) => (
+        <button
+          className={value === option.value ? "active" : ""}
+          key={option.value}
+          onClick={() => onChange(option.value)}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function YearCalendar({
+  year,
+  eventsByDate,
+  onSelectMonth
+}: {
+  year: number;
+  eventsByDate: Map<string, DecryptedCalendarEvent[]>;
+  onSelectMonth: (month: number) => void;
+}) {
+  return (
+    <div className="year-grid">
+      {Array.from({ length: 12 }, (_, month) => {
+        const monthEvents = Array.from(eventsByDate.entries())
+          .filter(([key]) => {
+            const date = new Date(`${key}T00:00:00`);
+            return date.getFullYear() === year && date.getMonth() === month;
+          })
+          .flatMap(([, value]) => value);
+        return (
+          <button className="year-month-card" key={month} onClick={() => onSelectMonth(month)}>
+            <strong>{new Date(year, month, 1).toLocaleDateString("zh-CN", { month: "long" })}</strong>
+            <span>{monthEvents.length} events</span>
+            {monthEvents.slice(0, 3).map((event) => (
+              <small key={displayCalendarEventKey(event)}>{(event.payload as CalendarEventPayload).title}</small>
+            ))}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function CompactItem({ item }: { item: DecryptedItem }) {
+  const payload = item.payload as ItemPayload | StrategyNotePayload;
+  return (
+    <article className="compact-item">
+      <span />
+      <p>{payload.title}</p>
+      <small>{item.meta.status}</small>
+    </article>
+  );
+}
+
+function StrategyThreadCard({
+  thread,
+  active,
+  onClick
+}: {
+  thread: DecryptedStrategyThread;
+  active: boolean;
+  onClick: () => void;
+}) {
+	  return (
+	    <button className={`thread-card ${active ? "active" : ""}`} onClick={onClick}>
+	      <span>{thread.payload.title}</span>
+	    </button>
+	  );
+}
+
+function RouteButton({
+  icon,
+  label,
+  danger,
+  onClick
+}: {
+  icon: ReactNode;
+  label: string;
+  danger?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button className={`route-button ${danger ? "danger" : ""}`} onClick={onClick}>
+      {icon}
+      <span>{label}</span>
+    </button>
+  );
+}
+
+function StatusPill({ label, tone = "muted" }: { label: string; tone?: "success" | "warning" | "calendar" | "strategy" | "muted" }) {
+  return <span className={`status-pill ${tone}`}>{label}</span>;
+}
+
+function SyncStatusBadge({ settings }: { settings: FeishuSettingsState }) {
+  const label =
+    settings.status === "connected"
+      ? settings.lastSyncedAt
+        ? `Synced ${relativeAgeLabel(settings.lastSyncedAt)}`
+        : "Connected"
+      : settings.status.replace("_", " ");
+  const tone = settings.status === "connected" ? "success" : settings.status === "not_connected" ? "muted" : "warning";
+  return <StatusPill tone={tone} label={`Feishu ${label}`} />;
+}
+
+function EmptyState({ label }: { label: string }) {
+  return <div className="empty-state">{label}</div>;
+}
+
+function SettingsRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="settings-row">
+      <span>{label}</span>
+      <div>{children}</div>
+    </label>
+  );
+}
+
+function SidebarNav({
+  active,
+  todoCount,
+  calendarCount,
+  strategyCount,
+  onChange
+}: {
+  active: Tab;
+  todoCount: number;
+  calendarCount: number;
+  strategyCount: number;
+  onChange: (tab: Tab) => void;
+}) {
+  const tabs: Array<{ id: Tab; label: string; icon: ReactNode; count?: number }> = [
+    { id: "todo", label: "Todo", icon: <LayoutList size={18} />, count: todoCount },
+    { id: "calendar", label: "Calendar", icon: <CalendarDays size={18} />, count: calendarCount },
+    { id: "strategy", label: "Strategy", icon: <Brain size={18} />, count: strategyCount },
+    { id: "settings", label: "Settings", icon: <Settings size={18} /> }
+  ];
+
+  return (
+    <nav className="sidebar-nav">
+      {tabs.map((tabItem) => (
+        <button
+          className={active === tabItem.id ? "active" : ""}
+          key={tabItem.id}
+          onClick={() => onChange(tabItem.id)}
+        >
+          {tabItem.icon}
+          <span>{tabItem.label}</span>
+          {tabItem.count != null && <small>{tabItem.count}</small>}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+function Toast({ message }: { message: string }) {
+  return <div className="toast">{message}</div>;
+}

@@ -1,0 +1,18 @@
+{
+  "name": "@resolve/sync",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@resolve/core": "0.1.0",
+    "@resolve/crypto": "0.1.0",
+    "firebase": "^11.10.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}

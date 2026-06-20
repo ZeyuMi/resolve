@@ -1,0 +1,26 @@
+{
+  "name": "resolve",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Private cross-device command system with encrypted sync and Feishu Calendar integration.",
+  "type": "module",
+  "workspaces": [
+    "apps/mac",
+    "packages/core",
+    "packages/crypto",
+    "packages/sync",
+    "packages/feishu",
+    "packages/ui"
+  ],
+  "scripts": {
+    "dev:mac": "npm --workspace @resolve/mac run dev",
+    "dev:mac-app": "npm --workspace @resolve/mac run tauri:dev",
+    "build:mac": "npm --workspace @resolve/mac run build",
+    "build:mac-app": "npm --workspace @resolve/mac run tauri:build",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
