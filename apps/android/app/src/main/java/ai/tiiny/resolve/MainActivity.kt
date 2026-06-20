@@ -7,7 +7,6 @@ import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -40,7 +39,6 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.EditCalendar
 import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Psychology
@@ -57,7 +55,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -139,7 +136,6 @@ private fun ResolveAndroidApp(initialCapture: String) {
     var selectedDate by remember { mutableStateOf(LocalDate.now()) }
     var showCompleted by remember { mutableStateOf(false) }
     var showArchived by remember { mutableStateOf(false) }
-    var showAdvancedSettings by remember { mutableStateOf(state.feishuSettings.appId.isBlank()) }
     var isSyncing by remember { mutableStateOf(false) }
     var isConnecting by remember { mutableStateOf(false) }
     var hasBackendSession by remember { mutableStateOf(secureVault.loadBackendSession() != null) }
@@ -230,7 +226,7 @@ private fun ResolveAndroidApp(initialCapture: String) {
             try {
                 if (hasBackendSession && state.backendSettings.supabaseUrl.isNotBlank() && state.backendSettings.feishuConnected) {
                     syncBackendCalendar()
-                    toast = "Backend calendar synced"
+                    toast = "Calendar synced"
                 } else {
                     val client = connectedClient()
                     val remoteEvents = withContext(Dispatchers.IO) { client.listEvents(state.feishuSettings) }
@@ -293,7 +289,7 @@ private fun ResolveAndroidApp(initialCapture: String) {
                     toast = "Created in Feishu"
                 } catch (error: Throwable) {
                     patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
-                    toast = "Saved locally; backend create failed"
+                    toast = "Saved locally; sync failed"
                 }
             }
             return
@@ -326,8 +322,7 @@ private fun ResolveAndroidApp(initialCapture: String) {
         val settings = state.feishuSettings
         val secret = secureVault.loadFeishuSecret().orEmpty()
         if (settings.appId.isBlank() || secret.isBlank()) {
-            showAdvancedSettings = true
-            toast = "Add App ID and Secret once"
+            toast = "Sign in first"
             return
         }
         isConnecting = true
@@ -379,11 +374,11 @@ private fun ResolveAndroidApp(initialCapture: String) {
                         )
                     )
                 )
-                toast = "Backend signed in"
+                toast = "Signed in"
                 if (connectorStatus?.connected == true) syncFeishu()
             } catch (error: Throwable) {
                 patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
-                toast = "Backend sign in failed"
+                toast = "Sign in failed"
             } finally {
                 isConnecting = false
             }
@@ -391,21 +386,18 @@ private fun ResolveAndroidApp(initialCapture: String) {
     }
 
     fun connectBackendFeishu() {
-        val settings = state.feishuSettings
-        val secret = secureVault.loadFeishuSecret().orEmpty()
-        if (settings.appId.isBlank() || secret.isBlank()) {
-            showAdvancedSettings = true
-            toast = "Add Feishu App ID and Secret once"
+        if (!hasBackendSession) {
+            toast = "Sign in first"
             return
         }
         isConnecting = true
         scope.launch {
             try {
                 val client = connectedBackendClient()
-                val oauth = withContext(Dispatchers.IO) { client.configureFeishu(settings.appId, secret) }
+                val oauth = withContext(Dispatchers.IO) { client.startFeishuOAuth() }
                 context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(oauth.authorizeUrl)))
                 patchBackend(state.backendSettings.copy(status = BackendStatus.Connected, feishuConnected = false, lastError = null))
-                patchFeishu(settings.copy(status = FeishuStatus.NotConnected, lastError = null))
+                patchFeishu(state.feishuSettings.copy(status = FeishuStatus.NotConnected, lastError = null))
                 toast = "Authorize Feishu, then return to Resolve"
 
                 repeat(24) {
@@ -430,7 +422,7 @@ private fun ResolveAndroidApp(initialCapture: String) {
                 toast = "Feishu auth pending; tap Sync after approving"
             } catch (error: Throwable) {
                 patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
-                toast = "Backend Feishu connection failed"
+                toast = "Feishu connection failed"
             } finally {
                 isConnecting = false
             }
@@ -441,7 +433,7 @@ private fun ResolveAndroidApp(initialCapture: String) {
         secureVault.clearBackendSession()
         hasBackendSession = false
         patchBackend(state.backendSettings.copy(status = BackendStatus.SignedOut, feishuConnected = false, lastError = null))
-        toast = "Backend signed out"
+        toast = "Signed out"
     }
 
     LaunchedEffect(Unit) {
@@ -534,22 +526,12 @@ private fun ResolveAndroidApp(initialCapture: String) {
 
                         Tab.Settings -> SettingsScreen(
                             state = state,
-                            secureVault = secureVault,
-                            showAdvanced = showAdvancedSettings,
                             isConnecting = isConnecting,
                             isSyncing = isSyncing,
-                            onShowAdvanced = { showAdvancedSettings = !showAdvancedSettings },
-                            onSettings = { patchFeishu(it) },
                             onBackendSettings = { patchBackend(it) },
                             onBackendSignIn = { signInBackend(it) },
                             onBackendDisconnect = { disconnectBackend() },
-                            onBackendFeishuConnect = {
-                                if (hasBackendSession && state.backendSettings.supabaseUrl.isNotBlank()) {
-                                    connectBackendFeishu()
-                                } else {
-                                    connectFeishu()
-                                }
-                            },
+                            onBackendFeishuConnect = { connectBackendFeishu() },
                             onSync = { syncFeishu() },
                             onDisconnect = {
                                 secureVault.clearFeishu()
@@ -914,12 +896,8 @@ private fun StrategyScreen(
 @Composable
 private fun SettingsScreen(
     state: ResolveState,
-    secureVault: SecureVault,
-    showAdvanced: Boolean,
     isConnecting: Boolean,
     isSyncing: Boolean,
-    onShowAdvanced: () -> Unit,
-    onSettings: (FeishuSettings) -> Unit,
     onBackendSettings: (BackendSettings) -> Unit,
     onBackendSignIn: (String) -> Unit,
     onBackendDisconnect: () -> Unit,
@@ -927,10 +905,6 @@ private fun SettingsScreen(
     onSync: () -> Unit,
     onDisconnect: () -> Unit
 ) {
-    var appId by remember(state.feishuSettings.appId) { mutableStateOf(state.feishuSettings.appId) }
-    var appSecret by remember { mutableStateOf(secureVault.loadFeishuSecret().orEmpty()) }
-    var supabaseUrl by remember(state.backendSettings.supabaseUrl) { mutableStateOf(state.backendSettings.supabaseUrl) }
-    var anonKey by remember(state.backendSettings.anonKey) { mutableStateOf(state.backendSettings.anonKey) }
     var email by remember(state.backendSettings.email) { mutableStateOf(state.backendSettings.email) }
     var password by remember { mutableStateOf("") }
     val backendReady = state.backendSettings.status == BackendStatus.Connected || state.backendSettings.feishuConnected
@@ -942,34 +916,10 @@ private fun SettingsScreen(
                         Icon(Icons.Filled.TaskAlt, contentDescription = null, tint = ResolveColors.Accent)
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
-                            Text("Resolve Backend", color = ResolveColors.Text, fontSize = 21.sp, fontWeight = FontWeight.SemiBold)
+                            Text("Account", color = ResolveColors.Text, fontSize = 21.sp, fontWeight = FontWeight.SemiBold)
                             Text(backendStatusLabel(state.backendSettings), color = ResolveColors.Secondary)
                         }
                     }
-                    Text(
-                        "手机和 Mac 共享同一个后端。Todo/Strategy 后续仍可做端到端加密；飞书日历由后端连接。",
-                        color = ResolveColors.Secondary
-                    )
-                    OutlinedTextField(
-                        value = supabaseUrl,
-                        onValueChange = {
-                            supabaseUrl = it.trim()
-                            onBackendSettings(state.backendSettings.copy(supabaseUrl = supabaseUrl))
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        placeholder = { Text("Supabase URL") },
-                        colors = inputColors()
-                    )
-                    OutlinedTextField(
-                        value = anonKey,
-                        onValueChange = {
-                            anonKey = it.trim()
-                            onBackendSettings(state.backendSettings.copy(anonKey = anonKey))
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        placeholder = { Text("Supabase anon key") },
-                        colors = inputColors()
-                    )
                     OutlinedTextField(
                         value = email,
                         onValueChange = {
@@ -994,7 +944,7 @@ private fun SettingsScreen(
                                 onBackendSignIn(password)
                                 password = ""
                             },
-                            enabled = !isConnecting && supabaseUrl.isNotBlank() && anonKey.isNotBlank() && email.isNotBlank() && password.isNotBlank(),
+                            enabled = !isConnecting && email.isNotBlank() && password.isNotBlank(),
                             colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.Accent)
                         ) {
                             Icon(Icons.Filled.Key, contentDescription = null, Modifier.size(17.dp))
@@ -1004,7 +954,7 @@ private fun SettingsScreen(
                         Button(onClick = onSync, enabled = state.backendSettings.feishuConnected && !isSyncing) {
                             Icon(Icons.Filled.Refresh, contentDescription = null, Modifier.size(17.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text(if (isSyncing) "Syncing" else "Sync backend")
+                            Text(if (isSyncing) "Syncing" else "Sync")
                         }
                         TextButton(onClick = onBackendDisconnect, enabled = backendReady) {
                             Text("Sign out")
@@ -1025,17 +975,11 @@ private fun SettingsScreen(
                             Text(feishuStatusLabel(state.feishuSettings), color = ResolveColors.Secondary)
                         }
                     }
-                    Text(
-                        if (backendReady) "Backend will hold the Feishu token and keep calendar sync available to Mac and Android."
-                        else if (state.feishuSettings.status == FeishuStatus.Connected) "Calendar changes sync in the background and on manual refresh."
-                        else "Add your custom app credentials once, then connect with Feishu.",
-                        color = ResolveColors.Secondary
-                    )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
                         Button(onClick = onBackendFeishuConnect, enabled = !isConnecting, colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.Accent)) {
                             Icon(Icons.Filled.OpenInBrowser, contentDescription = null, Modifier.size(17.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text(if (isConnecting) "Waiting" else if (backendReady) "Connect via Backend" else "Connect")
+                            Text(if (isConnecting) "Waiting" else if (backendReady) "Reconnect" else "Connect")
                         }
                         Button(
                             onClick = onSync,
@@ -1050,54 +994,6 @@ private fun SettingsScreen(
                             Icon(Icons.Filled.Close, contentDescription = null, Modifier.size(17.dp))
                             Spacer(Modifier.width(6.dp))
                             Text("Disconnect")
-                        }
-                    }
-                    HorizontalDivider(color = ResolveColors.Line)
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable(onClick = onShowAdvanced)
-                            .padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(if (showAdvanced) Icons.Filled.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = ResolveColors.Muted)
-                        Text("Custom App Configuration", color = ResolveColors.Text, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                        Text(if (appId.isNotBlank() && appSecret.isNotBlank()) "Configured" else "Required", color = ResolveColors.Muted, fontSize = 12.sp)
-                    }
-                    AnimatedVisibility(showAdvanced) {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            OutlinedTextField(
-                                value = appId,
-                                onValueChange = {
-                                    appId = it.trim()
-                                    onSettings(state.feishuSettings.copy(appId = appId))
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                                leadingIcon = { Icon(Icons.Filled.Key, contentDescription = null) },
-                                placeholder = { Text("Feishu App ID") },
-                                colors = inputColors()
-                            )
-                            OutlinedTextField(
-                                value = appSecret,
-                                onValueChange = {
-                                    appSecret = it.trim()
-                                    secureVault.saveFeishuSecret(appSecret)
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                                leadingIcon = { Icon(Icons.Filled.Key, contentDescription = null) },
-                                placeholder = { Text("Feishu App Secret") },
-                                colors = inputColors()
-                            )
-                            MetaPill(AndroidFeishuRedirectUri)
-                            BackendClient.defaultFeishuRedirectUri(state.backendSettings)?.let {
-                                MetaPill(it)
-                            }
-                            Text(
-                                if (backendReady) "Use the Supabase callback URI in Feishu console. The 127 callback is only for local fallback."
-                                else "This callback is for local fallback. Backend mode uses the Supabase callback URI above after you add Supabase URL.",
-                                color = ResolveColors.Muted,
-                                fontSize = 12.sp
-                            )
                         }
                     }
                     state.feishuSettings.lastError?.let { Text(it, color = ResolveColors.Danger, fontSize = 12.sp) }
@@ -1271,10 +1167,10 @@ private fun feishuStatusLabel(settings: FeishuSettings): String = when (settings
 }
 
 private fun backendStatusLabel(settings: BackendSettings): String = when (settings.status) {
-    BackendStatus.Connected -> settings.lastSyncedAt?.let { "Backend ${relativeTime(it)}" } ?: "Backend connected"
-    BackendStatus.Error -> "Backend needs attention"
-    BackendStatus.SignedOut -> "Backend signed out"
-    BackendStatus.NotConfigured -> "Backend not configured"
+    BackendStatus.Connected -> settings.lastSyncedAt?.let { "Synced ${relativeTime(it)}" } ?: "Signed in"
+    BackendStatus.Error -> "Needs attention"
+    BackendStatus.SignedOut -> "Signed out"
+    BackendStatus.NotConfigured -> "Not signed in"
 }
 
 private fun calendarStatusLabel(feishu: FeishuSettings, backend: BackendSettings): String =

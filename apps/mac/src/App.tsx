@@ -59,6 +59,19 @@ import {
   type FeishuSettingsState
 } from "./data/feishuLocalStore";
 import {
+  clearBackendSession,
+  loadBackendSession,
+  loadBackendSettings,
+  resolveSupabasePublishableKey,
+  resolveSupabaseUrl,
+  ResolveBackendClient,
+  saveBackendSession,
+  saveBackendSettings,
+  shouldRefreshBackendSession,
+  type BackendSettingsState,
+  type BackendSession
+} from "./data/resolveBackend";
+import {
   activeTodoStatuses,
   createCalendarEvent,
   createStrategyThread,
@@ -296,6 +309,13 @@ function mergeFeishuEvents(
     });
   }).filter((event): event is DecryptedCalendarEvent => Boolean(event));
   return dedupeSyncedCalendarDuplicates(dedupeCalendarEvents([...Array.from(remoteByKey.values()), ...merged]));
+}
+
+function mergeBackendCalendarEvents(current: DecryptedCalendarEvent[], remoteEvents: DecryptedCalendarEvent[]) {
+  return dedupeCalendarEvents([
+    ...remoteEvents,
+    ...current.filter((event) => event.meta.provider !== "feishu")
+  ]).sort((a, b) => a.meta.startsAt.localeCompare(b.meta.startsAt));
 }
 
 function remoteToFeishuEvent(event: DecryptedCalendarEvent): FeishuEvent {
@@ -597,6 +617,7 @@ export function App() {
   const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [feishuSettings, setFeishuSettings] = useState(loadFeishuSettings);
+  const [backendSettings, setBackendSettings] = useState(loadBackendSettings);
   const [feishuConnecting, setFeishuConnecting] = useState(false);
   const [selectedThreadId, setSelectedThreadId] = useState(() => state.strategyThreads[0]?.meta.id ?? "");
   const [strategyTaskText, setStrategyTaskText] = useState("");
@@ -612,6 +633,7 @@ export function App() {
   const [showArchived, setShowArchived] = useState(false);
   const stateRef = useRef(state);
   const feishuSettingsRef = useRef(feishuSettings);
+  const backendSettingsRef = useRef(backendSettings);
   const syncInFlightRef = useRef(false);
   const syncQueuedRef = useRef(false);
 
@@ -669,6 +691,10 @@ export function App() {
   useEffect(() => {
     feishuSettingsRef.current = feishuSettings;
   }, [feishuSettings]);
+
+  useEffect(() => {
+    backendSettingsRef.current = backendSettings;
+  }, [backendSettings]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -770,6 +796,24 @@ export function App() {
   }, [tab, feishuSettings.status, feishuSettings.appId, feishuSettings.appSecret]);
 
   useEffect(() => {
+    if (!backendSettings.feishuConnected || !loadBackendSession()) return;
+    const syncQuietly = () => void syncBackendCalendar({ silent: true });
+    syncQuietly();
+    const interval = window.setInterval(syncQuietly, feishuSyncIntervalMs);
+    const onFocus = () => syncQuietly();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") syncQuietly();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [backendSettings.feishuConnected, backendSettings.status]);
+
+  useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const code = params.get("code");
     if (!code) return;
@@ -796,11 +840,11 @@ export function App() {
         const next = {
           ...feishuSettings,
           status: "permission_error" as const,
-          lastError: "Fill App ID and App Secret before finishing OAuth."
+          lastError: "Connect Feishu again from Settings."
         };
         setFeishuSettings(next);
         saveFeishuSettings(next);
-        showToast("Fill Feishu App ID and Secret first");
+        showToast("Connect Feishu again");
         return;
       }
 
@@ -980,6 +1024,55 @@ export function App() {
     setSelectedCalendarEventKey(null);
     setCalendarDraft(null);
     showToast("Added locally; syncing Feishu");
+
+    if (backendSettingsRef.current.feishuConnected && loadBackendSession()) {
+      try {
+        const client = await connectedBackendClient();
+        const remote = await client.createEvent({
+          title: draft.title.trim(),
+          startsAt,
+          endsAt,
+          description: draft.description.trim() || undefined
+        });
+        const syncedEvent = {
+          ...remote,
+          meta: {
+            ...remote.meta,
+            sourceItemId: draft.todoId,
+            strategyThreadId: sourceTodo?.meta.strategyThreadId
+          }
+        };
+        const latestState = stateRef.current;
+        persist({
+          ...latestState,
+          calendarEvents: dedupeSyncedCalendarDuplicates(
+            dedupeCalendarEvents(replaceCalendarEvent(latestState.calendarEvents, syncedEvent))
+          )
+        });
+        showToast("Created in Feishu");
+        void syncBackendCalendar({ silent: true });
+      } catch (error) {
+        const latestState = stateRef.current;
+        persist({
+          ...latestState,
+          calendarEvents: replaceCalendarEvent(latestState.calendarEvents, {
+            ...optimisticEvent,
+            meta: {
+              ...optimisticEvent.meta,
+              status: "error",
+              updatedAt: nowIso()
+            }
+          })
+        });
+        handleSaveBackend({
+          ...backendSettingsRef.current,
+          status: "error",
+          lastError: feishuErrorMessage(error)
+        });
+        showToast("Feishu create failed; saved locally");
+      }
+      return;
+    }
 
     const tokenSet = loadFeishuToken();
     const settings = feishuSettingsRef.current;
@@ -1254,65 +1347,160 @@ export function App() {
     });
   }
 
-  async function handleConnectFeishu() {
-    const settings = {
-      ...feishuSettingsRef.current,
-      redirectUri: feishuSettingsRef.current.redirectUri || localFeishuRedirectUri()
+  function handleSaveBackend(next: BackendSettingsState) {
+    const normalized = {
+      ...next,
+      supabaseUrl: next.supabaseUrl || resolveSupabaseUrl,
+      publishableKey: next.publishableKey || resolveSupabasePublishableKey
     };
+    backendSettingsRef.current = normalized;
+    setBackendSettings(normalized);
+    saveBackendSettings(normalized);
+  }
 
-    if (!settings.appId || !settings.appSecret) {
-      const next = {
+  async function connectedBackendClient() {
+    const settings = backendSettingsRef.current;
+    let session = loadBackendSession();
+    if (!session) throw new Error("Sign in first.");
+    let client = new ResolveBackendClient(settings, session);
+    if (shouldRefreshBackendSession(session)) {
+      session = await client.refreshSession();
+      saveBackendSession(session);
+      client = new ResolveBackendClient(settings, session);
+    }
+    return client;
+  }
+
+  async function handleBackendSignIn(password: string) {
+    setFeishuConnecting(true);
+    try {
+      const settings = backendSettingsRef.current;
+      const client = new ResolveBackendClient(settings);
+      const session = await client.signInWithPassword(password);
+      saveBackendSession(session);
+      const authedClient = new ResolveBackendClient(settings, session);
+      const status = await authedClient.status().catch(() => undefined);
+      handleSaveBackend({
         ...settings,
-        status: "permission_error" as const,
-        lastError: "Add your Feishu custom app credentials once, then click Connect."
-      };
-      handleSaveFeishu(next);
-      showToast("Add Feishu App ID and Secret once");
+        status: "connected",
+        feishuConnected: status?.connected ?? settings.feishuConnected,
+        lastSyncedAt: status?.lastServerSyncAt ?? settings.lastSyncedAt,
+        lastError: undefined
+      });
+      showToast("Signed in");
+      if (status?.connected) {
+        await syncBackendCalendar({ silent: true });
+      }
+    } catch (error) {
+      handleSaveBackend({
+        ...backendSettingsRef.current,
+        status: "error",
+        lastError: feishuErrorMessage(error)
+      });
+      showToast("Sign in failed");
+    } finally {
+      setFeishuConnecting(false);
+    }
+  }
+
+  async function syncBackendCalendar(options: { silent?: boolean } = {}) {
+    if (syncInFlightRef.current) {
+      syncQueuedRef.current = true;
       return;
     }
-
-    setFeishuConnecting(true);
-
+    syncInFlightRef.current = true;
     try {
-      if (isTauriRuntime()) {
-        showToast("Opening Feishu");
-        const oauth = await runNativeFeishuOAuth(settings.appId, feishuOAuthScopes);
-        const nextSettings = {
-          ...settings,
-          redirectUri: oauth.redirect_uri,
-          lastError: undefined
-        };
-        handleSaveFeishu(nextSettings);
-        const tokenSet = await FeishuOpenApiClient.exchangeCode(feishuConfig(nextSettings), oauth.code);
-        saveFeishuToken(tokenSet);
-        const connected = {
-          ...nextSettings,
-          status: "connected" as const,
-          lastError: undefined
-        };
-        setFeishuSettings(connected);
-        saveFeishuSettings(connected);
-        setTab("calendar");
-        await syncFeishuCalendar(connected, tokenSet);
-        return;
-      }
-
-      const stateToken = makeId("oauth");
-      sessionStorage.setItem("feishu-oauth-state", stateToken);
-      const url = FeishuOpenApiClient.buildAuthorizeUrl(settings, stateToken, feishuOAuthScopes);
-      window.location.assign(url);
-    } catch (error) {
-      const next = {
+      const client = await connectedBackendClient();
+      const syncResult = await client.syncNow();
+      const settings = feishuSettingsRef.current;
+      const now = new Date();
+      const startsAt = addDaysToIso(now, -settings.pastDays);
+      const endsAt = addDaysToIso(now, settings.futureDays);
+      const remoteEvents = await client.listEvents(startsAt, endsAt);
+      const timestamp = syncResult.syncedAt ?? nowIso();
+      const currentState = stateRef.current;
+      persist({
+        ...currentState,
+        calendarEvents: mergeBackendCalendarEvents(currentState.calendarEvents, remoteEvents)
+      });
+      handleSaveBackend({
+        ...backendSettingsRef.current,
+        status: "connected",
+        feishuConnected: true,
+        lastSyncedAt: timestamp,
+        lastError: undefined
+      });
+      const nextFeishuSettings = {
         ...settings,
-        status: "permission_error" as const,
-        lastError: feishuErrorMessage(error)
+        status: "connected" as const,
+        lastSyncedAt: timestamp,
+        lastError: undefined
       };
-      setFeishuSettings(next);
-      saveFeishuSettings(next);
+      setFeishuSettings(nextFeishuSettings);
+      saveFeishuSettings(nextFeishuSettings);
+      if (!options.silent) showToast(`Synced ${remoteEvents.length} events`);
+    } catch (error) {
+      handleSaveBackend({
+        ...backendSettingsRef.current,
+        status: "error",
+        lastError: feishuErrorMessage(error)
+      });
+      if (!options.silent) showToast("Sync failed");
+    } finally {
+      syncInFlightRef.current = false;
+      if (syncQueuedRef.current) {
+        syncQueuedRef.current = false;
+        window.setTimeout(() => {
+          void syncBackendCalendar({ silent: true });
+        }, 250);
+      }
+    }
+  }
+
+  async function handleBackendFeishuConnect() {
+    setFeishuConnecting(true);
+    try {
+      const client = await connectedBackendClient();
+      const oauth = await client.startFeishuOAuth();
+      if (!oauth.authorizeUrl) throw new Error("Feishu authorization failed to start.");
+      window.open(oauth.authorizeUrl, "_blank", "noopener,noreferrer");
+      showToast("Authorize Feishu");
+
+      for (let index = 0; index < 24; index += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 5000));
+        const status = await client.status().catch(() => undefined);
+        if (status?.connected) {
+          handleSaveBackend({
+            ...backendSettingsRef.current,
+            status: "connected",
+            feishuConnected: true,
+            lastSyncedAt: status.lastServerSyncAt,
+            lastError: undefined
+          });
+          await syncBackendCalendar({ silent: true });
+          showToast("Feishu connected");
+          return;
+        }
+      }
+      showToast("Return after Feishu authorization");
+    } catch (error) {
+      handleSaveBackend({
+        ...backendSettingsRef.current,
+        status: "error",
+        lastError: feishuErrorMessage(error)
+      });
       showToast("Feishu connection failed");
     } finally {
       setFeishuConnecting(false);
     }
+  }
+
+  async function handleConnectFeishu() {
+    if (loadBackendSession()) {
+      await handleBackendFeishuConnect();
+      return;
+    }
+    showToast("Sign in first");
   }
 
   async function resolveFeishuClient(settings: FeishuSettingsState, tokenSet: TokenSet) {
@@ -1331,12 +1519,16 @@ export function App() {
     tokenSet = loadFeishuToken(),
     options: { silent?: boolean } = {}
   ) {
+    if (backendSettingsRef.current.feishuConnected && loadBackendSession()) {
+      await syncBackendCalendar(options);
+      return;
+    }
     if (syncInFlightRef.current) {
       syncQueuedRef.current = true;
       return;
     }
     if (!settings.appId || !settings.appSecret) {
-      if (!options.silent) showToast("Fill Feishu App ID and Secret first");
+      if (!options.silent) showToast("Sign in first");
       return;
     }
     if (!tokenSet) {
@@ -1565,8 +1757,20 @@ export function App() {
           {tab === "settings" && (
             <SettingsView
               settings={feishuSettings}
+              backendSettings={backendSettings}
               connecting={feishuConnecting}
-              onChange={handleSaveFeishu}
+              onBackendChange={handleSaveBackend}
+              onBackendSignIn={handleBackendSignIn}
+              onBackendSignOut={() => {
+                clearBackendSession();
+                handleSaveBackend({
+                  ...backendSettingsRef.current,
+                  status: "signed_out",
+                  feishuConnected: false,
+                  lastError: undefined
+                });
+                showToast("Signed out");
+              }}
               onConnect={handleConnectFeishu}
               onSync={() => void syncFeishuCalendar()}
               onDisconnect={handleDisconnectFeishu}
@@ -2654,85 +2858,105 @@ function StrategyView({
 
 function SettingsView({
   settings,
+  backendSettings,
   connecting,
-  onChange,
+  onBackendChange,
+  onBackendSignIn,
+  onBackendSignOut,
   onConnect,
   onSync,
   onDisconnect
 }: {
   settings: FeishuSettingsState;
+  backendSettings: BackendSettingsState;
   connecting: boolean;
-  onChange: (settings: FeishuSettingsState) => void;
+  onBackendChange: (settings: BackendSettingsState) => void;
+  onBackendSignIn: (password: string) => void | Promise<void>;
+  onBackendSignOut: () => void;
   onConnect: () => void | Promise<void>;
   onSync: () => void;
   onDisconnect: () => void;
 }) {
-  const [advancedOpen, setAdvancedOpen] = useState(() => !settings.appId || !settings.appSecret);
-  const [callbackCopied, setCallbackCopied] = useState(false);
-  const configured = Boolean(settings.appId && settings.appSecret);
-  const connected = settings.status === "connected";
-  const callbackUri = settings.redirectUri || localFeishuRedirectUri();
-  const storageLabel = isTauriRuntime() ? "macOS Keychain" : "local browser storage";
+  const [password, setPassword] = useState("");
+  const connected = settings.status === "connected" || backendSettings.feishuConnected;
+  const signedIn = backendSettings.status === "connected" || backendSettings.feishuConnected;
   const lastSyncLabel = settings.lastSyncedAt ? `Last synced ${relativeAgeLabel(settings.lastSyncedAt)}` : "Not synced yet";
-
-  function patch(patchValue: Partial<FeishuSettingsState>) {
-    onChange({ ...settings, ...patchValue });
-  }
-
-  async function copyCallbackUri() {
-    try {
-      await navigator.clipboard.writeText(callbackUri);
-      setCallbackCopied(true);
-      window.setTimeout(() => setCallbackCopied(false), 1400);
-    } catch {
-      setCallbackCopied(false);
-    }
-  }
 
   return (
     <div className="settings-view">
       <section className="feishu-connect-card">
         <div className="feishu-connect-hero">
           <div className="feishu-connect-icon">
+            <ShieldCheck size={22} />
+          </div>
+          <div className="feishu-connect-copy">
+            <div className="eyebrow">Account</div>
+            <h2>Resolve</h2>
+          </div>
+          <StatusPill tone={signedIn ? "success" : "muted"} label={signedIn ? "signed in" : "signed out"} />
+        </div>
+
+        <div className="settings-grid advanced-settings-grid">
+          <SettingsRow label="Email">
+            <input
+              value={backendSettings.email}
+              onChange={(event) => onBackendChange({ ...backendSettings, email: event.target.value.trim() })}
+              placeholder="you@example.com"
+              autoComplete="email"
+            />
+          </SettingsRow>
+          <SettingsRow label="Password">
+            <input
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              type="password"
+              placeholder={signedIn ? "Only needed to sign in again" : "Password"}
+              autoComplete="current-password"
+            />
+          </SettingsRow>
+        </div>
+
+        <div className="settings-actions">
+          <button
+            className="primary-button"
+            onClick={() => {
+              void onBackendSignIn(password);
+              setPassword("");
+            }}
+            disabled={connecting || !backendSettings.email || !password}
+          >
+            <KeyRound size={16} />
+            {signedIn ? "Sign in again" : "Sign in"}
+          </button>
+          <button className="ghost-button" onClick={onBackendSignOut} disabled={!signedIn || connecting}>
+            <X size={16} />
+            Sign out
+          </button>
+        </div>
+        {backendSettings.lastError && <p className="settings-error">{backendSettings.lastError}</p>}
+      </section>
+
+      <section className="feishu-connect-card">
+        <div className="feishu-connect-hero">
+          <div className="feishu-connect-icon">
             <CalendarDays size={22} />
           </div>
           <div className="feishu-connect-copy">
-            <div className="eyebrow">Calendar Account</div>
+            <div className="eyebrow">Calendar</div>
             <h2>Feishu Calendar</h2>
-            <p>
-              {connected
-                ? "Resolve is syncing your Feishu calendar in the background."
-                : configured
-                  ? "Ready to authenticate with your Feishu custom app."
-                  : "Add your custom app credentials once, then connect with one click."}
-            </p>
           </div>
           <SyncStatusBadge settings={settings} />
         </div>
 
         <div className="feishu-status-strip">
           <div>
-            <ShieldCheck size={16} />
-            <span>{configured ? `Credentials saved in ${storageLabel}` : "Custom app credentials required once"}</span>
-          </div>
-          <div>
             <RefreshCw size={16} />
             <span>{lastSyncLabel}</span>
           </div>
         </div>
 
-        {!configured && (
-          <div className="settings-callout">
-            <KeyRound size={17} />
-            <div>
-              <strong>Use your own Feishu Custom App</strong>
-              <p>Resolve will remember the App ID and Secret locally. They are not uploaded to Firestore.</p>
-            </div>
-          </div>
-        )}
-
         <div className="settings-actions">
-          <button className="primary-button" onClick={() => void onConnect()} disabled={connecting}>
+          <button className="primary-button" onClick={() => void onConnect()} disabled={connecting || !signedIn}>
             <ExternalLink size={16} />
             {connecting ? "Waiting for Feishu" : connected ? "Reconnect Feishu" : "Connect with Feishu"}
           </button>
@@ -2745,70 +2969,6 @@ function SettingsView({
             Disconnect
           </button>
         </div>
-
-        <button className={`advanced-toggle ${advancedOpen ? "open" : ""}`} onClick={() => setAdvancedOpen((value) => !value)}>
-          <span>
-            <ChevronRight size={15} />
-            Custom App Configuration
-          </span>
-          <small>{configured ? "Configured" : "Required"}</small>
-        </button>
-
-        {advancedOpen && (
-          <div className="settings-grid advanced-settings-grid">
-            <SettingsRow label="App ID">
-              <input
-                value={settings.appId}
-                onChange={(event) => patch({ appId: event.target.value.trim() })}
-                placeholder="cli_xxxxxxxxx"
-                autoComplete="off"
-              />
-            </SettingsRow>
-            <SettingsRow label="App Secret">
-              <input
-                value={settings.appSecret}
-                onChange={(event) => patch({ appSecret: event.target.value.trim() })}
-                type="password"
-                placeholder={settings.appSecret ? "Saved" : "Required once"}
-                autoComplete="off"
-              />
-            </SettingsRow>
-            <SettingsRow label="Callback">
-              <div className="callback-row">
-                <input value={callbackUri} readOnly />
-                <button className="icon-button" onClick={() => void copyCallbackUri()} aria-label="Copy callback URI">
-                  <Copy size={15} />
-                </button>
-              </div>
-              <small>{callbackCopied ? "Copied" : "Set this URI in Feishu developer console once."}</small>
-            </SettingsRow>
-            <SettingsRow label="Default Calendar">
-              <input
-                value={settings.defaultCalendar}
-                onChange={(event) => patch({ defaultCalendar: event.target.value.trim() || "primary" })}
-                placeholder="primary"
-              />
-            </SettingsRow>
-            <SettingsRow label="Sync Range">
-              <div className="range-row">
-                <input
-                  type="number"
-                  min={1}
-                  value={settings.pastDays}
-                  onChange={(event) => patch({ pastDays: Number(event.target.value) })}
-                />
-                <span>days back</span>
-                <input
-                  type="number"
-                  min={7}
-                  value={settings.futureDays}
-                  onChange={(event) => patch({ futureDays: Number(event.target.value) })}
-                />
-                <span>days ahead</span>
-              </div>
-            </SettingsRow>
-          </div>
-        )}
 
         {settings.lastError && <p className="settings-error">{settings.lastError}</p>}
       </section>

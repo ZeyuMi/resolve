@@ -26,13 +26,16 @@ The backend can pull Feishu events server-side when explicitly enabled:
 ```bash
 RESOLVE_ALLOW_FEISHU_SERVER_CONNECTOR=true
 RESOLVE_SERVER_SECRET=<random 32+ character secret>
+RESOLVE_FEISHU_APP_ID=<feishu app id>
+RESOLVE_FEISHU_APP_SECRET=<feishu app secret>
 ```
 
 Supported actions on `feishu-connector`:
 
-- `configure`: store Feishu App ID / App Secret encrypted with
-  `RESOLVE_SERVER_SECRET`.
-- `start_oauth`: return a Feishu authorization URL.
+- `start_oauth`: return a Feishu authorization URL using the server-side Feishu
+  app config.
+- `configure`: optional legacy path to store a per-user Feishu App ID / App
+  Secret encrypted with `RESOLVE_SERVER_SECRET`.
 - `sync_now`: pull Feishu events and write `server_calendar_v1` rows.
 - `list_events`: return decrypted server-managed calendar events to an
   authenticated app.
@@ -66,6 +69,10 @@ supabase functions deploy health
 supabase functions deploy feishu-connector
 supabase functions deploy feishu-oauth-callback
 supabase functions deploy feishu-sync-cron
+supabase secrets set RESOLVE_ALLOW_FEISHU_SERVER_CONNECTOR=true
+supabase secrets set RESOLVE_SERVER_SECRET=<random 32+ character secret>
+supabase secrets set RESOLVE_FEISHU_APP_ID=<feishu app id>
+supabase secrets set RESOLVE_FEISHU_APP_SECRET=<feishu app secret>
 ```
 
 Do not commit `.env` files. Store production secrets in Supabase secrets.

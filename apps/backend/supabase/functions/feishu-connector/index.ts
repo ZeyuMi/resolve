@@ -89,8 +89,9 @@ async function statusForUser(userId: string) {
     `select=status,mode,default_calendar_id,last_server_sync_at,updated_at,server_encrypted_config,server_encrypted_token_set&user_id=eq.${encodeFilter(userId)}&limit=1`
   );
   const row = rows[0];
+  const hasGlobalConfig = Boolean(globalFeishuConfig());
   return {
-    configured: Boolean(row?.server_encrypted_config),
+    configured: Boolean(row?.server_encrypted_config) || hasGlobalConfig,
     connected: Boolean(row?.server_encrypted_token_set) && row?.status === "connected",
     status: row?.status ?? "not_connected",
     mode: row?.mode ?? "server_connector_opt_in",
@@ -142,25 +143,13 @@ async function configure(
 }
 
 async function startOAuth(userId: string) {
-  const rows = await restSelect<{
-    server_encrypted_config?: string | null;
-    server_config_nonce?: string | null;
-  }>(
-    "resolve_feishu_connections",
-    `select=server_encrypted_config,server_config_nonce&user_id=eq.${encodeFilter(userId)}&mode=eq.server_connector_opt_in&limit=1`
-  );
-  const connection = rows[0];
-  if (!connection?.server_encrypted_config || !connection.server_config_nonce) {
+  const config = await resolveServerConfig(userId);
+  if (!config) {
     return {
       error: "missing_config",
-      message: "Configure Feishu App ID and App Secret before OAuth."
+      message: "Feishu is not configured on the Resolve backend."
     };
   }
-
-  const config = await serverDecryptJson<FeishuServerConfig>(
-    connection.server_encrypted_config,
-    connection.server_config_nonce
-  );
   const state = crypto.randomUUID();
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
   const encryptedConfig = await serverEncryptJson(config);
@@ -201,4 +190,50 @@ function defaultRedirectUri() {
   const baseUrl = Deno.env.get("RESOLVE_PUBLIC_FUNCTIONS_URL") ?? Deno.env.get("SUPABASE_URL");
   if (!baseUrl) throw new Error("Missing SUPABASE_URL.");
   return `${baseUrl.replace(/\/$/, "")}/functions/v1/feishu-oauth-callback`;
+}
+
+async function resolveServerConfig(userId: string): Promise<FeishuServerConfig | null> {
+  const rows = await restSelect<{
+    server_encrypted_config?: string | null;
+    server_config_nonce?: string | null;
+  }>(
+    "resolve_feishu_connections",
+    `select=server_encrypted_config,server_config_nonce&user_id=eq.${encodeFilter(userId)}&mode=eq.server_connector_opt_in&limit=1`
+  );
+  const connection = rows[0];
+  if (connection?.server_encrypted_config && connection.server_config_nonce) {
+    return serverDecryptJson<FeishuServerConfig>(
+      connection.server_encrypted_config,
+      connection.server_config_nonce
+    );
+  }
+
+  const config = globalFeishuConfig();
+  if (!config) return null;
+
+  const encryptedConfig = await serverEncryptJson(config);
+  await restUpsert(
+    "resolve_feishu_connections",
+    {
+      user_id: userId,
+      mode: "server_connector_opt_in",
+      status: "needs_auth",
+      server_encrypted_config: encryptedConfig.encrypted,
+      server_config_nonce: encryptedConfig.nonce,
+      updated_at: new Date().toISOString()
+    },
+    "user_id"
+  );
+  return config;
+}
+
+function globalFeishuConfig(): FeishuServerConfig | null {
+  const appId = Deno.env.get("RESOLVE_FEISHU_APP_ID") ?? Deno.env.get("FEISHU_APP_ID");
+  const appSecret = Deno.env.get("RESOLVE_FEISHU_APP_SECRET") ?? Deno.env.get("FEISHU_APP_SECRET");
+  if (!appId || !appSecret) return null;
+  return {
+    appId,
+    appSecret,
+    redirectUri: Deno.env.get("RESOLVE_FEISHU_REDIRECT_URI") ?? defaultRedirectUri()
+  };
 }

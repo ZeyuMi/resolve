@@ -24,7 +24,7 @@ class BackendClient(
     private val settings: BackendSettings,
     private val session: BackendSession? = null
 ) {
-    private val projectUrl = settings.supabaseUrl.trim().removeSuffix("/")
+    private val projectUrl = settings.supabaseUrl.trim().ifBlank { ResolveSupabaseUrl }.removeSuffix("/")
 
     fun refreshSession(): BackendSession {
         val refreshToken = session?.refreshToken ?: error("Sign in again.")
@@ -114,7 +114,7 @@ class BackendClient(
     }
 
     private fun connector(body: JSONObject): JSONObject {
-        val activeSession = session ?: error("Sign in to Resolve backend first.")
+        val activeSession = session ?: error("Sign in first.")
         return postJson(
             url = "$projectUrl/functions/v1/feishu-connector",
             body = body,
@@ -123,8 +123,8 @@ class BackendClient(
     }
 
     private fun authHeaders(includeBearer: Boolean, accessToken: String? = null): Map<String, String> {
-        val anonKey = settings.anonKey.trim()
-        if (projectUrl.isBlank() || anonKey.isBlank()) error("Add Supabase URL and anon key.")
+        val anonKey = settings.anonKey.trim().ifBlank { ResolveSupabasePublishableKey }
+        if (projectUrl.isBlank() || anonKey.isBlank()) error("Sync is not configured.")
         return buildMap {
             put("apikey", anonKey)
             put("content-type", "application/json")
@@ -134,9 +134,9 @@ class BackendClient(
 
     companion object {
         fun signInWithPassword(settings: BackendSettings, password: String): BackendSession {
-            val projectUrl = settings.supabaseUrl.trim().removeSuffix("/")
-            val anonKey = settings.anonKey.trim()
-            if (projectUrl.isBlank() || anonKey.isBlank()) error("Add Supabase URL and anon key.")
+            val projectUrl = settings.supabaseUrl.trim().ifBlank { ResolveSupabaseUrl }.removeSuffix("/")
+            val anonKey = settings.anonKey.trim().ifBlank { ResolveSupabasePublishableKey }
+            if (projectUrl.isBlank() || anonKey.isBlank()) error("Sync is not configured.")
             if (settings.email.isBlank() || password.isBlank()) error("Add email and password.")
             val response = postJson(
                 url = "$projectUrl/auth/v1/token?grant_type=password",
@@ -152,7 +152,7 @@ class BackendClient(
         }
 
         fun defaultFeishuRedirectUri(settings: BackendSettings): String? {
-            val projectUrl = settings.supabaseUrl.trim().removeSuffix("/")
+            val projectUrl = settings.supabaseUrl.trim().ifBlank { ResolveSupabaseUrl }.removeSuffix("/")
             return projectUrl.takeIf { it.isNotBlank() }?.let { "$it/functions/v1/feishu-oauth-callback" }
         }
     }

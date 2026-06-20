@@ -71,8 +71,8 @@ data class FeishuTokenSet(
 }
 
 data class BackendSettings(
-    val supabaseUrl: String = "",
-    val anonKey: String = "",
+    val supabaseUrl: String = ResolveSupabaseUrl,
+    val anonKey: String = ResolveSupabasePublishableKey,
     val email: String = "",
     val status: BackendStatus = BackendStatus.NotConfigured,
     val feishuConnected: Boolean = false,

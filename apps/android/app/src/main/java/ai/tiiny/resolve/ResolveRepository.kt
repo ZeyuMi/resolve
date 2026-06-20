@@ -132,8 +132,8 @@ class ResolveRepository(context: Context) {
         .putOpt("lastError", settings.lastError)
 
     private fun decodeBackendSettings(json: JSONObject) = BackendSettings(
-        supabaseUrl = json.optString("supabaseUrl"),
-        anonKey = json.optString("anonKey"),
+        supabaseUrl = json.optString("supabaseUrl", ResolveSupabaseUrl).ifBlank { ResolveSupabaseUrl },
+        anonKey = json.optString("anonKey", ResolveSupabasePublishableKey).ifBlank { ResolveSupabasePublishableKey },
         email = json.optString("email"),
         status = enumValueOrDefault(json.optString("status"), BackendStatus.NotConfigured),
         feishuConnected = json.optBoolean("feishuConnected", false),
