@@ -78,6 +78,7 @@ class ResolveRepository(context: Context) {
         .put("status", event.status)
         .put("title", event.title)
         .put("description", event.description)
+        .putOpt("recurrence", event.recurrence)
         .put("startsAt", event.startsAt.toString())
         .putOpt("endsAt", event.endsAt?.toString())
         .putOpt("externalCalendarId", event.externalCalendarId)
@@ -93,6 +94,7 @@ class ResolveRepository(context: Context) {
         status = json.optString("status", "local"),
         title = json.optString("title"),
         description = json.optString("description"),
+        recurrence = json.optNullableString("recurrence"),
         startsAt = instantOrNow(json.optString("startsAt")),
         endsAt = json.optNullableString("endsAt")?.let(::instantOrNull),
         externalCalendarId = json.optNullableString("externalCalendarId"),
@@ -115,8 +117,8 @@ class ResolveRepository(context: Context) {
     private fun decodeFeishuSettings(json: JSONObject) = FeishuSettings(
         appId = json.optString("appId"),
         defaultCalendar = json.optString("defaultCalendar", "primary"),
-        pastDays = json.optInt("pastDays", 14),
-        futureDays = json.optInt("futureDays", 90),
+        pastDays = json.optInt("pastDays", FullFeishuSyncPastDays).coerceAtLeast(FullFeishuSyncPastDays),
+        futureDays = json.optInt("futureDays", FullFeishuSyncFutureDays).coerceAtLeast(FullFeishuSyncFutureDays),
         status = enumValueOrDefault(json.optString("status"), FeishuStatus.NotConnected),
         lastSyncedAt = json.optNullableString("lastSyncedAt")?.let(::instantOrNull),
         lastError = json.optNullableString("lastError")

@@ -8,10 +8,13 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -78,11 +81,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -93,19 +100,34 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.Instant
+import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalTime
+import java.time.ZonedDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 class MainActivity : ComponentActivity() {
+    private var latestIntent by mutableStateOf<Intent?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         SyncWorker.schedule(this)
         val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty()
+        latestIntent = intent
         setContent {
-            ResolveAndroidApp(initialCapture = sharedText)
+            ResolveAndroidApp(
+                initialCapture = sharedText,
+                latestIntent = latestIntent,
+                onIntentHandled = { latestIntent = null }
+            )
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        latestIntent = intent
     }
 }
 
@@ -121,7 +143,11 @@ private enum class Tab(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ResolveAndroidApp(initialCapture: String) {
+private fun ResolveAndroidApp(
+    initialCapture: String,
+    latestIntent: Intent?,
+    onIntentHandled: () -> Unit
+) {
     val context = LocalContext.current
     val repository = remember { ResolveRepository(context) }
     val secureVault = remember { SecureVault(context) }
@@ -129,11 +155,15 @@ private fun ResolveAndroidApp(initialCapture: String) {
     var state by remember { mutableStateOf(repository.load()) }
     var tab by remember { mutableStateOf(Tab.Todo) }
     var capture by remember { mutableStateOf(initialCapture) }
-    var toast by remember { mutableStateOf<String?>(null) }
+    var notice by remember { mutableStateOf<String?>(null) }
     var selectedTodoId by remember { mutableStateOf<String?>(null) }
     var selectedThreadId by remember { mutableStateOf(state.threads.firstOrNull()?.id.orEmpty()) }
     var calendarDraft by remember { mutableStateOf(CalendarDraft()) }
     var selectedDate by remember { mutableStateOf(LocalDate.now()) }
+    var calendarViewMode by remember { mutableStateOf(CalendarViewMode.Month) }
+    var selectedCalendarEvent by remember { mutableStateOf<CalendarEvent?>(null) }
+    var expandedCalendarDate by remember { mutableStateOf<LocalDate?>(null) }
+    var showCalendarDraft by remember { mutableStateOf(false) }
     var showCompleted by remember { mutableStateOf(false) }
     var showArchived by remember { mutableStateOf(false) }
     var isSyncing by remember { mutableStateOf(false) }
@@ -168,7 +198,7 @@ private fun ResolveAndroidApp(initialCapture: String) {
         persist(state.copy(items = listOf(item) + state.items))
         capture = ""
         tab = Tab.Todo
-        toast = "Saved to Todo"
+        notice = null
     }
 
     suspend fun connectedClient(): FeishuAndroidClient {
@@ -226,7 +256,7 @@ private fun ResolveAndroidApp(initialCapture: String) {
             try {
                 if (hasBackendSession && state.backendSettings.supabaseUrl.isNotBlank() && state.backendSettings.feishuConnected) {
                     syncBackendCalendar()
-                    toast = "Calendar synced"
+                    notice = null
                 } else {
                     val client = connectedClient()
                     val remoteEvents = withContext(Dispatchers.IO) { client.listEvents(state.feishuSettings) }
@@ -241,14 +271,14 @@ private fun ResolveAndroidApp(initialCapture: String) {
                             feishuSettings = nextSettings
                         )
                     )
-                    toast = "Feishu synced"
+                    notice = null
                 }
             } catch (error: Throwable) {
                 if (hasBackendSession) {
                     patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
                 }
                 patchFeishu(state.feishuSettings.copy(status = FeishuStatus.PermissionError, lastError = error.message))
-                toast = "Calendar sync failed"
+                notice = "Calendar sync failed${error.message?.let { ": $it" }.orEmpty()}"
             } finally {
                 isSyncing = false
             }
@@ -269,7 +299,7 @@ private fun ResolveAndroidApp(initialCapture: String) {
         )
         persist(state.copy(calendarEvents = (state.calendarEvents + localEvent).sortedBy { it.startsAt }))
         calendarDraft = CalendarDraft(date = draft.date, time = draft.time.plusHours(1))
-        toast = "Saved locally"
+        notice = null
 
         if (hasBackendSession && state.backendSettings.feishuConnected) {
             scope.launch {
@@ -286,10 +316,10 @@ private fun ResolveAndroidApp(initialCapture: String) {
                             feishuSettings = state.feishuSettings.copy(status = FeishuStatus.Connected, lastSyncedAt = Instant.now(), lastError = null)
                         )
                     )
-                    toast = "Created in Feishu"
+                    notice = null
                 } catch (error: Throwable) {
                     patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
-                    toast = "Saved locally; sync failed"
+                    notice = "Saved locally; sync failed${error.message?.let { ": $it" }.orEmpty()}"
                 }
             }
             return
@@ -309,9 +339,9 @@ private fun ResolveAndroidApp(initialCapture: String) {
                                 .sortedBy { it.startsAt }
                         )
                     )
-                    toast = "Created in Feishu"
+                    notice = null
                 } catch (error: Throwable) {
-                    toast = "Saved locally; Feishu create failed"
+                    notice = "Saved locally; Feishu create failed${error.message?.let { ": $it" }.orEmpty()}"
                     patchFeishu(settings.copy(lastError = error.message))
                 }
             }
@@ -322,7 +352,7 @@ private fun ResolveAndroidApp(initialCapture: String) {
         val settings = state.feishuSettings
         val secret = secureVault.loadFeishuSecret().orEmpty()
         if (settings.appId.isBlank() || secret.isBlank()) {
-            toast = "Sign in first"
+            notice = "Sign in first"
             return
         }
         isConnecting = true
@@ -335,11 +365,58 @@ private fun ResolveAndroidApp(initialCapture: String) {
                 val token = withContext(Dispatchers.IO) { FeishuAndroidClient.exchangeCode(settings.appId, secret, code) }
                 secureVault.saveFeishuTokens(token.accessToken, token.refreshToken, token.expiresAtEpochMillis)
                 patchFeishu(settings.copy(status = FeishuStatus.Connected, lastError = null))
-                toast = "Feishu connected"
+                tab = Tab.Calendar
+                notice = null
                 syncFeishu()
             } catch (error: Throwable) {
                 patchFeishu(settings.copy(status = FeishuStatus.PermissionError, lastError = error.message))
-                toast = "Feishu connection failed"
+                notice = "Feishu connection failed${error.message?.let { ": $it" }.orEmpty()}"
+            } finally {
+                isConnecting = false
+            }
+        }
+    }
+
+    fun startBackendFeishuAuth() {
+        if (!hasBackendSession) {
+            notice = "Sign in first"
+            return
+        }
+        isConnecting = true
+        scope.launch {
+            try {
+                val client = connectedBackendClient()
+                val oauth = withContext(Dispatchers.IO) { client.startFeishuOAuth() }
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(oauth.authorizeUrl)))
+                patchBackend(state.backendSettings.copy(status = BackendStatus.Connected, feishuConnected = false, lastError = null))
+                patchFeishu(state.feishuSettings.copy(status = FeishuStatus.NotConnected, lastError = null))
+                notice = null
+
+                repeat(30) {
+                    delay(3_000)
+                    val status = runCatching { withContext(Dispatchers.IO) { client.status() } }.getOrNull()
+                    if (status?.connected == true) {
+                        persist(
+                            state.copy(
+                                backendSettings = state.backendSettings.copy(
+                                    status = BackendStatus.Connected,
+                                    feishuConnected = true,
+                                    lastSyncedAt = status.lastServerSyncAt,
+                                    lastError = null
+                                ),
+                                feishuSettings = state.feishuSettings.copy(status = FeishuStatus.Connected, lastError = null)
+                            )
+                        )
+                        tab = Tab.Calendar
+                        notice = null
+                        syncFeishu()
+                        return@launch
+                    }
+                }
+                notice = "Feishu auth is still pending. Return here after approving."
+            } catch (error: Throwable) {
+                patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
+                notice = "Feishu connection failed${error.message?.let { ": $it" }.orEmpty()}"
             } finally {
                 isConnecting = false
             }
@@ -350,6 +427,7 @@ private fun ResolveAndroidApp(initialCapture: String) {
         if (isConnecting) return
         isConnecting = true
         scope.launch {
+            var startFeishuAuthAfterSignIn = false
             try {
                 val session = withContext(Dispatchers.IO) {
                     BackendClient.signInWithPassword(state.backendSettings, password)
@@ -374,70 +452,71 @@ private fun ResolveAndroidApp(initialCapture: String) {
                         )
                     )
                 )
-                toast = "Signed in"
+                notice = null
                 if (connectorStatus?.connected == true) syncFeishu()
+                else if (connectorStatus?.configured == true) startFeishuAuthAfterSignIn = true
             } catch (error: Throwable) {
                 patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
-                toast = "Sign in failed"
+                notice = "Sign in failed${error.message?.let { ": $it" }.orEmpty()}"
             } finally {
                 isConnecting = false
+                if (startFeishuAuthAfterSignIn) startBackendFeishuAuth()
             }
         }
     }
 
     fun connectBackendFeishu() {
-        if (!hasBackendSession) {
-            toast = "Sign in first"
-            return
-        }
-        isConnecting = true
-        scope.launch {
-            try {
-                val client = connectedBackendClient()
-                val oauth = withContext(Dispatchers.IO) { client.startFeishuOAuth() }
-                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(oauth.authorizeUrl)))
-                patchBackend(state.backendSettings.copy(status = BackendStatus.Connected, feishuConnected = false, lastError = null))
-                patchFeishu(state.feishuSettings.copy(status = FeishuStatus.NotConnected, lastError = null))
-                toast = "Authorize Feishu, then return to Resolve"
-
-                repeat(24) {
-                    delay(5_000)
-                    val status = runCatching { withContext(Dispatchers.IO) { client.status() } }.getOrNull()
-                    if (status?.connected == true) {
-                        persist(
-                            state.copy(
-                                backendSettings = state.backendSettings.copy(
-                                    status = BackendStatus.Connected,
-                                    feishuConnected = true,
-                                    lastSyncedAt = status.lastServerSyncAt,
-                                    lastError = null
-                                ),
-                                feishuSettings = state.feishuSettings.copy(status = FeishuStatus.Connected, lastError = null)
-                            )
-                        )
-                        syncFeishu()
-                        return@launch
-                    }
-                }
-                toast = "Feishu auth pending; tap Sync after approving"
-            } catch (error: Throwable) {
-                patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
-                toast = "Feishu connection failed"
-            } finally {
-                isConnecting = false
-            }
-        }
+        startBackendFeishuAuth()
     }
 
     fun disconnectBackend() {
         secureVault.clearBackendSession()
         hasBackendSession = false
         patchBackend(state.backendSettings.copy(status = BackendStatus.SignedOut, feishuConnected = false, lastError = null))
-        toast = "Signed out"
+        notice = null
     }
 
-    LaunchedEffect(Unit) {
-        if (hasBackendSession && state.backendSettings.feishuConnected) {
+    LaunchedEffect(hasBackendSession) {
+        if (hasBackendSession) {
+            runCatching {
+                val client = connectedBackendClient()
+                val status = withContext(Dispatchers.IO) { client.status() }
+                persist(
+                    state.copy(
+                        backendSettings = state.backendSettings.copy(
+                            status = BackendStatus.Connected,
+                            feishuConnected = status.connected,
+                            lastSyncedAt = status.lastServerSyncAt ?: state.backendSettings.lastSyncedAt,
+                            lastError = null
+                        ),
+                        feishuSettings = state.feishuSettings.copy(
+                            status = if (status.connected) FeishuStatus.Connected else state.feishuSettings.status,
+                            lastSyncedAt = status.lastServerSyncAt ?: state.feishuSettings.lastSyncedAt,
+                            lastError = null
+                        )
+                    )
+                )
+                if (status.connected) syncFeishu()
+            }.onFailure { error ->
+                patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
+            }
+        }
+    }
+
+    LaunchedEffect(latestIntent) {
+        val uri = latestIntent?.data
+        if (uri?.scheme == "resolve" && uri.host == "oauth" && uri.path == "/feishu") {
+            tab = Tab.Calendar
+            notice = null
+            onIntentHandled()
+            if (hasBackendSession) {
+                syncFeishu()
+            }
+        }
+    }
+
+    LaunchedEffect(tab, hasBackendSession, state.backendSettings.feishuConnected) {
+        if (tab == Tab.Calendar && hasBackendSession && state.backendSettings.feishuConnected) {
             syncFeishu()
         }
     }
@@ -447,12 +526,19 @@ private fun ResolveAndroidApp(initialCapture: String) {
             containerColor = ResolveColors.Bg,
             bottomBar = { BottomTabs(tab = tab, onTab = { tab = it }) },
             floatingActionButton = {
-                if (tab == Tab.Calendar) {
+                if (tab == Tab.Calendar && selectedCalendarEvent == null && !showCalendarDraft) {
                     FloatingActionButton(
-                        onClick = { createCalendarEvent(calendarDraft.copy(date = selectedDate)) },
-                        containerColor = ResolveColors.Accent
+                        onClick = {
+                            calendarDraft = CalendarDraft(date = selectedDate, time = LocalTime.of(9, 0))
+                            selectedCalendarEvent = null
+                            expandedCalendarDate = selectedDate
+                            showCalendarDraft = true
+                        },
+                        containerColor = ResolveColors.Accent,
+                        contentColor = Color.White,
+                        shape = CircleShape
                     ) {
-                        Icon(Icons.Filled.Add, contentDescription = "Add event", tint = Color.White)
+                        Icon(Icons.Filled.Add, contentDescription = "Add event", modifier = Modifier.size(30.dp))
                     }
                 }
             }
@@ -461,21 +547,28 @@ private fun ResolveAndroidApp(initialCapture: String) {
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding)
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .padding(
+                        horizontal = if (tab == Tab.Calendar) 4.dp else 16.dp,
+                        vertical = if (tab == Tab.Calendar) 2.dp else 12.dp
+                    )
             ) {
                 TopHeader(
                     title = tab.label,
                     settings = state.feishuSettings,
                     backend = state.backendSettings,
-                    canSync = (hasBackendSession && state.backendSettings.feishuConnected) ||
-                        state.feishuSettings.status == FeishuStatus.Connected,
                     isSyncing = isSyncing,
-                    onSettings = { tab = Tab.Settings },
-                    onSync = { syncFeishu() }
+                    compact = tab == Tab.Calendar,
+                    onSettings = { tab = Tab.Settings }
                 )
-                Spacer(Modifier.height(10.dp))
-                CaptureBox(value = capture, onChange = { capture = it }, onSave = { saveCapture() })
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(if (tab == Tab.Calendar) 3.dp else 10.dp))
+                notice?.let {
+                    InlineNotice(message = it, onDismiss = { notice = null })
+                    Spacer(Modifier.height(if (tab == Tab.Calendar) 4.dp else 10.dp))
+                }
+                if (tab == Tab.Todo) {
+                    CaptureBox(value = capture, onChange = { capture = it }, onSave = { saveCapture() })
+                    Spacer(Modifier.height(12.dp))
+                }
                 Box(Modifier.weight(1f)) {
                     when (tab) {
                         Tab.Todo -> TodoScreen(
@@ -492,14 +585,37 @@ private fun ResolveAndroidApp(initialCapture: String) {
 
                         Tab.Calendar -> CalendarScreen(
                             state = state,
-                            draft = calendarDraft,
                             selectedDate = selectedDate,
+                            expandedDate = expandedCalendarDate,
+                            selectedEvent = selectedCalendarEvent,
+                            draft = calendarDraft.takeIf { showCalendarDraft },
+                            viewMode = calendarViewMode,
                             onDate = {
                                 selectedDate = it
                                 calendarDraft = calendarDraft.copy(date = it)
+                                expandedCalendarDate = null
                             },
+                            onViewMode = { calendarViewMode = it },
+                            onSelectEvent = {
+                                selectedDate = it.startsAt.atZone(ZoneId.systemDefault()).toLocalDate()
+                                selectedCalendarEvent = it
+                                showCalendarDraft = false
+                            },
+                            onCloseEvent = { selectedCalendarEvent = null },
                             onDraft = { calendarDraft = it },
-                            onCreate = { createCalendarEvent(it) }
+                            onCloseDraft = { showCalendarDraft = false },
+                            onCreateDraft = {
+                                createCalendarEvent(it)
+                                selectedDate = it.date
+                                expandedCalendarDate = it.date
+                                showCalendarDraft = false
+                            },
+                            onExpandDay = {
+                                selectedDate = it
+                                expandedCalendarDate = it
+                                selectedCalendarEvent = null
+                                showCalendarDraft = false
+                            }
                         )
 
                         Tab.Strategy -> StrategyScreen(
@@ -532,7 +648,6 @@ private fun ResolveAndroidApp(initialCapture: String) {
                             onBackendSignIn = { signInBackend(it) },
                             onBackendDisconnect = { disconnectBackend() },
                             onBackendFeishuConnect = { connectBackendFeishu() },
-                            onSync = { syncFeishu() },
                             onDisconnect = {
                                 secureVault.clearFeishu()
                                 patchFeishu(state.feishuSettings.copy(status = FeishuStatus.NotConnected, lastError = null, lastSyncedAt = null))
@@ -565,16 +680,15 @@ private fun ResolveAndroidApp(initialCapture: String) {
                             strategyThreadId = it.strategyThreadId
                         )
                         selectedDate = calendarDraft.date
+                        expandedCalendarDate = calendarDraft.date
                         selectedTodoId = null
                         tab = Tab.Calendar
+                        showCalendarDraft = true
                     }
                 )
             }
         }
 
-        toast?.let {
-            ToastChip(message = it, onDismiss = { toast = null })
-        }
     }
 }
 
@@ -583,22 +697,54 @@ private fun TopHeader(
     title: String,
     settings: FeishuSettings,
     backend: BackendSettings,
-    canSync: Boolean,
     isSyncing: Boolean,
-    onSettings: () -> Unit,
-    onSync: () -> Unit
+    compact: Boolean = false,
+    onSettings: () -> Unit
 ) {
+    if (compact) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Text(title, color = ResolveColors.Text, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.weight(1f))
+            Surface(color = Color.Transparent, shape = RoundedCornerShape(999.dp)) {
+                Text(
+                    if (isSyncing) "Syncing" else calendarStatusLabel(settings, backend),
+                    color = ResolveColors.Muted,
+                    fontSize = 10.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+            }
+            Surface(
+                color = Color.Transparent,
+                shape = CircleShape,
+                modifier = Modifier
+                    .size(30.dp)
+                    .clickable(onClick = onSettings)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = ResolveColors.Secondary, modifier = Modifier.size(19.dp))
+                }
+            }
+        }
+        return
+    }
+
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.weight(1f)) {
             Text("Resolve", color = ResolveColors.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             Text(title, color = ResolveColors.Text, fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
         }
-        AssistChip(
-            onClick = onSync,
-            enabled = canSync && !isSyncing,
-            leadingIcon = { Icon(Icons.Filled.Refresh, contentDescription = null, Modifier.size(16.dp)) },
-            label = { Text(if (isSyncing) "Syncing" else calendarStatusLabel(settings, backend)) }
-        )
+        Surface(color = ResolveColors.Pill, shape = RoundedCornerShape(999.dp)) {
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Filled.Refresh, contentDescription = null, Modifier.size(15.dp), tint = ResolveColors.Muted)
+                Spacer(Modifier.width(5.dp))
+                Text(if (isSyncing) "Syncing" else calendarStatusLabel(settings, backend), color = ResolveColors.Secondary, fontSize = 12.sp)
+            }
+        }
         IconButton(onClick = onSettings) {
             Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = ResolveColors.Secondary)
         }
@@ -721,39 +867,678 @@ private fun TodoRow(
 @Composable
 private fun CalendarScreen(
     state: ResolveState,
-    draft: CalendarDraft,
     selectedDate: LocalDate,
+    expandedDate: LocalDate?,
+    selectedEvent: CalendarEvent?,
+    draft: CalendarDraft?,
+    viewMode: CalendarViewMode,
     onDate: (LocalDate) -> Unit,
+    onViewMode: (CalendarViewMode) -> Unit,
+    onSelectEvent: (CalendarEvent) -> Unit,
+    onCloseEvent: () -> Unit,
     onDraft: (CalendarDraft) -> Unit,
-    onCreate: (CalendarDraft) -> Unit
+    onCloseDraft: () -> Unit,
+    onCreateDraft: (CalendarDraft) -> Unit,
+    onExpandDay: (LocalDate) -> Unit
 ) {
-    val context = LocalContext.current
-    val events = state.calendarEvents.filter {
-        it.startsAt.atZone(ZoneId.systemDefault()).toLocalDate() == selectedDate
-    }.sortedBy { it.startsAt }
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item {
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items((-3..10).map { LocalDate.now().plusDays(it.toLong()) }) { date ->
-                    FilterChip(
-                        selected = date == selectedDate,
-                        onClick = { onDate(date) },
-                        label = {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(date.dayOfMonth.toString())
-                                Text(date.dayOfWeek.name.take(3), fontSize = 11.sp)
+    if (selectedEvent != null) {
+        CalendarEventDetailPage(event = selectedEvent, onClose = onCloseEvent)
+        return
+    }
+    if (draft != null) {
+        CalendarDraftPage(
+            draft = draft,
+            onDraft = onDraft,
+            onCreate = onCreateDraft,
+            onClose = onCloseDraft
+        )
+        return
+    }
+
+    val zone = ZoneId.systemDefault()
+    val today = LocalDate.now()
+    val normalizedViewMode = if (viewMode == CalendarViewMode.Day) CalendarViewMode.Week else viewMode
+    val weekDays = (0..6).map { weekStart(selectedDate).plusDays(it.toLong()) }
+    val monthDays = monthGridDates(selectedDate)
+    val monthWeeks = monthDays.chunked(7).take(6)
+    val rangeStartDate = if (normalizedViewMode == CalendarViewMode.Week) weekDays.first() else monthWeeks.flatten().first()
+    val rangeEndDate = if (normalizedViewMode == CalendarViewMode.Week) weekDays.last().plusDays(1) else monthWeeks.flatten().last().plusDays(1)
+    val rangeStart = rangeStartDate.atStartOfDay(zone).toInstant()
+    val rangeEnd = rangeEndDate.atStartOfDay(zone).toInstant()
+    val displayEvents = expandRecurringCalendarEvents(
+        events = state.calendarEvents.filter { calendarEventVisible(it) },
+        rangeStart = rangeStart,
+        rangeEnd = rangeEnd,
+        zone = zone
+    )
+    val eventsByDate = displayEvents
+        .groupBy { it.startsAt.atZone(zone).toLocalDate() }
+        .mapValues { (_, events) -> events.sortedBy { it.startsAt } }
+    val inlineExpandedDate = expandedDate?.takeIf { date ->
+        (normalizedViewMode == CalendarViewMode.Week && date in weekDays) ||
+            (normalizedViewMode == CalendarViewMode.Month && monthWeeks.any { date in it })
+    }
+
+    Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+        CalendarToolbar(
+            selectedDate = selectedDate,
+            viewMode = normalizedViewMode,
+            onDate = onDate,
+            onViewMode = onViewMode
+        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(18.dp),
+            horizontalArrangement = Arrangement.spacedBy(1.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            listOf("日", "一", "二", "三", "四", "五", "六").forEach {
+                Text(
+                    it,
+                    style = TextStyle(
+                        color = ResolveColors.Muted,
+                        fontSize = 10.sp,
+                        lineHeight = 12.sp,
+                        platformStyle = PlatformTextStyle(includeFontPadding = false)
+                    ),
+                    modifier = Modifier.weight(1f),
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
+        BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            val availableRowHeight = ((maxHeight - 5.dp) / 6f).coerceIn(58.dp, 126.dp)
+            val monthSlots = when {
+                availableRowHeight < 72.dp -> 3
+                availableRowHeight < 94.dp -> 4
+                availableRowHeight < 112.dp -> 5
+                else -> 6
+            }
+            val weekRowHeight = if (inlineExpandedDate == null) {
+                maxHeight
+            } else {
+                (maxHeight * 0.46f).coerceIn(180.dp, 280.dp)
+            }
+            val weekSlots = when {
+                weekRowHeight < 190.dp -> 10
+                weekRowHeight < 250.dp -> 14
+                else -> 24
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(1.dp)
+            ) {
+                if (normalizedViewMode == CalendarViewMode.Week) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(weekRowHeight),
+                        horizontalArrangement = Arrangement.spacedBy(1.dp)
+                    ) {
+                        weekDays.forEach { date ->
+                            CalendarGridCell(
+                                date = date,
+                                events = eventsByDate[date].orEmpty(),
+                                selected = date == selectedDate,
+                                isToday = date == today,
+                                isPast = date < today,
+                                slots = weekSlots,
+                                modifier = Modifier.weight(1f).fillMaxSize(),
+                                onSelectDate = { onExpandDay(date) },
+                                onExpandDay = { onExpandDay(date) }
+                            )
+                        }
+                    }
+                    inlineExpandedDate?.let { date ->
+                        ExpandedDayInlinePanel(
+                            date = date,
+                            events = eventsByDate[date].orEmpty(),
+                            onSelectEvent = onSelectEvent
+                        )
+                    }
+                } else {
+                    monthWeeks.forEach { week ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .height(availableRowHeight),
+                            horizontalArrangement = Arrangement.spacedBy(1.dp)
+                        ) {
+                            week.forEach { date ->
+                                CalendarGridCell(
+                                    date = date,
+                                    events = eventsByDate[date].orEmpty(),
+                                    selected = date == selectedDate,
+                                    isToday = date == today,
+                                    isPast = date < today,
+                                    slots = monthSlots,
+                                    modifier = Modifier.weight(1f).fillMaxSize(),
+                                    onSelectDate = { onExpandDay(date) },
+                                    onExpandDay = { onExpandDay(date) }
+                                )
                             }
+                        }
+                        if (inlineExpandedDate != null && inlineExpandedDate in week) {
+                            ExpandedDayInlinePanel(
+                                date = inlineExpandedDate,
+                                events = eventsByDate[inlineExpandedDate].orEmpty(),
+                                onSelectEvent = onSelectEvent
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CalendarToolbar(
+    selectedDate: LocalDate,
+    viewMode: CalendarViewMode,
+    onDate: (LocalDate) -> Unit,
+    onViewMode: (CalendarViewMode) -> Unit
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(28.dp)
+    ) {
+        Surface(
+            color = Color.Transparent,
+            shape = CircleShape,
+            modifier = Modifier
+                .size(26.dp)
+                .clickable { onDate(shiftCalendarDate(selectedDate, viewMode, -1)) }
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = "Previous",
+                    tint = ResolveColors.Secondary,
+                    modifier = Modifier.rotate(180f).size(19.dp)
+                )
+            }
+        }
+        Text(
+            calendarRangeTitle(selectedDate, viewMode),
+            color = ResolveColors.Text,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+            textAlign = TextAlign.Center
+        )
+        Box {
+            Surface(
+                color = ResolveColors.Pill,
+                shape = RoundedCornerShape(999.dp),
+                modifier = Modifier
+                    .height(24.dp)
+                    .clickable { menuOpen = true }
+            ) {
+                Row(
+                    modifier = Modifier.padding(start = 8.dp, end = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(calendarViewModeLabel(viewMode), color = ResolveColors.Secondary, fontSize = 11.sp)
+                    Icon(Icons.Filled.KeyboardArrowDown, contentDescription = null, tint = ResolveColors.Muted, modifier = Modifier.size(14.dp))
+                }
+            }
+            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                listOf(CalendarViewMode.Week, CalendarViewMode.Month).forEach { mode ->
+                    DropdownMenuItem(
+                        text = { Text(calendarViewModeLabel(mode)) },
+                        onClick = {
+                            onViewMode(mode)
+                            menuOpen = false
                         }
                     )
                 }
             }
         }
-        item { SectionLabel(selectedDate.format(DateTimeFormatter.ofPattern("M月d日")), "${events.size} events") }
-        items(events, key = { it.id }) { event -> CalendarRow(event) }
-        item {
-            OutlinedCard(colors = CardDefaults.outlinedCardColors(containerColor = ResolveColors.Surface)) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Add Event", color = ResolveColors.Text, fontWeight = FontWeight.SemiBold)
+        Surface(
+            color = Color.Transparent,
+            shape = CircleShape,
+            modifier = Modifier
+                .size(26.dp)
+                .clickable { onDate(shiftCalendarDate(selectedDate, viewMode, 1)) }
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next", tint = ResolveColors.Secondary, modifier = Modifier.size(19.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun CalendarNavigator(
+    selectedDate: LocalDate,
+    viewMode: CalendarViewMode,
+    onDate: (LocalDate) -> Unit
+) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        IconButton(onClick = { onDate(shiftCalendarDate(selectedDate, viewMode, -1)) }) {
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = "Previous",
+                tint = ResolveColors.Secondary,
+                modifier = Modifier.rotate(180f)
+            )
+        }
+        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(calendarRangeTitle(selectedDate, viewMode), color = ResolveColors.Text, fontWeight = FontWeight.SemiBold)
+            Text("Today ${LocalDate.now().format(DateTimeFormatter.ofPattern("M月d日"))}", color = ResolveColors.Muted, fontSize = 12.sp)
+        }
+        IconButton(onClick = { onDate(shiftCalendarDate(selectedDate, viewMode, 1)) }) {
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next", tint = ResolveColors.Secondary)
+        }
+    }
+}
+
+@Composable
+private fun CalendarGridCell(
+    date: LocalDate,
+    events: List<CalendarEvent>,
+    selected: Boolean,
+    isToday: Boolean,
+    isPast: Boolean,
+    slots: Int,
+    modifier: Modifier = Modifier,
+    onSelectDate: () -> Unit,
+    onExpandDay: () -> Unit
+) {
+    val visibleCount = events.size.coerceAtMost(slots)
+    val hiddenCount = events.size - visibleCount
+    val color = when {
+        isToday -> Color(0xFFEAF2FF)
+        selected -> Color(0xFFF5F9FF)
+        else -> Color.Transparent
+    }
+    val cellShape = RoundedCornerShape(3.dp)
+    Surface(
+        color = color,
+        shape = cellShape,
+        modifier = modifier
+            .border(
+                width = if (isToday || selected) 1.dp else 0.dp,
+                color = when {
+                    isToday -> Color(0xFF8CB7FF)
+                    selected -> Color(0xFFC7DAFF)
+                    else -> Color.Transparent
+                },
+                shape = cellShape
+            )
+            .clip(cellShape)
+            .clickable {
+                onSelectDate()
+            }
+    ) {
+        Column(Modifier.fillMaxSize().padding(horizontal = 1.dp, vertical = 1.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+            Row(
+                modifier = Modifier.height(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    color = when {
+                        isToday -> ResolveColors.Accent
+                        selected -> Color(0xFFDCE9FF)
+                        else -> Color.Transparent
+                    },
+                    shape = CircleShape
+                ) {
+                    Text(
+                        date.dayOfMonth.toString(),
+                        style = TextStyle(
+                            color = when {
+                                isToday -> Color.White
+                                isPast -> Color(0xFFADB4C0)
+                                selected -> ResolveColors.Accent
+                                else -> ResolveColors.Text
+                            },
+                            fontSize = 11.sp,
+                            lineHeight = 12.sp,
+                            platformStyle = PlatformTextStyle(includeFontPadding = false)
+                        ),
+                        fontWeight = if (selected || isToday) FontWeight.SemiBold else FontWeight.Normal,
+                        modifier = Modifier.padding(horizontal = if (isToday || selected) 4.dp else 1.dp, vertical = 1.dp)
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                if (hiddenCount > 0) {
+                    Text(
+                        "+$hiddenCount",
+                        style = TextStyle(
+                            color = ResolveColors.Muted,
+                            fontSize = 9.sp,
+                            lineHeight = 10.sp,
+                            platformStyle = PlatformTextStyle(includeFontPadding = false)
+                        ),
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(5.dp))
+                            .background(Color(0xFFE8EBF0))
+                            .clickable(onClick = onExpandDay)
+                            .padding(horizontal = 3.dp, vertical = 1.dp)
+                    )
+                }
+            }
+            events.take(visibleCount).forEach { event ->
+                CalendarEventChip(event = event, isPast = isPast, onClick = onExpandDay)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CalendarEventChip(event: CalendarEvent, isPast: Boolean, onClick: () -> Unit) {
+    Surface(
+        color = when {
+            isPast -> Color(0xFFE9ECF1)
+            event.provider == "feishu" -> Color(0xFFDCE9FF)
+            else -> Color(0xFFE7ECF5)
+        },
+        shape = RoundedCornerShape(2.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.height(15.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(3.dp)
+                    .height(15.dp)
+                    .background(if (isPast) Color(0xFFB7C0CC) else ResolveColors.Accent)
+            )
+            Text(
+                event.title,
+                color = if (isPast) Color(0xFF7A8493) else ResolveColors.Text,
+                style = TextStyle(
+                    color = if (isPast) Color(0xFF7A8493) else ResolveColors.Text,
+                    fontSize = 9.5.sp,
+                    lineHeight = 10.sp,
+                    platformStyle = PlatformTextStyle(includeFontPadding = false)
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = 2.dp, end = 2.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun ExpandedDayInlinePanel(
+    date: LocalDate,
+    events: List<CalendarEvent>,
+    onSelectEvent: (CalendarEvent) -> Unit
+) {
+    Surface(
+        color = Color(0xFFF0F2F5),
+        shape = RoundedCornerShape(0.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    date.format(DateTimeFormatter.ofPattern("M月d日")),
+                    color = ResolveColors.Text,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("${events.size} events", color = ResolveColors.Muted, fontSize = 11.sp)
+            }
+            if (events.isEmpty()) {
+                Text("这一天还没有日程", color = ResolveColors.Muted, fontSize = 12.sp)
+            } else {
+                events.forEach { event ->
+                    CalendarExpandedEventRow(event = event, onClick = { onSelectEvent(event) })
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CalendarExpandedEventRow(event: CalendarEvent, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 3.dp, vertical = 3.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(top = 7.dp)
+                .size(6.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(ResolveColors.Accent)
+        )
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                event.title,
+                color = ResolveColors.Text,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                calendarExpandedEventMeta(event),
+                color = ResolveColors.Secondary,
+                fontSize = 12.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun CalendarEventDetailPage(event: CalendarEvent, onClose: () -> Unit) {
+    Surface(color = ResolveColors.Bg, modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    color = ResolveColors.Pill,
+                    shape = CircleShape,
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clickable(onClick = onClose)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                            contentDescription = "Back",
+                            tint = ResolveColors.Secondary,
+                            modifier = Modifier.rotate(180f).size(22.dp)
+                        )
+                    }
+                }
+                Spacer(Modifier.width(10.dp))
+                Text("Event", color = ResolveColors.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.weight(1f))
+                MetaPill(if (event.status == "readonly" || !event.canEdit) "Readonly" else event.provider)
+            }
+
+            Surface(color = ResolveColors.Surface, shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(event.title, color = ResolveColors.Text, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+                    CalendarEventInfoRow(label = "Time", value = calendarEventDateTimeLabel(event))
+                    if (event.description.isNotBlank()) {
+                        CalendarEventInfoRow(label = "Comment", value = event.description)
+                    } else {
+                        CalendarEventInfoRow(label = "Comment", value = "No comment")
+                    }
+                    CalendarEventInfoRow(
+                        label = "Sync",
+                        value = if (event.status == "readonly" || !event.canEdit) "Readonly from Feishu" else "${event.provider} · ${event.status}"
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CalendarEventInfoRow(label: String, value: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(label, color = ResolveColors.Muted, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+        Text(value, color = ResolveColors.Secondary, fontSize = 14.sp)
+    }
+}
+
+@Composable
+private fun SelectedDayPreview(
+    date: LocalDate,
+    events: List<CalendarEvent>,
+    modifier: Modifier = Modifier,
+    onOpenDraft: () -> Unit,
+    onSelectEvent: (CalendarEvent) -> Unit,
+    onViewAll: () -> Unit
+) {
+    Surface(
+        color = ResolveColors.Surface,
+        shape = RoundedCornerShape(18.dp),
+        modifier = modifier
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        date.format(DateTimeFormatter.ofPattern("M月d日 EEE")),
+                        color = ResolveColors.Text,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text("${events.size} events", color = ResolveColors.Muted, fontSize = 12.sp)
+                }
+                TextButton(onClick = onOpenDraft) {
+                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(3.dp))
+                    Text("New")
+                }
+            }
+            if (events.isEmpty()) {
+                Surface(color = ResolveColors.Pill, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        "这一天还没有日程",
+                        color = ResolveColors.Muted,
+                        fontSize = 13.sp,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                    )
+                }
+            } else {
+                events.take(3).forEach { event ->
+                    CalendarSelectedDayEventRow(event = event, onClick = { onSelectEvent(event) })
+                }
+                if (events.size > 3) {
+                    TextButton(onClick = onViewAll, modifier = Modifier.fillMaxWidth()) {
+                        Text("View all · 还有 ${events.size - 3} 项")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CalendarSelectedDayEventRow(event: CalendarEvent, onClick: () -> Unit) {
+    Surface(
+        color = if (event.provider == "feishu") Color(0xFFF2FAFF) else ResolveColors.Pill,
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            Text(
+                eventTimeLabel(event.startsAt),
+                color = ResolveColors.Accent,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(event.title, color = ResolveColors.Text, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                val status = if (event.status == "readonly" || !event.canEdit) "Readonly from Feishu" else "${event.provider} · ${event.status}"
+                Text(status, color = ResolveColors.Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CalendarDraftPage(
+    draft: CalendarDraft,
+    onDraft: (CalendarDraft) -> Unit,
+    onCreate: (CalendarDraft) -> Unit,
+    onClose: () -> Unit
+) {
+    val context = LocalContext.current
+    Surface(color = ResolveColors.Bg, modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    color = ResolveColors.Pill,
+                    shape = CircleShape,
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clickable(onClick = onClose)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                            contentDescription = "Back",
+                            tint = ResolveColors.Secondary,
+                            modifier = Modifier.rotate(180f).size(22.dp)
+                        )
+                    }
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("New Event", color = ResolveColors.Text, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                    Text(draft.date.format(DateTimeFormatter.ofPattern("M月d日 EEE")), color = ResolveColors.Muted, fontSize = 12.sp)
+                }
+            }
+
+            Surface(color = ResolveColors.Surface, shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedTextField(
                         value = draft.title,
                         onValueChange = { onDraft(draft.copy(title = it)) },
@@ -761,7 +1546,7 @@ private fun CalendarScreen(
                         placeholder = { Text("日程标题") },
                         colors = inputColors()
                     )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
                         AssistChip(
                             onClick = {
                                 DatePickerDialog(
@@ -793,16 +1578,17 @@ private fun CalendarScreen(
                         value = draft.description,
                         onValueChange = { onDraft(draft.copy(description = it)) },
                         modifier = Modifier.fillMaxWidth(),
-                        minLines = 2,
+                        minLines = 4,
                         placeholder = { Text("备注，可选") },
                         colors = inputColors()
                     )
                     Button(
-                        onClick = { onCreate(draft.copy(date = selectedDate)) },
+                        onClick = { onCreate(draft) },
                         enabled = draft.title.isNotBlank(),
-                        colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.Accent)
+                        colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.Accent),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Create")
+                        Text("Create in Feishu")
                     }
                 }
             }
@@ -811,8 +1597,54 @@ private fun CalendarScreen(
 }
 
 @Composable
-private fun CalendarRow(event: CalendarEvent) {
-    OutlinedCard(colors = CardDefaults.outlinedCardColors(containerColor = ResolveColors.Surface)) {
+private fun CalendarEventDetailSheet(event: CalendarEvent, onClose: () -> Unit) {
+    Column(Modifier.padding(horizontal = 18.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(event.title, color = ResolveColors.Text, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+                Text(calendarEventDateTimeLabel(event), color = ResolveColors.Secondary, fontSize = 13.sp)
+            }
+            IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close") }
+        }
+        MetaPill(if (event.status == "readonly" || !event.canEdit) "Readonly from Feishu" else "${event.provider} · ${event.status}")
+        Surface(color = ResolveColors.Pill, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Comment", color = ResolveColors.Muted, fontSize = 12.sp)
+                Text(event.description.ifBlank { "No comment" }, color = ResolveColors.Secondary, fontSize = 14.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CalendarDayListSheet(
+    date: LocalDate,
+    events: List<CalendarEvent>,
+    onClose: () -> Unit,
+    onSelect: (CalendarEvent) -> Unit
+) {
+    Column(Modifier.padding(horizontal = 18.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(date.format(DateTimeFormatter.ofPattern("M月d日 EEE")), color = ResolveColors.Text, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+                Text("${events.size} events", color = ResolveColors.Muted, fontSize = 13.sp)
+            }
+            IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close") }
+        }
+        events.forEach { event ->
+            CalendarRow(event = event, onClick = { onSelect(event) })
+        }
+    }
+}
+
+@Composable
+private fun CalendarRow(event: CalendarEvent, onClick: (() -> Unit)? = null) {
+    OutlinedCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .let { if (onClick != null) it.clickable(onClick = onClick) else it },
+        colors = CardDefaults.outlinedCardColors(containerColor = ResolveColors.Surface)
+    ) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.Top) {
             Text(eventTimeLabel(event.startsAt), color = ResolveColors.Accent, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.width(12.dp))
@@ -902,7 +1734,6 @@ private fun SettingsScreen(
     onBackendSignIn: (String) -> Unit,
     onBackendDisconnect: () -> Unit,
     onBackendFeishuConnect: () -> Unit,
-    onSync: () -> Unit,
     onDisconnect: () -> Unit
 ) {
     var email by remember(state.backendSettings.email) { mutableStateOf(state.backendSettings.email) }
@@ -920,41 +1751,55 @@ private fun SettingsScreen(
                             Text(backendStatusLabel(state.backendSettings), color = ResolveColors.Secondary)
                         }
                     }
-                    OutlinedTextField(
-                        value = email,
-                        onValueChange = {
-                            email = it.trim()
-                            onBackendSettings(state.backendSettings.copy(email = email))
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        placeholder = { Text("Login email") },
-                        colors = inputColors()
-                    )
-                    OutlinedTextField(
-                        value = password,
-                        onValueChange = { password = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        placeholder = { Text(if (backendReady) "Password, only when signing in again" else "Password") },
-                        visualTransformation = PasswordVisualTransformation(),
-                        colors = inputColors()
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
-                        Button(
-                            onClick = {
-                                onBackendSignIn(password)
-                                password = ""
-                            },
-                            enabled = !isConnecting && email.isNotBlank() && password.isNotBlank(),
-                            colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.Accent)
+                    if (backendReady) {
+                        Surface(
+                            color = ResolveColors.Pill,
+                            shape = RoundedCornerShape(18.dp),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Icon(Icons.Filled.Key, contentDescription = null, Modifier.size(17.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(if (backendReady) "Re-sign in" else "Sign in")
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = ResolveColors.Accent, modifier = Modifier.size(19.dp))
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text("Signed in", color = ResolveColors.Text, fontWeight = FontWeight.SemiBold)
+                                    Text(state.backendSettings.email.ifBlank { "Resolve account" }, color = ResolveColors.Secondary, fontSize = 12.sp)
+                                }
+                            }
                         }
-                        Button(onClick = onSync, enabled = state.backendSettings.feishuConnected && !isSyncing) {
-                            Icon(Icons.Filled.Refresh, contentDescription = null, Modifier.size(17.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(if (isSyncing) "Syncing" else "Sync")
+                    } else {
+                        OutlinedTextField(
+                            value = email,
+                            onValueChange = {
+                                email = it.trim()
+                                onBackendSettings(state.backendSettings.copy(email = email))
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = { Text("Email") },
+                            colors = inputColors()
+                        )
+                        OutlinedTextField(
+                            value = password,
+                            onValueChange = { password = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = { Text("Password") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            colors = inputColors()
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                        if (!backendReady) {
+                            Button(
+                                onClick = { onBackendSignIn(password) },
+                                enabled = !isConnecting && email.isNotBlank() && password.isNotBlank(),
+                                colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.Accent)
+                            ) {
+                                Icon(Icons.Filled.Key, contentDescription = null, Modifier.size(17.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(if (isConnecting) "Signing in" else "Sign in")
+                            }
                         }
                         TextButton(onClick = onBackendDisconnect, enabled = backendReady) {
                             Text("Sign out")
@@ -980,15 +1825,6 @@ private fun SettingsScreen(
                             Icon(Icons.Filled.OpenInBrowser, contentDescription = null, Modifier.size(17.dp))
                             Spacer(Modifier.width(6.dp))
                             Text(if (isConnecting) "Waiting" else if (backendReady) "Reconnect" else "Connect")
-                        }
-                        Button(
-                            onClick = onSync,
-                            enabled = (state.backendSettings.feishuConnected ||
-                                state.feishuSettings.status == FeishuStatus.Connected) && !isSyncing
-                        ) {
-                            Icon(Icons.Filled.Refresh, contentDescription = null, Modifier.size(17.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(if (isSyncing) "Syncing" else "Sync")
                         }
                         TextButton(onClick = onDisconnect) {
                             Icon(Icons.Filled.Close, contentDescription = null, Modifier.size(17.dp))
@@ -1121,19 +1957,203 @@ private fun MetaPill(label: String) {
 }
 
 @Composable
-private fun ToastChip(message: String, onDismiss: () -> Unit) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-        Surface(
-            color = Color(0xE61D1D1F),
-            shape = RoundedCornerShape(999.dp),
-            modifier = Modifier
-                .padding(bottom = 94.dp)
-                .clickable(onClick = onDismiss)
+private fun InlineNotice(message: String, onDismiss: () -> Unit) {
+    Surface(color = Color(0xFFFFF4E4), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.padding(start = 12.dp, top = 10.dp, end = 8.dp, bottom = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(message, color = Color.White, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp))
+            Text(message, color = ResolveColors.Secondary, fontSize = 13.sp, modifier = Modifier.weight(1f))
+            IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
+                Icon(Icons.Filled.Close, contentDescription = "Dismiss", tint = ResolveColors.Muted, modifier = Modifier.size(16.dp))
+            }
         }
     }
 }
+
+private fun calendarViewModeLabel(mode: CalendarViewMode): String = when (mode) {
+    CalendarViewMode.Day -> "Day"
+    CalendarViewMode.Week -> "Week"
+    CalendarViewMode.Month -> "Month"
+}
+
+private fun weekStart(date: LocalDate): LocalDate =
+    date.minusDays((date.dayOfWeek.value % 7).toLong())
+
+private fun shiftCalendarDate(date: LocalDate, mode: CalendarViewMode, direction: Int): LocalDate = when (mode) {
+    CalendarViewMode.Day -> date.plusDays(direction.toLong())
+    CalendarViewMode.Week -> date.plusDays(7L * direction)
+    CalendarViewMode.Month -> date.plusMonths(direction.toLong())
+}
+
+private fun calendarRangeTitle(date: LocalDate, mode: CalendarViewMode): String = when (mode) {
+    CalendarViewMode.Day -> date.format(DateTimeFormatter.ofPattern("yyyy年M月d日"))
+    CalendarViewMode.Week -> {
+        val start = weekStart(date)
+        val end = start.plusDays(6)
+        "${start.format(DateTimeFormatter.ofPattern("M月d日"))} - ${end.format(DateTimeFormatter.ofPattern("M月d日"))}"
+    }
+    CalendarViewMode.Month -> date.format(DateTimeFormatter.ofPattern("yyyy年M月"))
+}
+
+private fun monthGridDates(date: LocalDate): List<LocalDate> {
+    val firstDay = date.withDayOfMonth(1)
+    val start = weekStart(firstDay)
+    return (0 until 42).map { start.plusDays(it.toLong()) }
+}
+
+private fun calendarEventVisible(event: CalendarEvent): Boolean =
+    event.status !in setOf("archived_locally", "remote_deleted", "local_pending_delete", "cancelled")
+
+private fun expandRecurringCalendarEvents(
+    events: List<CalendarEvent>,
+    rangeStart: Instant,
+    rangeEnd: Instant,
+    zone: ZoneId
+): List<CalendarEvent> =
+    events
+        .flatMap { event ->
+            val recurrence = event.recurrence?.takeIf { it.isNotBlank() }
+            if (recurrence == null) {
+                if (eventOverlapsWindow(event, rangeStart, rangeEnd)) listOf(event) else emptyList()
+            } else {
+                expandRecurringCalendarEvent(event, recurrence, rangeStart, rangeEnd, zone)
+            }
+        }
+        .distinctBy { event ->
+            listOf(
+                event.externalCalendarId ?: event.provider,
+                event.externalEventId ?: event.id,
+                event.startsAt.toString()
+            ).joinToString(":")
+        }
+        .sortedBy { it.startsAt }
+
+private fun eventOverlapsWindow(event: CalendarEvent, rangeStart: Instant, rangeEnd: Instant): Boolean {
+    val endsAt = event.endsAt ?: event.startsAt
+    return endsAt >= rangeStart && event.startsAt < rangeEnd
+}
+
+private fun expandRecurringCalendarEvent(
+    event: CalendarEvent,
+    recurrence: String,
+    rangeStart: Instant,
+    rangeEnd: Instant,
+    zone: ZoneId
+): List<CalendarEvent> {
+    val rule = parseRRule(recurrence)
+    val freq = rule["FREQ"] ?: return if (eventOverlapsWindow(event, rangeStart, rangeEnd)) listOf(event) else emptyList()
+    val interval = rule["INTERVAL"]?.toLongOrNull()?.coerceAtLeast(1L) ?: 1L
+    val count = rule["COUNT"]?.toIntOrNull()
+    val until = rule["UNTIL"]?.let { parseRRuleUntil(it, zone) }
+    val start = event.startsAt.atZone(zone)
+    val end = (event.endsAt ?: event.startsAt).atZone(zone)
+    val duration = Duration.between(start, end)
+    val byDays = parseByDay(rule["BYDAY"])
+    val byMonthDays = parseByMonthDay(rule["BYMONTHDAY"])
+    val occurrences = mutableListOf<CalendarEvent>()
+    var cursor = start
+    var generated = 0
+    var guard = 0
+
+    while (cursor.toInstant() < rangeEnd && guard < 2500) {
+        guard += 1
+        if (until != null && cursor.toInstant() > until) break
+        if (count != null && generated >= count) break
+
+        val starts = occurrenceStartsForCursor(cursor, start, freq, byDays, byMonthDays)
+            .filter { it.toInstant() >= event.startsAt }
+            .sortedBy { it.toInstant() }
+
+        for (occurrenceStart in starts) {
+            if (until != null && occurrenceStart.toInstant() > until) continue
+            if (count != null && generated >= count) break
+            generated += 1
+            val occurrenceEnd = occurrenceStart.plus(duration)
+            if (occurrenceEnd.toInstant() < rangeStart || occurrenceStart.toInstant() >= rangeEnd) continue
+            occurrences += event.copy(
+                id = "${event.id}_${occurrenceStart.toInstant()}",
+                startsAt = occurrenceStart.toInstant(),
+                endsAt = occurrenceEnd.toInstant()
+            )
+        }
+
+        cursor = advanceRecurringCursor(cursor, freq, interval)
+    }
+
+    return occurrences.ifEmpty {
+        if (eventOverlapsWindow(event, rangeStart, rangeEnd)) listOf(event) else emptyList()
+    }
+}
+
+private fun parseRRule(recurrence: String): Map<String, String> {
+    val cleaned = recurrence.substringAfter("RRULE:", recurrence)
+    return cleaned
+        .split(";")
+        .mapNotNull { part ->
+            val index = part.indexOf("=")
+            if (index <= 0) null else part.substring(0, index) to part.substring(index + 1)
+        }
+        .toMap()
+}
+
+private fun parseRRuleUntil(value: String, zone: ZoneId): Instant? =
+    when {
+        Regex("^\\d{8}T\\d{6}Z$").matches(value) -> runCatching {
+            Instant.parse("${value.slice(0..3)}-${value.slice(4..5)}-${value.slice(6..7)}T${value.slice(9..10)}:${value.slice(11..12)}:${value.slice(13..14)}Z")
+        }.getOrNull()
+        Regex("^\\d{8}$").matches(value) -> runCatching {
+            LocalDate.parse(value, DateTimeFormatter.BASIC_ISO_DATE).plusDays(1).atStartOfDay(zone).toInstant()
+        }.getOrNull()
+        else -> runCatching { Instant.parse(value) }.getOrNull()
+    }
+
+private fun parseByDay(value: String?): List<Int>? {
+    if (value.isNullOrBlank()) return null
+    val map = mapOf("SU" to 0, "MO" to 1, "TU" to 2, "WE" to 3, "TH" to 4, "FR" to 5, "SA" to 6)
+    val days = value.split(",").mapNotNull { day ->
+        map[day.replace(Regex("^-?\\d+"), "")]
+    }
+    return days.takeIf { it.isNotEmpty() }
+}
+
+private fun parseByMonthDay(value: String?): List<Int>? {
+    if (value.isNullOrBlank()) return null
+    val days = value.split(",").mapNotNull { it.toIntOrNull() }.filter { it > 0 }
+    return days.takeIf { it.isNotEmpty() }
+}
+
+private fun occurrenceStartsForCursor(
+    cursor: ZonedDateTime,
+    start: ZonedDateTime,
+    freq: String,
+    byDays: List<Int>?,
+    byMonthDays: List<Int>?
+): List<ZonedDateTime> {
+    if (freq == "WEEKLY" && !byDays.isNullOrEmpty()) {
+        return byDays.map { day ->
+            val offset = (day - cursor.dayOfWeek.value % 7 + 7) % 7
+            cursor.plusDays(offset.toLong()).withHour(start.hour).withMinute(start.minute).withSecond(start.second).withNano(start.nano)
+        }
+    }
+    if (freq == "MONTHLY" && !byMonthDays.isNullOrEmpty()) {
+        return byMonthDays.mapNotNull { day ->
+            runCatching {
+                cursor.withDayOfMonth(day).withHour(start.hour).withMinute(start.minute).withSecond(start.second).withNano(start.nano)
+            }.getOrNull()
+        }.filter { it.month == cursor.month }
+    }
+    return listOf(cursor)
+}
+
+private fun advanceRecurringCursor(cursor: ZonedDateTime, freq: String, interval: Long): ZonedDateTime =
+    when (freq) {
+        "DAILY" -> cursor.plusDays(interval)
+        "WEEKLY" -> cursor.plusWeeks(interval)
+        "MONTHLY" -> cursor.plusMonths(interval)
+        "YEARLY" -> cursor.plusYears(interval)
+        else -> cursor.plusDays(interval)
+    }
 
 @Composable
 private fun ResolveTheme(content: @Composable () -> Unit) {
@@ -1181,6 +2201,22 @@ private fun eventTimeLabel(instant: Instant): String =
 
 private fun dateLabel(instant: Instant): String =
     instant.atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("M月d日 HH:mm"))
+
+private fun calendarEventDateTimeLabel(event: CalendarEvent): String {
+    val startsAt = event.startsAt.atZone(ZoneId.systemDefault())
+    val startText = startsAt.format(DateTimeFormatter.ofPattern("M月d日 EEE HH:mm"))
+    val endText = event.endsAt?.atZone(ZoneId.systemDefault())?.format(DateTimeFormatter.ofPattern("HH:mm"))
+    return if (endText != null) "$startText - $endText" else startText
+}
+
+private fun calendarExpandedEventMeta(event: CalendarEvent): String {
+    val startsAt = event.startsAt.atZone(ZoneId.systemDefault())
+    val startText = startsAt.format(DateTimeFormatter.ofPattern("HH:mm"))
+    val endText = event.endsAt?.atZone(ZoneId.systemDefault())?.format(DateTimeFormatter.ofPattern("HH:mm"))
+    val timeText = if (endText != null) "$startText - $endText" else startText
+    val note = event.description.lineSequence().firstOrNull()?.takeIf { it.isNotBlank() }
+    return if (note == null) timeText else "$timeText $note"
+}
 
 private fun relativeTime(instant: Instant): String {
     val minutes = ((System.currentTimeMillis() - instant.toEpochMilli()) / 60_000).coerceAtLeast(0)

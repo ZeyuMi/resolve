@@ -32,7 +32,9 @@ export interface FeishuServerCalendar {
   calendarId: string;
   summary?: string;
   isPrimary?: boolean;
+  type?: string;
   accessRole?: string;
+  raw?: unknown;
 }
 
 export interface CreateFeishuServerEventInput {
@@ -50,7 +52,6 @@ export function buildFeishuAuthorizeUrl(config: Pick<FeishuServerConfig, "appId"
   const scope = [
     "calendar:calendar",
     "calendar:calendar:readonly",
-    "calendar:calendar:read",
     "calendar:calendar.event:read",
     "calendar:calendar.event:create",
     "calendar:calendar.event:update",
@@ -119,6 +120,27 @@ export class FeishuServerClient {
   async getPrimaryCalendar(): Promise<FeishuServerCalendar> {
     const data = await this.request<{ calendar: unknown }>("/calendar/v4/calendars/primary");
     return mapCalendar(data.calendar);
+  }
+
+  async listCalendars(): Promise<FeishuServerCalendar[]> {
+    const calendars: FeishuServerCalendar[] = [];
+    let pageToken: string | undefined;
+    do {
+      const query = new URLSearchParams({
+        page_size: "100"
+      });
+      if (pageToken) query.set("page_token", pageToken);
+      const data = await this.request<{
+        calendar_list?: unknown[];
+        calendars?: unknown[];
+        items?: unknown[];
+        has_more?: boolean;
+        page_token?: string;
+      }>(`/calendar/v4/calendars?${query.toString()}`);
+      calendars.push(...(data.calendar_list ?? data.calendars ?? data.items ?? []).map(mapCalendar));
+      pageToken = data.has_more ? data.page_token : undefined;
+    } while (pageToken);
+    return calendars;
   }
 
   async listEvents(params: {
@@ -243,7 +265,9 @@ function mapCalendar(value: unknown): FeishuServerCalendar {
     calendarId: String(record.calendar_id ?? record.calendarId ?? "primary"),
     summary: typeof record.summary === "string" ? record.summary : undefined,
     isPrimary: record.is_primary === true,
-    accessRole: typeof record.access_role === "string" ? record.access_role : undefined
+    type: typeof record.type === "string" ? record.type : undefined,
+    accessRole: typeof record.access_role === "string" ? record.access_role : undefined,
+    raw: value
   };
 }
 

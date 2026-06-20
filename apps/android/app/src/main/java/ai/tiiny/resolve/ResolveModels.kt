@@ -5,6 +5,9 @@ import java.time.LocalDate
 import java.time.LocalTime
 import java.util.UUID
 
+const val FullFeishuSyncPastDays = 3650 * 2
+const val FullFeishuSyncFutureDays = 3650
+
 enum class ItemType { Task, StrategyNote }
 enum class ItemStatus { Active, Done, Archived }
 enum class ItemRoute { Calendar, Strategy, Archive, Delete, Task }
@@ -39,6 +42,7 @@ data class CalendarEvent(
     val status: String = "local",
     val title: String,
     val description: String = "",
+    val recurrence: String? = null,
     val startsAt: Instant,
     val endsAt: Instant? = null,
     val externalCalendarId: String? = null,
@@ -52,8 +56,8 @@ data class CalendarEvent(
 data class FeishuSettings(
     val appId: String = "",
     val defaultCalendar: String = "primary",
-    val pastDays: Int = 14,
-    val futureDays: Int = 90,
+    val pastDays: Int = FullFeishuSyncPastDays,
+    val futureDays: Int = FullFeishuSyncFutureDays,
     val status: FeishuStatus = FeishuStatus.NotConnected,
     val lastSyncedAt: Instant? = null,
     val lastError: String? = null

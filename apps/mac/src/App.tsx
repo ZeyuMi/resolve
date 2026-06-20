@@ -90,7 +90,7 @@ const feishuSyncIntervalMs = 30 * 1000;
 const feishuCalendarActiveSyncIntervalMs = 8 * 1000;
 const feishuOAuthScopes = feishuCalendarScopes
   .map((scope) => scope.key)
-  .filter((scope) => scope !== "calendar:calendar:read" && scope !== "contact:user.email:readonly");
+  .filter((scope) => scope !== "contact:user.email:readonly");
 
 function calendarEventId(calendarId: string, eventId: string) {
   return `feishu_${calendarId}_${eventId}`.replace(/[^a-zA-Z0-9_-]/g, "_");

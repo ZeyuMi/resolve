@@ -1,6 +1,7 @@
 import {
   FeishuServerClient,
   type CreateFeishuServerEventInput,
+  type FeishuServerCalendar,
   type FeishuServerConfig,
   type FeishuServerEvent,
   type FeishuTokenSet
@@ -44,10 +45,15 @@ interface CalendarEventRow {
 export interface SyncResult {
   userId: string;
   calendarId: string;
+  calendarIds: string[];
   upserted: number;
   remoteDeleted: number;
   syncedAt: string;
+  skippedCalendars?: Array<{ calendarId: string; error: string }>;
 }
+
+const fullSyncPastDays = 3650 * 2;
+const fullSyncFutureDays = 3650;
 
 export async function syncFeishuForUser(userId: string): Promise<SyncResult> {
   const connection = await loadConnection(userId);
@@ -62,60 +68,89 @@ export async function syncFeishuForUser(userId: string): Promise<SyncResult> {
   }
 
   const primaryCalendar = await client.getPrimaryCalendar();
-  const calendarId = connection.default_calendar_id ?? primaryCalendar.calendarId;
+  const defaultCalendarId = connection.default_calendar_id ?? primaryCalendar.calendarId;
+  const calendars = await readableFeishuCalendars(client, primaryCalendar, defaultCalendarId);
   const syncedAt = new Date().toISOString();
-  const startsAt = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
-  const endsAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
-
-  const events = [];
-  let pageToken: string | undefined;
-  do {
-    const page = await client.listEvents({
-      calendarId,
-      startsAt,
-      endsAt,
-      pageToken
-    });
-    events.push(...page.events);
-    pageToken = page.nextPageToken;
-  } while (pageToken);
+  const startsAt = new Date(Date.now() - fullSyncPastDays * 24 * 60 * 60 * 1000).toISOString();
+  const endsAt = new Date(Date.now() + fullSyncFutureDays * 24 * 60 * 60 * 1000).toISOString();
 
   const rows: CalendarEventRow[] = [];
-  for (const event of events.filter((item) => item.eventId)) {
-    rows.push(await toCalendarEventRow(userId, calendarId, event, syncedAt));
+  const successfulCalendarIds = new Set<string>();
+  const skippedCalendars: Array<{ calendarId: string; error: string }> = [];
+
+  for (const calendar of calendars) {
+    const events: FeishuServerEvent[] = [];
+    let pageToken: string | undefined;
+    try {
+      do {
+        const page = await client.listEvents({
+          calendarId: calendar.calendarId,
+          startsAt,
+          endsAt,
+          pageToken
+        });
+        events.push(...page.events);
+        pageToken = page.nextPageToken;
+      } while (pageToken);
+
+      successfulCalendarIds.add(calendar.calendarId);
+      for (const event of events.filter((item) => item.eventId)) {
+        rows.push(await toCalendarEventRow(userId, event.calendarId || calendar.calendarId, event, syncedAt));
+      }
+    } catch (error) {
+      skippedCalendars.push({
+        calendarId: calendar.calendarId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  if (!successfulCalendarIds.size) {
+    throw new Error(skippedCalendars[0]?.error ?? "No Feishu calendars could be synced.");
   }
 
   if (rows.length) {
     await restUpsert("resolve_calendar_events", rows, "user_id,id");
   }
 
-  const remoteIds = new Set(rows.map((row) => row.id));
-  const existingRows = await restSelect<{ id: string }>(
-    "resolve_calendar_events",
-    [
-      "select=id",
-      `user_id=eq.${encodeFilter(userId)}`,
-      "encryption_scheme=eq.server_calendar_v1",
-      `external_calendar_id=eq.${encodeFilter(calendarId)}`,
-      `starts_at=gte.${encodeFilter(startsAt)}`,
-      `starts_at=lte.${encodeFilter(endsAt)}`
-    ].join("&")
-  );
-  const missingIds = existingRows.map((row) => row.id).filter((id) => !remoteIds.has(id));
-  if (missingIds.length) {
-    await Promise.all(
-      missingIds.map((id) =>
-        restPatch(
-          "resolve_calendar_events",
-          `user_id=eq.${encodeFilter(userId)}&id=eq.${encodeFilter(id)}`,
-          {
-            status: "remote_deleted",
-            last_synced_at: syncedAt,
-            updated_at: syncedAt
-          }
-        )
-      )
+  const remoteIdsByCalendar = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const remoteIds = remoteIdsByCalendar.get(row.external_calendar_id) ?? new Set<string>();
+    remoteIds.add(row.id);
+    remoteIdsByCalendar.set(row.external_calendar_id, remoteIds);
+  }
+
+  let remoteDeleted = 0;
+  for (const calendarId of successfulCalendarIds) {
+    const remoteIds = remoteIdsByCalendar.get(calendarId) ?? new Set<string>();
+    const existingRows = await restSelect<{ id: string }>(
+      "resolve_calendar_events",
+      [
+        "select=id",
+        `user_id=eq.${encodeFilter(userId)}`,
+        "encryption_scheme=eq.server_calendar_v1",
+        `external_calendar_id=eq.${encodeFilter(calendarId)}`,
+        `starts_at=gte.${encodeFilter(startsAt)}`,
+        `starts_at=lte.${encodeFilter(endsAt)}`
+      ].join("&")
     );
+    const missingIds = existingRows.map((row) => row.id).filter((id) => !remoteIds.has(id));
+    remoteDeleted += missingIds.length;
+    if (missingIds.length) {
+      await Promise.all(
+        missingIds.map((id) =>
+          restPatch(
+            "resolve_calendar_events",
+            `user_id=eq.${encodeFilter(userId)}&id=eq.${encodeFilter(id)}`,
+            {
+              status: "remote_deleted",
+              last_synced_at: syncedAt,
+              updated_at: syncedAt
+            }
+          )
+        )
+      );
+    }
   }
 
   await restUpsert(
@@ -134,7 +169,7 @@ export async function syncFeishuForUser(userId: string): Promise<SyncResult> {
     `user_id=eq.${encodeFilter(userId)}`,
     {
       status: "connected",
-      default_calendar_id: calendarId,
+      default_calendar_id: defaultCalendarId,
       last_server_sync_at: syncedAt,
       updated_at: syncedAt
     }
@@ -142,11 +177,38 @@ export async function syncFeishuForUser(userId: string): Promise<SyncResult> {
 
   return {
     userId,
-    calendarId,
+    calendarId: defaultCalendarId,
+    calendarIds: Array.from(successfulCalendarIds),
     upserted: rows.length,
-    remoteDeleted: missingIds.length,
-    syncedAt
+    remoteDeleted,
+    syncedAt,
+    skippedCalendars: skippedCalendars.length ? skippedCalendars : undefined
   };
+}
+
+async function readableFeishuCalendars(
+  client: FeishuServerClient,
+  primary: FeishuServerCalendar,
+  defaultCalendarId?: string
+) {
+  try {
+    const calendars = await client.listCalendars();
+    const defaultCalendar =
+      defaultCalendarId && defaultCalendarId !== "primary"
+        ? { calendarId: defaultCalendarId, type: "primary" } satisfies FeishuServerCalendar
+        : undefined;
+    const all = [primary, ...(defaultCalendar ? [defaultCalendar] : []), ...calendars];
+    const unique = new Map(
+      all
+        .filter((calendar) => calendar.calendarId)
+        .map((calendar) => [calendar.calendarId, calendar])
+    );
+    return Array.from(unique.values());
+  } catch {
+    return defaultCalendarId && defaultCalendarId !== "primary"
+      ? [primary, { calendarId: defaultCalendarId, type: "primary" }]
+      : [primary];
+  }
 }
 
 export async function createFeishuEventForUser(

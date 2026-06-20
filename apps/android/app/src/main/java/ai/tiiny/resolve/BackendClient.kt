@@ -69,8 +69,8 @@ class BackendClient(
 
     fun listEvents(feishuSettings: FeishuSettings): List<CalendarEvent> {
         val now = Instant.now()
-        val startsAt = now.minusSeconds(feishuSettings.pastDays.toLong() * 24 * 3600)
-        val endsAt = now.plusSeconds(feishuSettings.futureDays.toLong() * 24 * 3600)
+        val startsAt = now.minusSeconds(feishuSettings.pastDays.coerceAtLeast(FullFeishuSyncPastDays).toLong() * 24 * 3600)
+        val endsAt = now.plusSeconds(feishuSettings.futureDays.coerceAtLeast(FullFeishuSyncFutureDays).toLong() * 24 * 3600)
         val response = connector(
             JSONObject()
                 .put("action", "list_events")
@@ -176,6 +176,7 @@ private fun mapServerCalendarEvent(json: JSONObject): CalendarEvent {
         status = meta.optString("status", "synced"),
         title = payload.optString("title", "Untitled Feishu event").ifBlank { "Untitled Feishu event" },
         description = payload.optString("description"),
+        recurrence = payload.optNullableString("recurrence"),
         startsAt = instantOrNull(meta.optString("startsAt")) ?: Instant.now(),
         endsAt = meta.optNullableString("endsAt")?.let(::instantOrNull),
         externalCalendarId = meta.optNullableString("externalCalendarId"),

@@ -86,15 +86,21 @@ Deno.serve(async (request) => {
         updated_at: new Date().toISOString()
       }
     );
-    return html(
-      "Resolve Feishu",
-      "Feishu is connected, but the first calendar sync failed. Return to Resolve and tap Sync.",
-      200
-    );
+    return redirectToResolve("sync_failed");
   }
 
-  return html("Resolve Feishu", "Feishu is connected and calendar sync has started. You can return to Resolve.", 200);
+  return redirectToResolve("connected");
 });
+
+function redirectToResolve(status: string) {
+  return new Response(null, {
+    status: 302,
+    headers: {
+      location: `resolve://oauth/feishu?status=${encodeURIComponent(status)}`,
+      ...securityHeaders
+    }
+  });
+}
 
 function html(title: string, message: string, status: number) {
   return new Response(

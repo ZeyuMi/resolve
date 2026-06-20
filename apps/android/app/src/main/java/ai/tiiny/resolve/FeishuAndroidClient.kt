@@ -25,8 +25,8 @@ class FeishuAndroidClient(
     fun listEvents(settings: FeishuSettings): List<CalendarEvent> {
         val calendarId = resolveCalendarId(settings.defaultCalendar)
         val now = Instant.now()
-        val startsAt = now.minusSeconds(settings.pastDays.toLong() * 24 * 3600)
-        val endsAt = now.plusSeconds(settings.futureDays.toLong() * 24 * 3600)
+        val startsAt = now.minusSeconds(settings.pastDays.coerceAtLeast(FullFeishuSyncPastDays).toLong() * 24 * 3600)
+        val endsAt = now.plusSeconds(settings.futureDays.coerceAtLeast(FullFeishuSyncFutureDays).toLong() * 24 * 3600)
         val items = mutableListOf<CalendarEvent>()
         var pageToken: String? = null
 
@@ -213,6 +213,7 @@ private fun mapEvent(calendarId: String, json: JSONObject): CalendarEvent {
         status = if (permissions.optBoolean("editable", true)) "synced" else "readonly",
         title = json.optString("summary", "Untitled Feishu event"),
         description = json.optString("description"),
+        recurrence = json.optString("recurrence").takeIf { it.isNotBlank() },
         startsAt = startsAt,
         endsAt = feishuInstant(end),
         externalCalendarId = calendarId,

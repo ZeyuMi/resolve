@@ -8,10 +8,6 @@ export const feishuCalendarScopes = [
     label: "读取日历、日程和忙闲信息"
   },
   {
-    key: "calendar:calendar:read",
-    label: "读取日历信息"
-  },
-  {
     key: "calendar:calendar.event:read",
     label: "读取日程列表"
   },
