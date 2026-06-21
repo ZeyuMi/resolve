@@ -12,15 +12,16 @@ class ResolveRepository(context: Context) {
         val raw = prefs.getString("state_json", null) ?: return sampleResolveState().also { save(it) }
         return runCatching {
             decodeState(JSONObject(raw)).let { state ->
-                val normalized = state.copy(calendarEvents = normalizeCalendarEvents(state.calendarEvents))
-                if (normalized.calendarEvents.size != state.calendarEvents.size) save(normalized)
+                val normalized = scrubSampleData(state).copy(calendarEvents = normalizeCalendarEvents(state.calendarEvents))
+                if (normalized != state) save(normalized)
                 normalized
             }
         }.getOrElse { sampleResolveState().also { save(it) } }
     }
 
     fun save(state: ResolveState) {
-        prefs.edit().putString("state_json", encodeState(state).toString()).apply()
+        val normalized = scrubSampleData(state).copy(calendarEvents = normalizeCalendarEvents(state.calendarEvents))
+        prefs.edit().putString("state_json", encodeState(normalized).toString()).apply()
     }
 
     private fun encodeState(state: ResolveState) = JSONObject()
@@ -155,6 +156,64 @@ class ResolveRepository(context: Context) {
         lastSyncedAt = json.optNullableString("lastSyncedAt")?.let(::instantOrNull),
         lastError = json.optNullableString("lastError")
     )
+
+    private fun scrubSampleData(state: ResolveState): ResolveState {
+        val sampleThreadIds = state.threads
+            .filter(::isSeedThread)
+            .map { it.id }
+            .toSet()
+        return state.copy(
+            items = state.items
+                .filterNot { it.title in sampleItemTitles }
+                .map { item ->
+                    if (item.strategyThreadId?.let { it in sampleThreadIds } == true) item.copy(strategyThreadId = null) else item
+                },
+            threads = state.threads.filterNot { it.id in sampleThreadIds }
+        )
+    }
+
+    companion object {
+        private val sampleItemTitles = setOf(
+            "和 Alex 聊完，感觉融资叙事应该强调速度优势",
+            "明天问 Sarah 候选人推进到哪一步了",
+            "产品 onboarding 里用户可能卡在第一步",
+            "开车时想到，可以做一个 personal radar 自动总结",
+            "Investor call 准备",
+            "问 Alex 候选人进展",
+            "有氧 30 分钟",
+            "B 推荐增长负责人",
+            "下次和 C 聊 enterprise angle",
+            "产品方向：enterprise workflow 可能更强",
+            "融资策略：最近投资人更关心执行速度"
+        )
+
+        private val sampleThreadTitles = setOf(
+            "融资策略",
+            "产品方向 / PMF",
+            "核心人才招募",
+            "组织节奏与授权边界",
+            "Vibe Coding / 工具想法"
+        )
+
+        private val sampleThreadHypotheses = setOf(
+            "融资策略|从 market size 叙事转向 execution velocity + AI-native workflow。",
+            "融资策略|强调 execution velocity + AI-native workflow。",
+            "产品方向 / PMF|关注 enterprise workflow 是否比 consumer angle 更强。",
+            "产品方向 / PMF|继续验证 enterprise workflow。",
+            "核心人才招募|把关键候选人的推进节奏放在每天可见的位置。",
+            "核心人才招募|把关键候选人推进变成可见节奏。",
+            "组织节奏与授权边界|减少创始人上下文切换，明确谁能推进什么。",
+            "组织节奏与授权边界|降低创始人上下文切换。",
+            "Vibe Coding / 工具想法|把自己真实使用中的工具冲动沉淀为可试的系统。",
+            "Vibe Coding / 工具想法|先服务自己真实使用。"
+        )
+
+        private fun isSeedThread(thread: StrategyThread): Boolean {
+            val title = thread.title.trim()
+            val hypothesis = thread.currentHypothesis.trim()
+            return title in sampleThreadTitles && "$title|$hypothesis" in sampleThreadHypotheses
+        }
+    }
 }
 
 private fun JSONArray?.orEmpty() = this ?: JSONArray()

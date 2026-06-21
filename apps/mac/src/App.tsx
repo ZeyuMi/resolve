@@ -72,6 +72,7 @@ import {
   type BackendSettingsState,
   type BackendSession
 } from "./data/resolveBackend";
+import { mergeEncryptedRemoteState, ResolveAppEncryptedSync } from "./data/appEncryptedSync";
 import {
   activeTodoStatuses,
   createCalendarEvent,
@@ -82,9 +83,12 @@ import {
 import { registerMacPlatformHandlers, type MacTrayAction } from "./platform/macPlatform";
 import {
   installNativeHttpBridge,
+  clearSecureSyncSecret,
   loadSecureFeishuCredentials,
+  loadSecureSyncSecret,
   runNativeFeishuOAuth,
-  saveSecureFeishuCredentials
+  saveSecureFeishuCredentials,
+  saveSecureSyncSecret
 } from "./platform/nativeIntegrations";
 
 const feishuSyncIntervalMs = 30 * 1000;
@@ -652,6 +656,10 @@ export function App() {
   const syncInFlightRef = useRef(false);
   const syncQueuedRef = useRef(false);
   const backendStatusHydratedRef = useRef(false);
+  const appSyncRef = useRef<ResolveAppEncryptedSync | null>(null);
+  const appSyncPushTimerRef = useRef<number | null>(null);
+  const applyingRemoteStateRef = useRef(false);
+  const [syncSecretReady, setSyncSecretReady] = useState(false);
 
   const taskItems = useMemo(
     () =>
@@ -832,6 +840,56 @@ export function App() {
   }, [backendSettings.feishuConnected, backendSettings.status]);
 
   useEffect(() => {
+    let cancelled = false;
+    void loadSecureSyncSecret().then((secret) => {
+      if (!cancelled) setSyncSecretReady(Boolean(secret));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unsubscribe: (() => void) | undefined;
+
+    async function connectAppSync() {
+      const session = loadBackendSession();
+      const syncSecret = await loadSecureSyncSecret();
+      if (!session || !syncSecret || !backendSettingsRef.current.email) return;
+
+      try {
+        const sync = await ResolveAppEncryptedSync.create(backendSettingsRef.current, session, syncSecret);
+        if (disposed) {
+          await sync.dispose();
+          return;
+        }
+        appSyncRef.current = sync;
+        await pullAppStateFromCloud("initial");
+        await sync.push(normalizeState(stateRef.current));
+        unsubscribe = sync.subscribe(() => {
+          window.setTimeout(() => void pullAppStateFromCloud("remote"), 150);
+        });
+      } catch (error) {
+        console.warn("App data sync is not ready", error);
+      }
+    }
+
+    void connectAppSync();
+    return () => {
+      disposed = true;
+      unsubscribe?.();
+      const sync = appSyncRef.current;
+      appSyncRef.current = null;
+      if (appSyncPushTimerRef.current) {
+        window.clearTimeout(appSyncPushTimerRef.current);
+        appSyncPushTimerRef.current = null;
+      }
+      void sync?.dispose();
+    };
+  }, [backendSettings.status, backendSettings.email, syncSecretReady]);
+
+  useEffect(() => {
     if (backendStatusHydratedRef.current || !loadBackendSession()) return;
     backendStatusHydratedRef.current = true;
     let cancelled = false;
@@ -931,10 +989,43 @@ export function App() {
     void finishOAuth();
   }, []);
 
+  async function pullAppStateFromCloud(reason: "initial" | "remote" | "manual") {
+    const sync = appSyncRef.current;
+    if (!sync) return;
+    try {
+      const remote = await sync.pull();
+      const merged = normalizeState(mergeEncryptedRemoteState(stateRef.current, remote));
+      applyingRemoteStateRef.current = true;
+      repository.current.save(merged);
+      stateRef.current = merged;
+      setState(merged);
+      applyingRemoteStateRef.current = false;
+      if (reason === "manual") showToast("Synced app data");
+    } catch (error) {
+      applyingRemoteStateRef.current = false;
+      console.warn("Could not pull app data", error);
+    }
+  }
+
+  function queueAppStatePush(next: ResolveState) {
+    if (applyingRemoteStateRef.current) return;
+    const sync = appSyncRef.current;
+    if (!sync) return;
+    if (appSyncPushTimerRef.current) window.clearTimeout(appSyncPushTimerRef.current);
+    appSyncPushTimerRef.current = window.setTimeout(() => {
+      appSyncPushTimerRef.current = null;
+      void sync.push(normalizeState(stateRef.current)).catch((error) => {
+        console.warn("Could not push app data", error);
+      });
+    }, 220);
+  }
+
   function persist(next: ResolveState) {
-    repository.current.save(next);
-    stateRef.current = next;
-    setState(next);
+    const normalized = normalizeState(next);
+    repository.current.save(normalized);
+    stateRef.current = normalized;
+    setState(normalized);
+    queueAppStatePush(normalized);
   }
 
   function showToast(message: string) {
@@ -1537,6 +1628,8 @@ export function App() {
       const client = new ResolveBackendClient(settings);
       const session = await client.signInWithPassword(password);
       saveBackendSession(session);
+      await saveSecureSyncSecret(password);
+      setSyncSecretReady(true);
       const authedClient = new ResolveBackendClient(settings, session);
       const status = await authedClient.status().catch(() => undefined);
       const calendarConnected = status?.connected === true;
@@ -1956,11 +2049,14 @@ export function App() {
             <SettingsView
               settings={feishuSettings}
               backendSettings={backendSettings}
+              syncSecretReady={syncSecretReady}
               connecting={feishuConnecting}
               onBackendChange={handleSaveBackend}
               onBackendSignIn={handleBackendSignIn}
               onBackendSignOut={() => {
                 clearBackendSession();
+                void clearSecureSyncSecret();
+                setSyncSecretReady(false);
                 handleSaveBackend({
                   ...backendSettingsRef.current,
                   status: "signed_out",
@@ -3056,6 +3152,7 @@ function StrategyView({
 function SettingsView({
   settings,
   backendSettings,
+  syncSecretReady,
   connecting,
   onBackendChange,
   onBackendSignIn,
@@ -3064,6 +3161,7 @@ function SettingsView({
 }: {
   settings: FeishuSettingsState;
   backendSettings: BackendSettingsState;
+  syncSecretReady: boolean;
   connecting: boolean;
   onBackendChange: (settings: BackendSettingsState) => void;
   onBackendSignIn: (password: string) => void | Promise<void>;
@@ -3072,7 +3170,9 @@ function SettingsView({
 }) {
   const [password, setPassword] = useState("");
   const connected = settings.status === "connected" || backendSettings.feishuConnected;
-  const signedIn = backendSettings.status === "connected" || backendSettings.feishuConnected;
+  const hasAccountSession = backendSettings.status === "connected" || backendSettings.feishuConnected;
+  const needsLocalUnlock = hasAccountSession && !syncSecretReady;
+  const signedIn = hasAccountSession && syncSecretReady;
   const lastSyncedAt = backendSettings.lastSyncedAt ?? settings.lastSyncedAt;
   const lastSyncLabel = connected
     ? lastSyncedAt
@@ -3081,7 +3181,11 @@ function SettingsView({
     : signedIn
       ? "Authorization needed"
       : "Sign in first";
-  const signInError = !signedIn ? backendSettings.lastError : undefined;
+  const signInError = needsLocalUnlock
+    ? "Enter your password once on this Mac to sync Todo."
+    : !signedIn
+      ? backendSettings.lastError
+      : undefined;
   const calendarError = signedIn ? backendSettings.lastError ?? settings.lastError : undefined;
 
   return (
@@ -3095,7 +3199,10 @@ function SettingsView({
             <div className="eyebrow">Account</div>
             <h2>Resolve</h2>
           </div>
-          <StatusPill tone={signedIn ? "success" : "muted"} label={signedIn ? "signed in" : "signed out"} />
+          <StatusPill
+            tone={signedIn ? "success" : needsLocalUnlock ? "warning" : "muted"}
+            label={signedIn ? "signed in" : needsLocalUnlock ? "unlock sync" : "signed out"}
+          />
         </div>
 
         {signedIn ? (

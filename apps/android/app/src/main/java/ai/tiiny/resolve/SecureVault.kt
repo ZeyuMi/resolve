@@ -73,4 +73,14 @@ class SecureVault(context: Context) {
             .remove("backend_expires_at")
             .apply()
     }
+
+    fun saveSyncSecret(secret: String) {
+        prefs.edit().putString("sync_secret", secret).apply()
+    }
+
+    fun loadSyncSecret(): String? = prefs.getString("sync_secret", null)
+
+    fun clearSyncSecret() {
+        prefs.edit().remove("sync_secret").apply()
+    }
 }

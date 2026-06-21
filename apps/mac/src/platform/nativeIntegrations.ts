@@ -104,3 +104,25 @@ export async function clearSecureFeishuCredentials() {
     invoke("secure_store_delete", { key: key("app_secret") })
   ]);
 }
+
+export async function loadSecureSyncSecret() {
+  if (!isTauriRuntime()) return localStorage.getItem("resolve:sync-secret:v1");
+  return invoke<string | null>("secure_store_get", { key: key("sync_secret") });
+}
+
+export async function saveSecureSyncSecret(secret: string) {
+  if (!secret) return;
+  if (!isTauriRuntime()) {
+    localStorage.setItem("resolve:sync-secret:v1", secret);
+    return;
+  }
+  await invoke("secure_store_set", { key: key("sync_secret"), value: secret });
+}
+
+export async function clearSecureSyncSecret() {
+  if (!isTauriRuntime()) {
+    localStorage.removeItem("resolve:sync-secret:v1");
+    return;
+  }
+  await invoke("secure_store_delete", { key: key("sync_secret") });
+}

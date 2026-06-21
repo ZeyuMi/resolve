@@ -128,22 +128,9 @@ fun routeSuggestion(text: String): ItemRoute {
 
 fun sampleResolveState(): ResolveState {
     val now = Instant.now()
-    val threads = listOf(
-        StrategyThread(title = "融资策略", currentHypothesis = "强调 execution velocity + AI-native workflow。"),
-        StrategyThread(title = "产品方向 / PMF", currentHypothesis = "继续验证 enterprise workflow。"),
-        StrategyThread(title = "核心人才招募", currentHypothesis = "把关键候选人推进变成可见节奏。"),
-        StrategyThread(title = "组织节奏与授权边界", currentHypothesis = "降低创始人上下文切换。"),
-        StrategyThread(title = "Vibe Coding / 工具想法", currentHypothesis = "先服务自己真实使用。")
-    )
     return ResolveState(
-        items = listOf(
-            ResolveItem(title = "和 Alex 聊完，感觉融资叙事应该强调速度优势", strategyThreadId = threads[0].id),
-            ResolveItem(title = "明天问 Sarah 候选人推进到哪一步了"),
-            ResolveItem(title = "Investor call 准备", strategyThreadId = threads[0].id),
-            ResolveItem(title = "B 推荐增长负责人", strategyThreadId = threads[2].id),
-            ResolveItem(type = ItemType.StrategyNote, title = "产品方向：enterprise workflow 可能更强", strategyThreadId = threads[1].id)
-        ),
-        threads = threads,
+        items = emptyList(),
+        threads = emptyList(),
         calendarEvents = listOf(
             CalendarEvent(
                 provider = "feishu",

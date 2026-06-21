@@ -17,6 +17,7 @@
     "@resolve/feishu": "0.1.0",
     "@resolve/sync": "0.1.0",
     "@resolve/ui": "0.1.0",
+    "@supabase/supabase-js": "^2.50.0",
     "@tauri-apps/api": "^1.6.0",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",

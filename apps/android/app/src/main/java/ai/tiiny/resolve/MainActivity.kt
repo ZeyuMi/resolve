@@ -105,6 +105,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -192,10 +193,55 @@ private fun ResolveAndroidApp(
     var isSyncing by remember { mutableStateOf(false) }
     var isConnecting by remember { mutableStateOf(false) }
     var hasBackendSession by remember { mutableStateOf(secureVault.loadBackendSession() != null) }
+    var syncSecretReady by remember { mutableStateOf(secureVault.loadSyncSecret() != null) }
+    var applyingRemoteState by remember { mutableStateOf(false) }
 
     fun persist(next: ResolveState) {
         state = next
         repository.save(next)
+        if (!applyingRemoteState) {
+            val session = secureVault.loadBackendSession()
+            val syncSecret = secureVault.loadSyncSecret()
+            if (session != null && syncSecret != null && next.backendSettings.email.isNotBlank()) {
+                scope.launch {
+                    runCatching {
+                        withContext(Dispatchers.IO) {
+                            AppSyncClient(next.backendSettings, session, syncSecret).pushState(next)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    suspend fun syncAppStateWithCloud(pushAfterPull: Boolean = true) {
+        val session = secureVault.loadBackendSession() ?: return
+        val syncSecret = secureVault.loadSyncSecret() ?: return
+        if (state.backendSettings.email.isBlank()) return
+        val localSnapshot = state
+        val client = AppSyncClient(localSnapshot.backendSettings, session, syncSecret)
+        val remote = withContext(Dispatchers.IO) {
+            client.pullState()
+        }
+        val merged = mergeEncryptedRemoteState(localSnapshot, remote)
+        applyingRemoteState = true
+        persist(merged)
+        applyingRemoteState = false
+        if (pushAfterPull) {
+            withContext(Dispatchers.IO) {
+                client.pushState(merged)
+            }
+        }
+    }
+
+    fun pullAppStateFromCloud() {
+        scope.launch {
+            runCatching {
+                syncAppStateWithCloud()
+            }.onFailure {
+                applyingRemoteState = false
+            }
+        }
     }
 
     fun updateItem(item: ResolveItem) {
@@ -255,9 +301,7 @@ private fun ResolveAndroidApp(
         val text = capture.trim()
         if (text.isBlank()) return
         val item = ResolveItem(
-            title = text,
-            strategyThreadId = if (routeSuggestion(text) == ItemRoute.Strategy) selectedThreadId.takeIf { it.isNotBlank() } else null,
-            dueAt = if (routeSuggestion(text) == ItemRoute.Calendar) Instant.now().plusSeconds(24 * 3600) else null
+            title = text
         )
         persist(state.copy(items = listOf(item) + state.items))
         capture = ""
@@ -632,7 +676,9 @@ private fun ResolveAndroidApp(
                     BackendClient.signInWithPassword(state.backendSettings, password)
                 }
                 secureVault.saveBackendSession(session.accessToken, session.refreshToken, session.expiresAtEpochMillis)
+                secureVault.saveSyncSecret(password)
                 hasBackendSession = true
+                syncSecretReady = true
                 val client = BackendClient(state.backendSettings, session)
                 val connectorStatus = runCatching {
                     withContext(Dispatchers.IO) { client.status() }
@@ -655,6 +701,7 @@ private fun ResolveAndroidApp(
                     )
                 )
                 notice = null
+                syncAppStateWithCloud()
                 if (calendarConnected) syncFeishu()
             } catch (error: Throwable) {
                 patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
@@ -671,9 +718,20 @@ private fun ResolveAndroidApp(
 
     fun disconnectBackend() {
         secureVault.clearBackendSession()
+        secureVault.clearSyncSecret()
         hasBackendSession = false
+        syncSecretReady = false
         patchBackend(state.backendSettings.copy(status = BackendStatus.SignedOut, feishuConnected = false, lastError = null))
         notice = null
+    }
+
+    LaunchedEffect(hasBackendSession, state.backendSettings.email) {
+        if (!hasBackendSession || state.backendSettings.email.isBlank() || secureVault.loadSyncSecret() == null) return@LaunchedEffect
+        runCatching { syncAppStateWithCloud() }
+        while (true) {
+            delay(2_000)
+            runCatching { syncAppStateWithCloud() }
+        }
     }
 
     LaunchedEffect(hasBackendSession) {
@@ -701,7 +759,9 @@ private fun ResolveAndroidApp(
                     syncFeishu()
                 }
             }.onFailure { error ->
-                patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
+                if (error !is CancellationException) {
+                    patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
+                }
             }
         }
     }
@@ -867,6 +927,7 @@ private fun ResolveAndroidApp(
                             settings = state.feishuSettings,
                             backend = state.backendSettings,
                             isSyncing = isSyncing,
+                            todoSyncLocked = tab != Tab.Calendar && hasBackendSession && !syncSecretReady,
                             compact = tab == Tab.Calendar,
                             showSettings = false,
                             onSettings = { tab = Tab.Settings }
@@ -1079,6 +1140,7 @@ private fun ResolveAndroidApp(
                             state = state,
                             isConnecting = isConnecting,
                             isSyncing = isSyncing,
+                            syncSecretReady = syncSecretReady,
                             onBackendSettings = { patchBackend(it) },
                             onBackendSignIn = { signInBackend(it) },
                             onBackendDisconnect = { disconnectBackend() },
@@ -1219,6 +1281,7 @@ private fun TopHeader(
     settings: FeishuSettings,
     backend: BackendSettings,
     isSyncing: Boolean,
+    todoSyncLocked: Boolean = false,
     compact: Boolean = false,
     showSettings: Boolean = true,
     onSettings: () -> Unit
@@ -1273,7 +1336,11 @@ private fun TopHeader(
                     Icon(Icons.Filled.Refresh, contentDescription = null, Modifier.size(14.dp), tint = ResolveColors.Muted)
                     Spacer(Modifier.width(5.dp))
                     Text(
-                        if (isSyncing) "Syncing" else calendarStatusLabel(settings, backend),
+                        when {
+                            todoSyncLocked -> "Unlock Todo sync"
+                            isSyncing -> "Syncing"
+                            else -> calendarStatusLabel(settings, backend)
+                        },
                         color = ResolveColors.Secondary,
                         fontSize = ResolveType.Caption,
                         lineHeight = 13.sp,
@@ -2767,6 +2834,7 @@ private fun SettingsScreen(
     state: ResolveState,
     isConnecting: Boolean,
     isSyncing: Boolean,
+    syncSecretReady: Boolean,
     onBackendSettings: (BackendSettings) -> Unit,
     onBackendSignIn: (String) -> Unit,
     onBackendDisconnect: () -> Unit,
@@ -2774,7 +2842,9 @@ private fun SettingsScreen(
 ) {
     var email by remember(state.backendSettings.email) { mutableStateOf(state.backendSettings.email) }
     var password by remember { mutableStateOf("") }
-    val backendReady = state.backendSettings.status == BackendStatus.Connected || state.backendSettings.feishuConnected
+    val hasAccountSession = state.backendSettings.status == BackendStatus.Connected || state.backendSettings.feishuConnected
+    val needsTodoUnlock = hasAccountSession && !syncSecretReady
+    val backendReady = hasAccountSession && syncSecretReady
     val calendarConnected = state.backendSettings.feishuConnected || state.feishuSettings.status == FeishuStatus.Connected
     val lastSyncedAt = state.backendSettings.lastSyncedAt ?: state.feishuSettings.lastSyncedAt
     val calendarStatus = when {
@@ -2800,7 +2870,10 @@ private fun SettingsScreen(
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
                             Text("Account", color = ResolveColors.Text, fontSize = ResolveType.SectionTitle, fontWeight = FontWeight.SemiBold)
-                            Text(backendStatusLabel(state.backendSettings), color = ResolveColors.Secondary)
+                            Text(
+                                if (needsTodoUnlock) "Unlock Todo sync on this phone" else backendStatusLabel(state.backendSettings),
+                                color = ResolveColors.Secondary
+                            )
                         }
                     }
                     if (backendReady) {
@@ -2823,6 +2896,14 @@ private fun SettingsScreen(
                             }
                         }
                     } else {
+                        if (needsTodoUnlock) {
+                            Text(
+                                "Enter your password once to sync Todo.",
+                                color = ResolveColors.Secondary,
+                                fontSize = ResolveType.BodySmall,
+                                lineHeight = 16.sp
+                            )
+                        }
                         OutlinedTextField(
                             value = email,
                             onValueChange = {
@@ -2854,7 +2935,7 @@ private fun SettingsScreen(
                                 Text(if (isConnecting) "Signing in" else "Sign in")
                             }
                         }
-                        TextButton(onClick = onBackendDisconnect, enabled = backendReady) {
+                        TextButton(onClick = onBackendDisconnect, enabled = hasAccountSession) {
                             Text("Sign out")
                         }
                     }

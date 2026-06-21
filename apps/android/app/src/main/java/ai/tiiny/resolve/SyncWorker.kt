@@ -24,7 +24,7 @@ class SyncWorker(
             val backend = state.backendSettings
             var session = vault.loadBackendSession()
 
-            if (!backend.feishuConnected || session == null) {
+            if (session == null) {
                 return@withContext Result.success()
             }
 
@@ -36,18 +36,32 @@ class SyncWorker(
                     client = BackendClient(backend, session)
                 }
 
+                val syncSecret = vault.loadSyncSecret()
+                val appSyncedState = if (syncSecret != null && backend.email.isNotBlank()) {
+                    val appSync = AppSyncClient(backend, session, syncSecret)
+                    val remote = appSync.pullState()
+                    mergeEncryptedRemoteState(state, remote).also { appSync.pushState(it) }
+                } else {
+                    state
+                }
+
+                if (!backend.feishuConnected) {
+                    repository.save(appSyncedState)
+                    return@withContext Result.success()
+                }
+
                 val syncedAt = client.syncFeishuNow()
-                val events = client.listEvents(state.feishuSettings)
+                val events = client.listEvents(appSyncedState.feishuSettings)
                 repository.save(
-                    state.copy(
-                        calendarEvents = mergeBackendCalendarEvents(state.calendarEvents, events),
+                    appSyncedState.copy(
+                        calendarEvents = mergeBackendCalendarEvents(appSyncedState.calendarEvents, events),
                         backendSettings = backend.copy(
                             status = BackendStatus.Connected,
                             feishuConnected = true,
                             lastSyncedAt = syncedAt,
                             lastError = null
                         ),
-                        feishuSettings = state.feishuSettings.copy(
+                        feishuSettings = appSyncedState.feishuSettings.copy(
                             status = FeishuStatus.Connected,
                             lastSyncedAt = syncedAt,
                             lastError = null

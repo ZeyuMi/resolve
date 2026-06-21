@@ -9,7 +9,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{
-    CustomMenuItem, GlobalShortcutManager, Manager, SystemTray, SystemTrayEvent, SystemTrayMenu,
+    CustomMenuItem, GlobalShortcutManager, Icon, Manager, SystemTray, SystemTrayEvent,
+    SystemTrayMenu,
 };
 
 const FEISHU_CALLBACK_PORT: u16 = 36321;
@@ -336,7 +337,12 @@ fn main() {
             secure_store_set,
             secure_store_delete
         ])
-        .system_tray(SystemTray::new().with_menu(tray_menu))
+        .system_tray(
+            SystemTray::new()
+                .with_menu(tray_menu)
+                .with_icon(Icon::Raw(include_bytes!("../icons/tray-icon.png").to_vec()))
+                .with_icon_as_template(false),
+        )
         .setup(|app| {
             let handle = app.handle();
             app.global_shortcut_manager()
