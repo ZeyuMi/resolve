@@ -1,6 +1,6 @@
 /// <reference path="../_shared/deno.d.ts" />
 
-import { jsonResponse, methodNotAllowed, readJson } from "../_shared/http.ts";
+import { corsResponse, jsonResponse, methodNotAllowed, readJson } from "../_shared/http.ts";
 import { buildFeishuAuthorizeUrl, isFeishuAuthorizationRequiredError, type FeishuServerConfig } from "../_shared/feishuApi.ts";
 import { serverDecryptJson, serverEncryptJson } from "../_shared/serverCrypto.ts";
 import {
@@ -60,6 +60,10 @@ type ConnectorRequest =
     };
 
 Deno.serve(async (request) => {
+  if (request.method === "OPTIONS") {
+    return corsResponse();
+  }
+
   if (!["GET", "POST"].includes(request.method)) {
     return methodNotAllowed(["GET", "POST"]);
   }
@@ -68,13 +72,13 @@ Deno.serve(async (request) => {
     return jsonResponse(feishuConnectorDisabledBody(), { status: 409 });
   }
 
-  const user = await getAuthenticatedUser(request);
-
-  if (request.method === "GET") {
-    return jsonResponse(await statusForUser(user.id));
-  }
-
   try {
+    const user = await getAuthenticatedUser(request);
+
+    if (request.method === "GET") {
+      return jsonResponse(await statusForUser(user.id));
+    }
+
     const body = await readJson<ConnectorRequest>(request);
     switch (body.action) {
       case "status":
@@ -101,6 +105,16 @@ Deno.serve(async (request) => {
         return jsonResponse({ error: "unknown_action" }, { status: 400 });
     }
   } catch (error) {
+    if (isAuthError(error)) {
+      return jsonResponse(
+        {
+          error: "auth_failed",
+          status: "needs_auth",
+          message: "Sign in again."
+        },
+        { status: 401 }
+      );
+    }
     if (isFeishuAuthorizationRequiredError(error)) {
       return jsonResponse(
         {
@@ -120,6 +134,17 @@ Deno.serve(async (request) => {
     );
   }
 });
+
+function isAuthError(error: unknown) {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return (
+    message.includes("missing authorization") ||
+    message.includes("invalid supabase session") ||
+    message.includes("jwt") ||
+    message.includes("invalid claim") ||
+    message.includes("token")
+  );
+}
 
 async function statusForUser(userId: string) {
   const rows = await restSelect<{

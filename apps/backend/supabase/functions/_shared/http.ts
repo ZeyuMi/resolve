@@ -5,13 +5,31 @@ export const securityHeaders = {
   "x-robots-tag": "noindex, nofollow, noarchive"
 };
 
+export const corsHeaders = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, POST, OPTIONS",
+  "access-control-allow-headers": "authorization, apikey, content-type, x-client-info",
+  "access-control-max-age": "86400"
+};
+
 export function jsonResponse(body: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(body, null, 2), {
     ...init,
     headers: {
       "content-type": "application/json; charset=utf-8",
+      ...corsHeaders,
       ...securityHeaders,
       ...init.headers
+    }
+  });
+}
+
+export function corsResponse() {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      ...corsHeaders,
+      ...securityHeaders
     }
   });
 }
