@@ -185,7 +185,6 @@ private fun ResolveAndroidApp(
     var isSyncing by remember { mutableStateOf(false) }
     var isConnecting by remember { mutableStateOf(false) }
     var hasBackendSession by remember { mutableStateOf(secureVault.loadBackendSession() != null) }
-    var attemptedBackendCalendarAuth by remember { mutableStateOf(false) }
 
     fun persist(next: ResolveState) {
         state = next
@@ -526,7 +525,6 @@ private fun ResolveAndroidApp(
             return
         }
         isConnecting = true
-        attemptedBackendCalendarAuth = true
         scope.launch {
             try {
                 val client = connectedBackendClient()
@@ -571,7 +569,6 @@ private fun ResolveAndroidApp(
         if (isConnecting) return
         isConnecting = true
         scope.launch {
-            var startFeishuAuthAfterSignIn = false
             try {
                 val session = withContext(Dispatchers.IO) {
                     BackendClient.signInWithPassword(state.backendSettings, password)
@@ -583,7 +580,7 @@ private fun ResolveAndroidApp(
                     withContext(Dispatchers.IO) { client.status() }
                 }.getOrNull()
                 val calendarConnected = connectorStatus?.connected == true
-                val calendarNeedsAuth = connectorStatus?.status == "needs_auth"
+                val calendarNeedsAuth = connectorStatus?.needsAuthorization == true || connectorStatus?.status == "needs_auth"
                 persist(
                     state.copy(
                         backendSettings = state.backendSettings.copy(
@@ -601,13 +598,11 @@ private fun ResolveAndroidApp(
                 )
                 notice = null
                 if (calendarConnected) syncFeishu()
-                else if (connectorStatus?.configured == true) startFeishuAuthAfterSignIn = true
             } catch (error: Throwable) {
                 patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
                 notice = "Sign in failed${error.message?.let { ": $it" }.orEmpty()}"
             } finally {
                 isConnecting = false
-                if (startFeishuAuthAfterSignIn) startBackendFeishuAuth()
             }
         }
     }
@@ -619,7 +614,6 @@ private fun ResolveAndroidApp(
     fun disconnectBackend() {
         secureVault.clearBackendSession()
         hasBackendSession = false
-        attemptedBackendCalendarAuth = false
         patchBackend(state.backendSettings.copy(status = BackendStatus.SignedOut, feishuConnected = false, lastError = null))
         notice = null
     }
@@ -629,7 +623,7 @@ private fun ResolveAndroidApp(
             runCatching {
                 val client = connectedBackendClient()
                 val status = withContext(Dispatchers.IO) { client.status() }
-                val calendarNeedsAuth = status.status == "needs_auth"
+                val calendarNeedsAuth = status.needsAuthorization || status.status == "needs_auth"
                 persist(
                     state.copy(
                         backendSettings = state.backendSettings.copy(
@@ -647,8 +641,6 @@ private fun ResolveAndroidApp(
                 )
                 if (status.connected) {
                     syncFeishu()
-                } else if (status.configured && !attemptedBackendCalendarAuth && !isConnecting) {
-                    startBackendFeishuAuth()
                 }
             }.onFailure { error ->
                 patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
@@ -668,7 +660,7 @@ private fun ResolveAndroidApp(
                     try {
                         val client = connectedBackendClient()
                         val status = withContext(Dispatchers.IO) { client.status() }
-                        val calendarNeedsAuth = status.status == "needs_auth"
+                        val calendarNeedsAuth = status.needsAuthorization || status.status == "needs_auth"
                         persist(
                             state.copy(
                                 backendSettings = state.backendSettings.copy(

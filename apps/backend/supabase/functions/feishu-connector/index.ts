@@ -161,10 +161,14 @@ async function statusForUser(userId: string) {
   );
   const row = rows[0];
   const hasGlobalConfig = Boolean(globalFeishuConfig());
+  const status = row?.status ?? "not_connected";
+  const hasToken = Boolean(row?.server_encrypted_token_set);
+  const needsAuthorization = status === "needs_auth" || status === "not_connected" || !hasToken;
   return {
     configured: Boolean(row?.server_encrypted_config) || hasGlobalConfig,
-    connected: Boolean(row?.server_encrypted_token_set) && row?.status === "connected",
-    status: row?.status ?? "not_connected",
+    connected: hasToken && !needsAuthorization,
+    needsAuthorization,
+    status,
     mode: row?.mode ?? "server_connector_opt_in",
     defaultCalendarId: row?.default_calendar_id ?? undefined,
     lastServerSyncAt: row?.last_server_sync_at ?? undefined,

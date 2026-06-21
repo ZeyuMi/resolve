@@ -156,6 +156,7 @@ export class ResolveBackendClient {
     }) as Promise<{
       configured: boolean;
       connected: boolean;
+      needsAuthorization?: boolean;
       status: string;
       defaultCalendarId?: string;
       lastServerSyncAt?: string;

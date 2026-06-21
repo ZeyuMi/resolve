@@ -9,6 +9,7 @@ import java.time.ZoneId
 data class BackendConnectorStatus(
     val configured: Boolean,
     val connected: Boolean,
+    val needsAuthorization: Boolean,
     val status: String,
     val defaultCalendarId: String?,
     val lastServerSyncAt: Instant?
@@ -55,6 +56,7 @@ class BackendClient(
         return BackendConnectorStatus(
             configured = response.optBoolean("configured", false),
             connected = response.optBoolean("connected", false),
+            needsAuthorization = response.optBoolean("needsAuthorization", response.optString("status") == "needs_auth"),
             status = response.optString("status", "not_connected"),
             defaultCalendarId = response.optNullableString("defaultCalendarId"),
             lastServerSyncAt = response.optNullableString("lastServerSyncAt")?.let(::instantOrNull)

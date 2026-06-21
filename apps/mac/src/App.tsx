@@ -846,7 +846,7 @@ export function App() {
           status: "connected",
           feishuConnected: status.connected,
           lastSyncedAt: status.lastServerSyncAt ?? backendSettingsRef.current.lastSyncedAt,
-          lastError: status.connected ? undefined : status.configured ? "Calendar needs attention" : undefined
+          lastError: status.needsAuthorization ? "Calendar needs attention" : undefined
         });
         if (status.connected) {
           await syncBackendCalendar({ silent: true });
@@ -1540,7 +1540,7 @@ export function App() {
       const authedClient = new ResolveBackendClient(settings, session);
       const status = await authedClient.status().catch(() => undefined);
       const calendarConnected = status?.connected === true;
-      const calendarNeedsAuth = status?.status === "needs_auth";
+      const calendarNeedsAuth = status?.needsAuthorization === true || status?.status === "needs_auth";
       handleSaveBackend({
         ...settings,
         status: "connected",
@@ -1560,8 +1560,6 @@ export function App() {
       showToast("Signed in");
       if (calendarConnected) {
         await syncBackendCalendar({ silent: true });
-      } else if (status?.configured) {
-        await handleBackendFeishuConnect();
       }
     } catch (error) {
       handleSaveBackend({
