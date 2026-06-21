@@ -1838,7 +1838,7 @@ export function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell tab-${tab}`}>
       <aside className="focus-sidebar">
         <div className="sidebar-brand">
           <ResolveMark />
@@ -2635,7 +2635,7 @@ function CalendarView({
   const expandedDayEvents = expandedDayKey ? eventsByDate.get(expandedDayKey) ?? [] : [];
   const monthLabel =
     viewMode === "week"
-      ? `${formatDateInput(days[0])} - ${formatDateInput(days[6])}`
+      ? `${days[0].toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })} - ${days[6].toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })}`
       : viewMode === "year"
         ? `${monthCursor.getFullYear()}`
         : monthCursor.toLocaleDateString("zh-CN", { year: "numeric", month: "long" });
@@ -2647,14 +2647,15 @@ function CalendarView({
 	      if (!grid) return;
 	      const rows = viewMode === "week" ? 1 : 6;
 	      const cellHeight = grid.getBoundingClientRect().height / rows;
-	      if (viewMode === "month") {
-	        const monthSlots = cellHeight < 76 ? 1 : cellHeight < 112 ? 2 : 3;
-	        setVisibleEventsPerCell((current) => (current === monthSlots ? current : monthSlots));
-	        return;
-	      }
-	      const available = Math.max(cellHeight - 34, 0);
-	      const next = Math.max(viewMode === "week" ? 6 : 2, Math.floor(available / 25));
-	      const capped = Math.min(viewMode === "week" ? 18 : 10, next);
+      if (viewMode === "month") {
+        const available = Math.max(cellHeight - 22, 0);
+        const monthSlots = Math.max(3, Math.min(9, Math.floor(available / 15)));
+        setVisibleEventsPerCell((current) => (current === monthSlots ? current : monthSlots));
+        return;
+      }
+      const available = Math.max(cellHeight - 26, 0);
+      const next = Math.max(10, Math.floor(available / 16));
+	      const capped = Math.min(24, next);
       setVisibleEventsPerCell((current) => (current === capped ? current : capped));
     };
 
@@ -2735,24 +2736,25 @@ function CalendarView({
           <button className="icon-button" onClick={() => movePeriod(-1)} aria-label="Previous period">
             <ChevronLeft size={18} />
           </button>
-          <div>
-            <div className="eyebrow">Feishu Calendar</div>
+          <div className="calendar-title-block">
             <h2>{monthLabel}</h2>
+            <span>{viewMode}</span>
           </div>
           <div className="calendar-toolbar-actions">
-            <button className="primary-button calendar-new-button" onClick={() => openDraftForDate(selectedDate)}>
+            <button className="primary-button calendar-new-button" onClick={() => openDraftForDate(selectedDate)} aria-label="New event">
               <Plus size={14} />
-              New
+              <span>New</span>
             </button>
-            <SegmentedControl
+            <select
+              className="calendar-view-select"
               value={viewMode}
-              options={[
-                { value: "week", label: "Week" },
-                { value: "month", label: "Month" },
-                { value: "year", label: "Year" }
-              ]}
-              onChange={(value) => onViewMode(value as CalendarViewMode)}
-            />
+              aria-label="Calendar view"
+              onChange={(event) => onViewMode(event.target.value as CalendarViewMode)}
+            >
+              <option value="week">Week</option>
+              <option value="month">Month</option>
+              <option value="year">Year</option>
+            </select>
             <button className="icon-button" onClick={() => movePeriod(1)} aria-label="Next period">
             <ChevronRight size={18} />
             </button>
