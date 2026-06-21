@@ -20,7 +20,12 @@ export function loadFeishuSettings(): FeishuSettingsState {
   const defaults = defaultFeishuSettings();
   const raw = localStorage.getItem(feishuSettingsKey);
   if (!raw) return defaults;
-  return { ...defaults, ...JSON.parse(raw) };
+  const parsed = { ...defaults, ...JSON.parse(raw) } as FeishuSettingsState;
+  return {
+    ...parsed,
+    pastDays: Math.max(parsed.pastDays || defaults.pastDays, defaults.pastDays),
+    futureDays: Math.max(parsed.futureDays || defaults.futureDays, defaults.futureDays)
+  };
 }
 
 export function saveFeishuSettings(settings: FeishuSettingsState) {
@@ -40,8 +45,8 @@ export function defaultFeishuSettings(): FeishuSettingsState {
     appSecret: "",
     redirectUri: localFeishuRedirectUri(),
     defaultCalendar: "primary",
-    pastDays: 14,
-    futureDays: 90,
+    pastDays: 3650 * 2,
+    futureDays: 3650,
     status: "not_connected"
   };
 }

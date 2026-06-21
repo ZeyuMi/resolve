@@ -32,6 +32,16 @@ export interface BackendCalendarDraft {
   endsAt?: string;
 }
 
+export interface BackendCalendarUpdateDraft {
+  calendarId: string;
+  eventId: string;
+  title?: string;
+  description?: string;
+  location?: string;
+  startsAt?: string;
+  endsAt?: string;
+}
+
 export class ResolveBackendError extends Error {
   constructor(
     message: string,
@@ -186,6 +196,31 @@ export class ResolveBackendClient {
       endsAt: draft.endsAt
     }) as { event?: unknown };
     return serverEventToCalendarEvent(response.event);
+  }
+
+  async updateEvent(draft: BackendCalendarUpdateDraft) {
+    const response = await this.connector({
+      action: "update_event",
+      calendarId: draft.calendarId,
+      eventId: draft.eventId,
+      title: draft.title,
+      description: draft.description,
+      location: draft.location,
+      startsAt: draft.startsAt,
+      endsAt: draft.endsAt
+    }) as { event?: unknown; syncedAt?: string };
+    return {
+      event: serverEventToCalendarEvent(response.event),
+      syncedAt: typeof response.syncedAt === "string" ? response.syncedAt : undefined
+    };
+  }
+
+  async deleteEvent(calendarId: string, eventId: string) {
+    return this.connector({
+      action: "delete_event",
+      calendarId,
+      eventId
+    }) as Promise<{ status?: string; syncedAt?: string }>;
   }
 
   private async connector(body: Record<string, unknown>) {

@@ -93,6 +93,19 @@ const feishuOAuthScopes = feishuCalendarScopes
   .map((scope) => scope.key)
   .filter((scope) => scope !== "contact:user.email:readonly");
 
+async function openExternalUrl(url: string) {
+  if (isTauriRuntime()) {
+    try {
+      const { open } = await import("@tauri-apps/api/shell");
+      await open(url);
+      return;
+    } catch (error) {
+      console.warn("Could not open system browser through Tauri", error);
+    }
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
 function calendarEventId(calendarId: string, eventId: string) {
   return `feishu_${calendarId}_${eventId}`.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
@@ -638,6 +651,7 @@ export function App() {
   const backendSettingsRef = useRef(backendSettings);
   const syncInFlightRef = useRef(false);
   const syncQueuedRef = useRef(false);
+  const backendStatusHydratedRef = useRef(false);
 
   const taskItems = useMemo(
     () =>
@@ -767,6 +781,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (loadBackendSession()) return;
     if (!feishuSettings.appId || !feishuSettings.appSecret || !loadFeishuToken()) return;
     const syncQuietly = () => void syncFeishuCalendar(feishuSettingsRef.current, loadFeishuToken(), { silent: true });
     syncQuietly();
@@ -791,6 +806,7 @@ export function App() {
   }, [feishuSettings.status, feishuSettings.appId, feishuSettings.appSecret]);
 
   useEffect(() => {
+    if (loadBackendSession()) return;
     if (tab !== "calendar" || !feishuSettings.appId || !feishuSettings.appSecret || !loadFeishuToken()) return;
     const syncQuietly = () => void syncFeishuCalendar(feishuSettingsRef.current, loadFeishuToken(), { silent: true });
     const interval = window.setInterval(syncQuietly, feishuCalendarActiveSyncIntervalMs);
@@ -814,6 +830,42 @@ export function App() {
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [backendSettings.feishuConnected, backendSettings.status]);
+
+  useEffect(() => {
+    if (backendStatusHydratedRef.current || !loadBackendSession()) return;
+    backendStatusHydratedRef.current = true;
+    let cancelled = false;
+
+    async function hydrateBackendStatus() {
+      try {
+        const client = await connectedBackendClient();
+        const status = await client.status();
+        if (cancelled) return;
+        handleSaveBackend({
+          ...backendSettingsRef.current,
+          status: "connected",
+          feishuConnected: status.connected,
+          lastSyncedAt: status.lastServerSyncAt ?? backendSettingsRef.current.lastSyncedAt,
+          lastError: status.connected ? undefined : status.configured ? "Calendar needs attention" : undefined
+        });
+        if (status.connected) {
+          await syncBackendCalendar({ silent: true });
+        }
+      } catch (error) {
+        if (cancelled) return;
+        handleSaveBackend({
+          ...backendSettingsRef.current,
+          status: "error",
+          lastError: feishuErrorMessage(error)
+        });
+      }
+    }
+
+    void hydrateBackendStatus();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -908,7 +960,8 @@ export function App() {
       return;
     }
     if (action === "sync_feishu") {
-      void syncFeishuCalendar();
+      if (loadBackendSession()) void syncBackendCalendar();
+      else void syncFeishuCalendar();
       return;
     }
     setTab("todo");
@@ -1174,6 +1227,40 @@ export function App() {
     setSelectedCalendarEventKey(null);
     showToast("Deleting from Feishu");
 
+    if (loadBackendSession()) {
+      try {
+        const client = await connectedBackendClient();
+        await client.deleteEvent(event.meta.externalCalendarId!, event.meta.externalEventId!);
+        showToast("Deleted from Feishu");
+        void syncBackendCalendar({ silent: true });
+      } catch (error) {
+        const message = feishuErrorMessage(error);
+        const latestState = stateRef.current;
+        persist({
+          ...latestState,
+          calendarEvents: [
+            {
+              ...event,
+              meta: {
+                ...event.meta,
+                status: needsCalendarAuthorization(error) ? "local_pending_delete" : "error",
+                updatedAt: nowIso()
+              }
+            },
+            ...latestState.calendarEvents
+          ]
+        });
+        handleSaveBackend({
+          ...backendSettingsRef.current,
+          feishuConnected: !needsCalendarAuthorization(error),
+          status: needsCalendarAuthorization(error) ? "connected" : "error",
+          lastError: needsCalendarAuthorization(error) ? "Calendar needs attention" : message
+        });
+        showToast(needsCalendarAuthorization(error) ? "Calendar needs attention" : "Feishu delete failed");
+      }
+      return;
+    }
+
     const tokenSet = loadFeishuToken();
     const settings = feishuSettingsRef.current;
     if (!canUseFeishuConnection(settings, tokenSet)) {
@@ -1270,6 +1357,59 @@ export function App() {
     });
     setSelectedDate(draft.date);
     setSelectedCalendarEventKey(displayCalendarEventKey(optimisticEvent));
+
+    if (canSyncRemote && loadBackendSession()) {
+      try {
+        const client = await connectedBackendClient();
+        const { event: remote } = await client.updateEvent({
+          calendarId: event.meta.externalCalendarId!,
+          eventId: event.meta.externalEventId!,
+          title,
+          startsAt,
+          endsAt,
+          description: draft.description.trim() || undefined
+        });
+        const syncedEvent = {
+          ...remote,
+          meta: {
+            ...remote.meta,
+            sourceItemId: event.meta.sourceItemId,
+            strategyThreadId: event.meta.strategyThreadId
+          }
+        };
+        const latestState = stateRef.current;
+        persist({
+          ...latestState,
+          calendarEvents: dedupeSyncedCalendarDuplicates(
+            dedupeCalendarEvents(replaceCalendarEvent(latestState.calendarEvents, syncedEvent))
+          )
+        });
+        setSelectedCalendarEventKey(displayCalendarEventKey(syncedEvent));
+        showToast("Updated in Feishu");
+        void syncBackendCalendar({ silent: true });
+      } catch (error) {
+        const latestState = stateRef.current;
+        persist({
+          ...latestState,
+          calendarEvents: replaceCalendarEvent(latestState.calendarEvents, {
+            ...optimisticEvent,
+            meta: {
+              ...optimisticEvent.meta,
+              status: needsCalendarAuthorization(error) ? "local_pending_update" : "error",
+              updatedAt: nowIso()
+            }
+          })
+        });
+        handleSaveBackend({
+          ...backendSettingsRef.current,
+          feishuConnected: !needsCalendarAuthorization(error),
+          status: needsCalendarAuthorization(error) ? "connected" : "error",
+          lastError: needsCalendarAuthorization(error) ? "Calendar needs attention" : feishuErrorMessage(error)
+        });
+        showToast(needsCalendarAuthorization(error) ? "Calendar needs attention" : "Feishu update failed");
+      }
+      return;
+    }
 
     const settings = feishuSettingsRef.current;
     const tokenSet = loadFeishuToken();
@@ -1443,13 +1583,24 @@ export function App() {
     syncInFlightRef.current = true;
     try {
       const client = await connectedBackendClient();
-      const syncResult = await client.syncNow();
       const settings = feishuSettingsRef.current;
       const now = new Date();
       const startsAt = addDaysToIso(now, -settings.pastDays);
       const endsAt = addDaysToIso(now, settings.futureDays);
-      const remoteEvents = await client.listEvents(startsAt, endsAt);
-      const timestamp = syncResult.syncedAt ?? nowIso();
+      let syncError: unknown;
+      let timestamp = nowIso();
+
+      try {
+        const syncResult = await client.syncNow();
+        timestamp = syncResult.syncedAt ?? timestamp;
+      } catch (error) {
+        if (needsCalendarAuthorization(error)) throw error;
+        syncError = error;
+      }
+
+      const remoteEvents = await client.listEvents(startsAt, endsAt).catch((error) => {
+        throw syncError ?? error;
+      });
       const currentState = stateRef.current;
       persist({
         ...currentState,
@@ -1457,20 +1608,20 @@ export function App() {
       });
       handleSaveBackend({
         ...backendSettingsRef.current,
-        status: "connected",
+        status: syncError ? "error" : "connected",
         feishuConnected: true,
         lastSyncedAt: timestamp,
-        lastError: undefined
+        lastError: syncError ? `Live sync failed: ${feishuErrorMessage(syncError)}` : undefined
       });
       const nextFeishuSettings = {
         ...settings,
         status: "connected" as const,
         lastSyncedAt: timestamp,
-        lastError: undefined
+        lastError: syncError ? `Live sync failed: ${feishuErrorMessage(syncError)}` : undefined
       };
       setFeishuSettings(nextFeishuSettings);
       saveFeishuSettings(nextFeishuSettings);
-      if (!options.silent) showToast(`Synced ${remoteEvents.length} events`);
+      if (!options.silent) showToast(syncError ? `Showing ${remoteEvents.length} cached events` : `Synced ${remoteEvents.length} events`);
     } catch (error) {
       if (needsCalendarAuthorization(error)) {
         handleSaveBackend({
@@ -1512,7 +1663,7 @@ export function App() {
       const client = await connectedBackendClient();
       const oauth = await client.startFeishuOAuth();
       if (!oauth.authorizeUrl) throw new Error("Feishu authorization failed to start.");
-      window.open(oauth.authorizeUrl, "_blank", "noopener,noreferrer");
+      await openExternalUrl(oauth.authorizeUrl);
       showToast("Authorize Calendar");
 
       for (let index = 0; index < 24; index += 1) {
@@ -1698,7 +1849,7 @@ export function App() {
         </div>
 
         <div className="sidebar-scroll">
-          <CaptureBox value={captureText} onChange={setCaptureText} onSave={handleCapture} />
+          {tab === "todo" && <CaptureBox value={captureText} onChange={setCaptureText} onSave={handleCapture} />}
           <SidebarNav
             active={tab}
             todoCount={todoItems.length}
@@ -1714,7 +1865,6 @@ export function App() {
         <TopBar
           tab={tab}
           feishuSettings={feishuSettings}
-          onOpenSettings={() => setTab("settings")}
         />
 
         <section className="workspace">
@@ -1825,7 +1975,7 @@ export function App() {
           )}
         </section>
       </main>
-      <MobileCaptureBar value={captureText} onChange={setCaptureText} onSave={handleCapture} />
+      {tab === "todo" && <MobileCaptureBar value={captureText} onChange={setCaptureText} onSave={handleCapture} />}
       <QuickCaptureOverlay
         open={quickCaptureOpen}
         value={captureText}
@@ -1840,12 +1990,10 @@ export function App() {
 
 function TopBar({
   tab,
-  feishuSettings,
-  onOpenSettings
+  feishuSettings
 }: {
   tab: Tab;
   feishuSettings: FeishuSettingsState;
-  onOpenSettings: () => void;
 }) {
   const title = {
     todo: "Todo",
@@ -1862,9 +2010,6 @@ function TopBar({
       </div>
       <div className="top-actions">
         <SyncStatusBadge settings={feishuSettings} />
-        <button className="icon-button" onClick={onOpenSettings} aria-label="Settings">
-          <Settings size={18} />
-        </button>
       </div>
     </header>
   );
@@ -2038,8 +2183,9 @@ function SyncPanel({
       ? `Synced ${relativeAgeLabel(lastSyncedAt)}`
       : "Connected"
     : "Not connected";
-  const error = backendSettings.lastError ?? feishuSettings.lastError;
-  const accountStatus = backendSettings.status === "connected" || backendSettings.feishuConnected ? "Signed in" : "Signed out";
+  const signedIn = backendSettings.status === "connected" || backendSettings.feishuConnected;
+  const error = signedIn ? backendSettings.lastError ?? feishuSettings.lastError : undefined;
+  const accountStatus = signedIn ? "Signed in" : "Signed out";
 
   return (
     <section className="sync-panel">
@@ -2594,6 +2740,10 @@ function CalendarView({
             <h2>{monthLabel}</h2>
           </div>
           <div className="calendar-toolbar-actions">
+            <button className="primary-button calendar-new-button" onClick={() => openDraftForDate(selectedDate)}>
+              <Plus size={14} />
+              New
+            </button>
             <SegmentedControl
               value={viewMode}
               options={[
@@ -2657,10 +2807,10 @@ function CalendarView({
 		                      {dayEvents.slice(0, visibleInlineEvents).map((event) => (
 		                        <button
 		                          className={`calendar-event-chip ${displayCalendarEventKey(event) === selectedEventKey ? "selected" : ""}`}
-	                          key={displayCalendarEventKey(event)}
+                          key={displayCalendarEventKey(event)}
                           onClick={(clickEvent) => {
                             clickEvent.stopPropagation();
-                            selectEvent(event);
+                            openDayList(dateKey(event.meta.startsAt));
                           }}
                           type="button"
                         >
@@ -2937,7 +3087,7 @@ function SettingsView({
     : signedIn
       ? "Authorization needed"
       : "Sign in first";
-  const calendarError = backendSettings.lastError ?? settings.lastError;
+  const calendarError = signedIn ? backendSettings.lastError ?? settings.lastError : undefined;
 
   return (
     <div className="settings-view">
@@ -2990,7 +3140,7 @@ function SettingsView({
             Sign out
           </button>
         </div>
-        {backendSettings.lastError && <p className="settings-error">{backendSettings.lastError}</p>}
+        {signedIn && backendSettings.lastError && <p className="settings-error">{backendSettings.lastError}</p>}
       </section>
 
       <section className="feishu-connect-card">
