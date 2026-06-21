@@ -127,6 +127,18 @@ class BackendClient(
         )
     }
 
+    fun deleteEvent(event: CalendarEvent): Instant {
+        val calendarId = event.externalCalendarId ?: error("Missing Feishu calendar id.")
+        val eventId = event.externalEventId ?: error("Missing Feishu event id.")
+        val response = connector(
+            JSONObject()
+                .put("action", "delete_event")
+                .put("calendarId", calendarId)
+                .put("eventId", eventId)
+        )
+        return response.optNullableString("syncedAt")?.let(::instantOrNull) ?: Instant.now()
+    }
+
     private fun oauthStartFrom(response: JSONObject): BackendOAuthStart {
         val authorizeUrl = response.optString("authorizeUrl")
         if (authorizeUrl.isBlank()) {

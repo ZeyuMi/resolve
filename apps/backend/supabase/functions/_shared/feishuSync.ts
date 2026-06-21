@@ -427,6 +427,63 @@ async function updateFeishuEventForUserUnchecked(
   };
 }
 
+export async function deleteFeishuEventForUser(
+  userId: string,
+  input: { calendarId: string; eventId: string }
+) {
+  try {
+    return await deleteFeishuEventForUserUnchecked(userId, input);
+  } catch (error) {
+    if (isFeishuAuthorizationRequiredError(error)) {
+      await markFeishuConnectionNeedsAuth(userId);
+      throw new FeishuAuthorizationRequiredError();
+    }
+    throw error;
+  }
+}
+
+async function deleteFeishuEventForUserUnchecked(
+  userId: string,
+  input: { calendarId: string; eventId: string }
+) {
+  const connection = await loadConnection(userId);
+  const config = await decryptConfig(connection);
+  let tokenSet = await decryptToken(connection);
+  let client = new FeishuServerClient(config, tokenSet);
+
+  if (isTokenExpired(tokenSet)) {
+    tokenSet = await refreshTokenForUser(userId, client);
+    await saveToken(userId, tokenSet);
+    client = new FeishuServerClient(config, tokenSet);
+  }
+
+  await client.deleteEvent(input.calendarId, input.eventId);
+  const syncedAt = new Date().toISOString();
+  await restPatch(
+    "resolve_calendar_events",
+    `user_id=eq.${encodeFilter(userId)}&id=eq.${encodeFilter(feishuEventRowId(input.calendarId, input.eventId))}`,
+    {
+      status: "remote_deleted",
+      last_synced_at: syncedAt,
+      updated_at: syncedAt
+    }
+  );
+  await restPatch(
+    "resolve_feishu_connections",
+    `user_id=eq.${encodeFilter(userId)}`,
+    {
+      status: "connected",
+      last_server_sync_at: syncedAt,
+      updated_at: syncedAt
+    }
+  );
+
+  return {
+    status: "remote_deleted",
+    syncedAt
+  };
+}
+
 export async function readServerCalendarEvents(userId: string, startsAt?: string, endsAt?: string) {
   const filters = [
     "select=*",

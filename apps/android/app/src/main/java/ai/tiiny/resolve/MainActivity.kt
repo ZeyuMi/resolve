@@ -5,28 +5,32 @@ import android.app.TimePickerDialog
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -39,6 +43,7 @@ import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.EditCalendar
 import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -50,20 +55,17 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.TaskAlt
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -84,6 +86,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
@@ -92,6 +95,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
@@ -140,6 +144,11 @@ private enum class Tab(
     Settings("Settings", Icons.Filled.Settings)
 }
 
+private data class TodoTreeEntry(
+    val item: ResolveItem,
+    val depth: Int
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ResolveAndroidApp(
@@ -166,6 +175,13 @@ private fun ResolveAndroidApp(
     var showCalendarDraft by remember { mutableStateOf(false) }
     var showCompleted by remember { mutableStateOf(false) }
     var showArchived by remember { mutableStateOf(false) }
+    var openedStrategyThreadId by remember { mutableStateOf<String?>(null) }
+    var showStrategyDraft by remember { mutableStateOf(false) }
+    var todoReturnStrategyThreadId by remember { mutableStateOf<String?>(null) }
+    var pendingTodoArchive by remember { mutableStateOf<ResolveItem?>(null) }
+    var pendingTodoDelete by remember { mutableStateOf<ResolveItem?>(null) }
+    var pendingTodoArchiveClear by remember { mutableStateOf(false) }
+    var pendingCalendarDelete by remember { mutableStateOf<CalendarEvent?>(null) }
     var isSyncing by remember { mutableStateOf(false) }
     var isConnecting by remember { mutableStateOf(false) }
     var hasBackendSession by remember { mutableStateOf(secureVault.loadBackendSession() != null) }
@@ -178,6 +194,47 @@ private fun ResolveAndroidApp(
 
     fun updateItem(item: ResolveItem) {
         persist(state.copy(items = state.items.map { if (it.id == item.id) item.copy(updatedAt = Instant.now()) else it }))
+    }
+
+    fun archiveItem(item: ResolveItem) {
+        updateItem(item.copy(status = ItemStatus.Archived))
+        if (selectedTodoId == item.id) selectedTodoId = null
+        notice = null
+    }
+
+    fun deleteItemPermanently(item: ResolveItem) {
+        val childIds = state.items.filter { it.parentItemId == item.id }.map { it.id }.toSet()
+        persist(state.copy(items = state.items.filterNot { it.id == item.id || it.id in childIds || it.parentItemId == item.id }))
+        if (selectedTodoId == item.id) selectedTodoId = null
+        notice = null
+    }
+
+    fun clearArchivedItems() {
+        val archivedIds = state.items.filter { it.status == ItemStatus.Archived }.map { it.id }.toSet()
+        persist(state.copy(items = state.items.filterNot { it.id in archivedIds || it.parentItemId in archivedIds }))
+        notice = null
+    }
+
+    fun restoreCalendarEvent(event: CalendarEvent) {
+        val restored = event.copy(
+            status = when (event.provider) {
+                "feishu" -> if (event.canEdit) "synced" else "readonly"
+                else -> "local"
+            }
+        )
+        persist(state.copy(calendarEvents = replaceCalendarEvent(state.calendarEvents, event, restored)))
+        notice = null
+    }
+
+    fun addSubtask(parent: ResolveItem, title: String) {
+        val text = title.trim()
+        if (text.isBlank()) return
+        val child = ResolveItem(
+            title = text,
+            strategyThreadId = parent.strategyThreadId,
+            parentItemId = parent.id
+        )
+        persist(state.copy(items = listOf(child) + state.items))
     }
 
     fun patchFeishu(settings: FeishuSettings) {
@@ -400,6 +457,69 @@ private fun ResolveAndroidApp(
         notice = null
     }
 
+    fun deleteCalendarEvent(event: CalendarEvent) {
+        val canDeleteRemote = event.provider == "feishu" &&
+            event.canDelete &&
+            !event.externalCalendarId.isNullOrBlank() &&
+            !event.externalEventId.isNullOrBlank() &&
+            hasBackendSession &&
+            state.backendSettings.feishuConnected
+        val hiddenEvent = event.copy(status = if (canDeleteRemote) "local_pending_delete" else "archived_locally")
+
+        persist(
+            state.copy(
+                calendarEvents = when {
+                    event.provider == "local" -> replaceCalendarEvent(state.calendarEvents, event, hiddenEvent.copy(status = "archived_locally"))
+                    else -> replaceCalendarEvent(state.calendarEvents, event, hiddenEvent)
+                }
+            )
+        )
+        selectedCalendarEvent = null
+        editingCalendarEvent = null
+        expandedCalendarDate = event.startsAt.atZone(ZoneId.systemDefault()).toLocalDate()
+        notice = null
+
+        if (!canDeleteRemote) return
+
+        scope.launch {
+            try {
+                val client = connectedBackendClient()
+                val syncedAt = withContext(Dispatchers.IO) { client.deleteEvent(event) }
+                persist(
+                    state.copy(
+                        calendarEvents = replaceCalendarEvent(state.calendarEvents, hiddenEvent, hiddenEvent.copy(status = "remote_deleted")),
+                        backendSettings = state.backendSettings.copy(lastSyncedAt = syncedAt, lastError = null),
+                        feishuSettings = state.feishuSettings.copy(status = FeishuStatus.Connected, lastSyncedAt = syncedAt, lastError = null)
+                    )
+                )
+            } catch (error: Throwable) {
+                if (error.needsCalendarAuthorization()) {
+                    persist(
+                        state.copy(
+                            backendSettings = state.backendSettings.copy(
+                                status = BackendStatus.Connected,
+                                feishuConnected = false,
+                                lastError = "Calendar needs attention"
+                            ),
+                            feishuSettings = state.feishuSettings.copy(
+                                status = FeishuStatus.NotConnected,
+                                lastError = "Calendar needs attention"
+                            )
+                        )
+                    )
+                } else {
+                    persist(
+                        state.copy(
+                            calendarEvents = replaceCalendarEvent(state.calendarEvents, hiddenEvent, event.copy(status = "error")),
+                            backendSettings = state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message),
+                            feishuSettings = state.feishuSettings.copy(lastError = error.message)
+                        )
+                    )
+                }
+            }
+        }
+    }
+
     fun startBackendFeishuAuth() {
         if (!hasBackendSession) {
             notice = "Sign in first"
@@ -619,10 +739,73 @@ private fun ResolveAndroidApp(
         }
     }
 
+    fun closeTodoDetail() {
+        selectedTodoId = null
+        todoReturnStrategyThreadId?.let { threadId ->
+            selectedThreadId = threadId
+            openedStrategyThreadId = threadId
+            showStrategyDraft = false
+            tab = Tab.Strategy
+            todoReturnStrategyThreadId = null
+        }
+    }
+
+    fun canNavigateBack(): Boolean =
+        pendingTodoArchive != null ||
+            pendingTodoDelete != null ||
+            pendingTodoArchiveClear ||
+            pendingCalendarDelete != null ||
+            selectedTodoId != null ||
+            (tab == Tab.Calendar && (editingCalendarEvent != null || selectedCalendarEvent != null || showCalendarDraft || expandedCalendarDate != null)) ||
+            (tab == Tab.Strategy && (showStrategyDraft || openedStrategyThreadId != null))
+
+    fun navigateBack() {
+        when {
+            pendingTodoArchive != null -> pendingTodoArchive = null
+            pendingTodoDelete != null -> pendingTodoDelete = null
+            pendingTodoArchiveClear -> pendingTodoArchiveClear = false
+            pendingCalendarDelete != null -> pendingCalendarDelete = null
+            selectedTodoId != null -> closeTodoDetail()
+            tab == Tab.Calendar && editingCalendarEvent != null -> {
+                selectedCalendarEvent = editingCalendarEvent
+                editingCalendarEvent = null
+            }
+            tab == Tab.Calendar && selectedCalendarEvent != null -> {
+                selectedCalendarEvent = null
+                editingCalendarEvent = null
+            }
+            tab == Tab.Calendar && showCalendarDraft -> showCalendarDraft = false
+            tab == Tab.Calendar && expandedCalendarDate != null -> expandedCalendarDate = null
+            tab == Tab.Strategy && showStrategyDraft -> showStrategyDraft = false
+            tab == Tab.Strategy && openedStrategyThreadId != null -> openedStrategyThreadId = null
+        }
+    }
+
+    BackHandler(enabled = canNavigateBack()) {
+        navigateBack()
+    }
+
+    val isFullPageDetail =
+        selectedTodoId != null ||
+            selectedCalendarEvent != null ||
+            editingCalendarEvent != null ||
+            showCalendarDraft ||
+            (tab == Tab.Strategy && (openedStrategyThreadId != null || showStrategyDraft))
+
     ResolveTheme {
         Scaffold(
             containerColor = ResolveColors.Bg,
-            bottomBar = { BottomTabs(tab = tab, onTab = { tab = it }) },
+            bottomBar = {
+                BottomTabs(
+                    tab = tab,
+                    onTab = {
+                        tab = it
+                        if (it == Tab.Strategy) openedStrategyThreadId = null
+                        if (it == Tab.Strategy) showStrategyDraft = false
+                        if (it == Tab.Todo) todoReturnStrategyThreadId = null
+                    }
+                )
+            },
             floatingActionButton = {
                 if (tab == Tab.Calendar && selectedCalendarEvent == null && editingCalendarEvent == null && !showCalendarDraft) {
                     FloatingActionButton(
@@ -638,6 +821,15 @@ private fun ResolveAndroidApp(
                     ) {
                         Icon(Icons.Filled.Add, contentDescription = "Add event", modifier = Modifier.size(30.dp))
                     }
+                } else if (tab == Tab.Strategy && openedStrategyThreadId == null && !showStrategyDraft) {
+                    FloatingActionButton(
+                        onClick = { showStrategyDraft = true },
+                        containerColor = Color(0xFF6857D9),
+                        contentColor = Color.White,
+                        shape = RoundedCornerShape(18.dp)
+                    ) {
+                        Icon(Icons.Filled.Add, contentDescription = "Add strategy", modifier = Modifier.size(28.dp))
+                    }
                 }
             }
         ) { padding ->
@@ -650,36 +842,80 @@ private fun ResolveAndroidApp(
                         vertical = if (tab == Tab.Calendar) 2.dp else 12.dp
                     )
             ) {
-                TopHeader(
-                    title = tab.label,
-                    settings = state.feishuSettings,
-                    backend = state.backendSettings,
-                    isSyncing = isSyncing,
-                    compact = tab == Tab.Calendar,
-                    onSettings = { tab = Tab.Settings }
-                )
-                Spacer(Modifier.height(if (tab == Tab.Calendar) 3.dp else 10.dp))
+                if (!isFullPageDetail) {
+                    TopHeader(
+                        title = tab.label,
+                        settings = state.feishuSettings,
+                        backend = state.backendSettings,
+                        isSyncing = isSyncing,
+                        compact = tab == Tab.Calendar,
+                        showSettings = false,
+                        onSettings = { tab = Tab.Settings }
+                    )
+                    Spacer(Modifier.height(if (tab == Tab.Calendar) 3.dp else 10.dp))
+                }
                 notice?.let {
                     InlineNotice(message = it, onDismiss = { notice = null })
                     Spacer(Modifier.height(if (tab == Tab.Calendar) 4.dp else 10.dp))
                 }
-                if (tab == Tab.Todo) {
+                if (tab == Tab.Todo && selectedTodoId == null) {
                     CaptureBox(value = capture, onChange = { capture = it }, onSave = { saveCapture() })
                     Spacer(Modifier.height(12.dp))
                 }
-                Box(Modifier.weight(1f)) {
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .swipeBack(enabled = canNavigateBack(), onBack = { navigateBack() })
+                ) {
                     when (tab) {
-                        Tab.Todo -> TodoScreen(
-                            state = state,
-                            showCompleted = showCompleted,
-                            showArchived = showArchived,
-                            onToggleDone = { item ->
-                                updateItem(item.copy(status = if (item.status == ItemStatus.Done) ItemStatus.Active else ItemStatus.Done))
-                            },
-                            onSelect = { selectedTodoId = it.id },
-                            onShowCompleted = { showCompleted = !showCompleted },
-                            onShowArchived = { showArchived = !showArchived }
-                        )
+                        Tab.Todo -> {
+                            val selectedTodo = state.items.find { it.id == selectedTodoId }
+                            if (selectedTodo != null) {
+                                TodoDetailPage(
+                                    item = selectedTodo,
+                                    threads = state.threads,
+                                    subtasks = descendantsOf(state.items, selectedTodo.id),
+                                    onClose = { closeTodoDetail() },
+                                    onUpdate = { updateItem(it) },
+                                    onToggleSubtask = { item ->
+                                        updateItem(item.copy(status = if (item.status == ItemStatus.Done) ItemStatus.Active else ItemStatus.Done))
+                                    },
+                                    onAddSubtask = { title -> addSubtask(selectedTodo, title) },
+                                    onArchive = { pendingTodoArchive = it },
+                                    onCalendar = {
+                                        calendarDraft = CalendarDraft(
+                                            title = it.title,
+                                            date = it.dueAt?.atZone(ZoneId.systemDefault())?.toLocalDate() ?: LocalDate.now(),
+                                            time = it.dueAt?.atZone(ZoneId.systemDefault())?.toLocalTime()?.withSecond(0)?.withNano(0) ?: LocalTime.of(9, 0),
+                                            description = it.notes,
+                                            sourceItemId = it.id,
+                                            strategyThreadId = it.strategyThreadId
+                                        )
+                                        selectedDate = calendarDraft.date
+                                        expandedCalendarDate = calendarDraft.date
+                                        selectedTodoId = null
+                                        tab = Tab.Calendar
+                                        showCalendarDraft = true
+                                    }
+                                )
+                            } else {
+                                TodoScreen(
+                                    state = state,
+                                    showCompleted = showCompleted,
+                                    showArchived = showArchived,
+                                    onToggleDone = { item ->
+                                        updateItem(item.copy(status = if (item.status == ItemStatus.Done) ItemStatus.Active else ItemStatus.Done))
+                                    },
+                                    onRestore = { item -> updateItem(item.copy(status = ItemStatus.Active)) },
+                                    onArchive = { pendingTodoArchive = it },
+                                    onSelect = { selectedTodoId = it.id },
+                                    onShowCompleted = { showCompleted = !showCompleted },
+                                    onShowArchived = { showArchived = !showArchived },
+                                    onDeleteArchived = { pendingTodoDelete = it },
+                                    onClearArchived = { pendingTodoArchiveClear = true }
+                                )
+                            }
+                        }
 
                         Tab.Calendar -> CalendarScreen(
                             state = state,
@@ -705,6 +941,8 @@ private fun ResolveAndroidApp(
                                 selectedCalendarEvent = null
                                 editingCalendarEvent = null
                             },
+                            onDeleteEvent = { pendingCalendarDelete = it },
+                            onRestoreEvent = { restoreCalendarEvent(it) },
                             onEditEvent = {
                                 editingCalendarEvent = it
                                 selectedCalendarEvent = null
@@ -736,23 +974,39 @@ private fun ResolveAndroidApp(
                         Tab.Strategy -> StrategyScreen(
                             state = state,
                             selectedThreadId = selectedThreadId,
+                            openedThreadId = openedStrategyThreadId,
+                            showNewThread = showStrategyDraft,
                             onThread = { selectedThreadId = it },
+                            onOpenThread = {
+                                selectedThreadId = it
+                                openedStrategyThreadId = it
+                            },
+                            onCloseThread = { openedStrategyThreadId = null },
+                            onCloseNewThread = { showStrategyDraft = false },
                             onAddThread = { title, hypothesis ->
                                 if (title.isNotBlank()) {
                                     val thread = StrategyThread(title = title.trim(), currentHypothesis = hypothesis.trim())
                                     persist(state.copy(threads = listOf(thread) + state.threads))
                                     selectedThreadId = thread.id
+                                    openedStrategyThreadId = thread.id
+                                    showStrategyDraft = false
                                 }
                             },
-                            onAddTask = { title ->
+                            onAddTask = { threadId, title ->
                                 if (title.isNotBlank()) {
-                                    val item = ResolveItem(title = title.trim(), strategyThreadId = selectedThreadId)
+                                    val item = ResolveItem(title = title.trim(), strategyThreadId = threadId)
                                     persist(state.copy(items = listOf(item) + state.items))
-                                    tab = Tab.Todo
                                 }
                             },
-                            onSelectTodo = { selectedTodoId = it.id },
-                            onToggleDone = { item -> updateItem(item.copy(status = ItemStatus.Done)) }
+                            onSelectTodo = {
+                                selectedTodoId = it.id
+                                todoReturnStrategyThreadId = openedStrategyThreadId ?: selectedThreadId
+                                tab = Tab.Todo
+                            },
+                            onToggleDone = { item ->
+                                updateItem(item.copy(status = if (item.status == ItemStatus.Done) ItemStatus.Active else ItemStatus.Done))
+                            },
+                            onArchiveTodo = { pendingTodoArchive = it }
                         )
 
                         Tab.Settings -> SettingsScreen(
@@ -769,38 +1023,125 @@ private fun ResolveAndroidApp(
             }
         }
 
-        val selectedTodo = state.items.find { it.id == selectedTodoId }
-        if (selectedTodo != null) {
-            ModalBottomSheet(onDismissRequest = { selectedTodoId = null }, containerColor = ResolveColors.Surface) {
-                TodoDetailSheet(
-                    item = selectedTodo,
-                    threads = state.threads,
-                    onClose = { selectedTodoId = null },
-                    onUpdate = { updateItem(it) },
-                    onArchive = {
-                        updateItem(it.copy(status = ItemStatus.Archived))
-                        selectedTodoId = null
-                    },
-                    onCalendar = {
-                        calendarDraft = CalendarDraft(
-                            title = it.title,
-                            date = it.dueAt?.atZone(ZoneId.systemDefault())?.toLocalDate() ?: LocalDate.now(),
-                            time = it.dueAt?.atZone(ZoneId.systemDefault())?.toLocalTime()?.withSecond(0)?.withNano(0) ?: LocalTime.of(9, 0),
-                            description = it.notes,
-                            sourceItemId = it.id,
-                            strategyThreadId = it.strategyThreadId
-                        )
-                        selectedDate = calendarDraft.date
-                        expandedCalendarDate = calendarDraft.date
-                        selectedTodoId = null
-                        tab = Tab.Calendar
-                        showCalendarDraft = true
-                    }
-                )
-            }
+        pendingTodoArchive?.let { item ->
+            ConfirmActionDialog(
+                title = "Archive todo?",
+                message = item.title,
+                confirmLabel = "Archive",
+                danger = false,
+                onDismiss = { pendingTodoArchive = null },
+                onConfirm = {
+                    archiveItem(item)
+                    pendingTodoArchive = null
+                }
+            )
         }
-
+        pendingTodoDelete?.let { item ->
+            ConfirmActionDialog(
+                title = "Delete forever?",
+                message = item.title,
+                confirmLabel = "Delete",
+                danger = true,
+                onDismiss = { pendingTodoDelete = null },
+                onConfirm = {
+                    deleteItemPermanently(item)
+                    pendingTodoDelete = null
+                }
+            )
+        }
+        if (pendingTodoArchiveClear) {
+            ConfirmActionDialog(
+                title = "Clear archive?",
+                message = "Permanently delete every archived todo.",
+                confirmLabel = "Clear",
+                danger = true,
+                onDismiss = { pendingTodoArchiveClear = false },
+                onConfirm = {
+                    clearArchivedItems()
+                    pendingTodoArchiveClear = false
+                }
+            )
+        }
+        pendingCalendarDelete?.let { event ->
+            val action = calendarDeleteActionLabel(event)
+            ConfirmActionDialog(
+                title = "$action event?",
+                message = event.title,
+                confirmLabel = action,
+                danger = true,
+                onDismiss = { pendingCalendarDelete = null },
+                onConfirm = {
+                    deleteCalendarEvent(event)
+                    pendingCalendarDelete = null
+                }
+            )
+        }
     }
+}
+
+private fun Modifier.swipeBack(enabled: Boolean, onBack: () -> Unit): Modifier {
+    if (!enabled) return this
+    return pointerInput(onBack) {
+        var drag = 0f
+        detectHorizontalDragGestures(
+            onDragEnd = {
+                if (drag > 120f) onBack()
+                drag = 0f
+            },
+            onDragCancel = { drag = 0f },
+            onHorizontalDrag = { _, dragAmount ->
+                drag = (drag + dragAmount).coerceAtLeast(0f)
+            }
+        )
+    }
+}
+
+@Composable
+private fun ResolveMark(size: Dp) {
+    Surface(
+        color = ResolveColors.Accent,
+        shape = CircleShape,
+        modifier = Modifier.size(size)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                Icons.Filled.Check,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size((size.value * 0.58f).dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun ConfirmActionDialog(
+    title: String,
+    message: String,
+    confirmLabel: String,
+    danger: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title, color = ResolveColors.Text, fontSize = ResolveType.CardTitle, fontWeight = FontWeight.SemiBold) },
+        text = { Text(message, color = ResolveColors.Secondary, fontSize = ResolveType.BodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis) },
+        confirmButton = {
+            TextButton(
+                onClick = onConfirm,
+                colors = ButtonDefaults.textButtonColors(contentColor = if (danger) ResolveColors.Danger else ResolveColors.Accent)
+            ) {
+                Text(confirmLabel)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = ResolveColors.Secondary)
+            }
+        },
+        containerColor = ResolveColors.Surface
+    )
 }
 
 @Composable
@@ -810,11 +1151,14 @@ private fun TopHeader(
     backend: BackendSettings,
     isSyncing: Boolean,
     compact: Boolean = false,
+    showSettings: Boolean = true,
     onSettings: () -> Unit
 ) {
     if (compact) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            Text(title, color = ResolveColors.Text, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+            ResolveMark(size = 24.dp)
+            Spacer(Modifier.width(7.dp))
+            Text(title, color = ResolveColors.Text, fontSize = ResolveType.CardTitle, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.weight(1f))
             Surface(color = Color.Transparent, shape = RoundedCornerShape(999.dp)) {
                 Text(
@@ -826,15 +1170,17 @@ private fun TopHeader(
                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                 )
             }
-            Surface(
-                color = Color.Transparent,
-                shape = CircleShape,
-                modifier = Modifier
-                    .size(30.dp)
-                    .clickable(onClick = onSettings)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = ResolveColors.Secondary, modifier = Modifier.size(19.dp))
+            if (showSettings) {
+                Surface(
+                    color = Color.Transparent,
+                    shape = CircleShape,
+                    modifier = Modifier
+                        .size(30.dp)
+                        .clickable(onClick = onSettings)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = ResolveColors.Secondary, modifier = Modifier.size(19.dp))
+                    }
                 }
             }
         }
@@ -842,52 +1188,127 @@ private fun TopHeader(
     }
 
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        ResolveMark(size = 28.dp)
+        Spacer(Modifier.width(8.dp))
         Column(Modifier.weight(1f)) {
-            Text("Resolve", color = ResolveColors.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-            Text(title, color = ResolveColors.Text, fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
+            Text("Resolve", color = ResolveColors.Muted, fontSize = ResolveType.Caption, fontWeight = FontWeight.SemiBold)
+            Text(title, color = ResolveColors.Text, fontSize = ResolveType.PageTitle, fontWeight = FontWeight.SemiBold)
         }
-        Surface(color = ResolveColors.Pill, shape = RoundedCornerShape(999.dp)) {
-            Row(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Filled.Refresh, contentDescription = null, Modifier.size(15.dp), tint = ResolveColors.Muted)
-                Spacer(Modifier.width(5.dp))
-                Text(if (isSyncing) "Syncing" else calendarStatusLabel(settings, backend), color = ResolveColors.Secondary, fontSize = 12.sp)
+        if (showSettings) {
+            Surface(color = ResolveColors.Pill, shape = RoundedCornerShape(999.dp)) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Filled.Refresh, contentDescription = null, Modifier.size(15.dp), tint = ResolveColors.Muted)
+                    Spacer(Modifier.width(5.dp))
+                    Text(if (isSyncing) "Syncing" else calendarStatusLabel(settings, backend), color = ResolveColors.Secondary, fontSize = ResolveType.Caption)
+                }
             }
         }
-        IconButton(onClick = onSettings) {
-            Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = ResolveColors.Secondary)
+        if (showSettings) {
+            IconButton(onClick = onSettings) {
+                Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = ResolveColors.Secondary)
+            }
         }
     }
 }
 
 @Composable
 private fun CaptureBox(value: String, onChange: (String) -> Unit, onSave: () -> Unit) {
-    OutlinedCard(colors = CardDefaults.outlinedCardColors(containerColor = ResolveColors.Surface)) {
-        Column(Modifier.padding(12.dp)) {
-            OutlinedTextField(
-                value = value,
-                onValueChange = onChange,
-                modifier = Modifier.fillMaxWidth(),
-                minLines = 1,
-                maxLines = 4,
-                placeholder = { Text("记一下，直接进 Todo") },
-                colors = inputColors()
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Button(
-                    onClick = onSave,
-                    colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.Accent),
-                    enabled = value.isNotBlank()
-                ) {
-                    Icon(Icons.Filled.Add, contentDescription = null, Modifier.size(17.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Save")
+    OutlinedCard(
+        shape = RoundedCornerShape(15.dp),
+        colors = CardDefaults.outlinedCardColors(containerColor = ResolveColors.Surface)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Icon(Icons.Filled.Add, contentDescription = null, tint = ResolveColors.Muted, modifier = Modifier.size(19.dp))
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(30.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                BasicTextField(
+                    value = value,
+                    onValueChange = onChange,
+                    singleLine = true,
+                    textStyle = TextStyle(
+                        color = ResolveColors.Text,
+                        fontSize = ResolveType.Body,
+                        lineHeight = 17.sp,
+                        platformStyle = PlatformTextStyle(includeFontPadding = false)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (value.isBlank()) {
+                    Text(
+                        "记一下",
+                        color = ResolveColors.Muted,
+                        fontSize = ResolveType.Body,
+                        lineHeight = 17.sp,
+                        style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false))
+                    )
                 }
-                Text("手机打开先捕捉，整理稍后做。", color = ResolveColors.Muted, fontSize = 12.sp)
             }
+            Surface(
+                color = if (value.isBlank()) ResolveColors.Pill else ResolveColors.Accent,
+                shape = CircleShape,
+                onClick = { if (value.isNotBlank()) onSave() },
+                modifier = Modifier.size(30.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Save", tint = if (value.isBlank()) ResolveColors.Muted else Color.White, modifier = Modifier.size(17.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompactInputField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String,
+    modifier: Modifier = Modifier,
+    singleLine: Boolean = true,
+    minHeight: Dp = 38.dp,
+    textStyle: TextStyle = TextStyle(
+        color = ResolveColors.Text,
+        fontSize = ResolveType.Body,
+        lineHeight = 17.sp,
+        platformStyle = PlatformTextStyle(includeFontPadding = false)
+    )
+) {
+    val shape = RoundedCornerShape(13.dp)
+    Box(
+        modifier = modifier
+            .heightIn(min = minHeight)
+            .clip(shape)
+            .border(1.dp, ResolveColors.Line, shape)
+            .padding(horizontal = 11.dp, vertical = if (singleLine) 8.dp else 10.dp),
+        contentAlignment = if (singleLine) Alignment.CenterStart else Alignment.TopStart
+    ) {
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            singleLine = singleLine,
+            textStyle = textStyle,
+            modifier = Modifier.fillMaxWidth()
+        )
+        if (value.isBlank()) {
+            Text(
+                placeholder,
+                color = ResolveColors.Muted,
+                fontSize = textStyle.fontSize,
+                lineHeight = textStyle.lineHeight,
+                style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false)),
+                maxLines = if (singleLine) 1 else 3,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
@@ -898,78 +1319,198 @@ private fun TodoScreen(
     showCompleted: Boolean,
     showArchived: Boolean,
     onToggleDone: (ResolveItem) -> Unit,
+    onRestore: (ResolveItem) -> Unit,
+    onArchive: (ResolveItem) -> Unit,
     onSelect: (ResolveItem) -> Unit,
     onShowCompleted: () -> Unit,
-    onShowArchived: () -> Unit
+    onShowArchived: () -> Unit,
+    onDeleteArchived: (ResolveItem) -> Unit,
+    onClearArchived: () -> Unit
 ) {
-    val active = state.items.filter { it.type == ItemType.Task && it.status == ItemStatus.Active }
-    val completed = state.items.filter { it.type == ItemType.Task && it.status == ItemStatus.Done }
-    val archived = state.items.filter { it.type == ItemType.Task && it.status == ItemStatus.Archived }
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        item { SectionLabel("Active", "${active.size} items") }
-        items(active, key = { it.id }) { item ->
+    val tasks = state.items.filter { it.type == ItemType.Task }
+    val activeIds = tasks.filter { it.status == ItemStatus.Active }.map { it.id }.toSet()
+    val completedIds = tasks.filter { it.status == ItemStatus.Done }.map { it.id }.toSet()
+    val archivedIds = tasks.filter { it.status == ItemStatus.Archived }.map { it.id }.toSet()
+    val active = tasks.filter { it.status == ItemStatus.Active && (it.parentItemId == null || it.parentItemId !in activeIds) }
+    val completed = tasks.filter { it.status == ItemStatus.Done && (it.parentItemId == null || it.parentItemId !in completedIds) }
+    val archived = tasks.filter { it.status == ItemStatus.Archived && (it.parentItemId == null || it.parentItemId !in archivedIds) }
+    val activeTree = flattenTodoTree(active, tasks.filter { it.status == ItemStatus.Active })
+    val completedTree = flattenTodoTree(completed, tasks.filter { it.status == ItemStatus.Done })
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        items(activeTree, key = { it.item.id }) { entry ->
+            val item = entry.item
             TodoRow(
                 item = item,
+                subtaskCount = tasks.count { it.parentItemId == item.id },
                 thread = state.threads.find { it.id == item.strategyThreadId },
+                depth = entry.depth,
                 onToggleDone = { onToggleDone(item) },
+                onArchive = { onArchive(item) },
                 onSelect = { onSelect(item) }
             )
         }
-        item {
-            CollapsedHeader("Completed", completed.size, showCompleted, onShowCompleted)
-        }
-        if (showCompleted) {
-            items(completed, key = { it.id }) { item ->
-                TodoRow(item = item, thread = state.threads.find { it.id == item.strategyThreadId }, onToggleDone = { onToggleDone(item) }, onSelect = { onSelect(item) })
+        if (completed.isNotEmpty()) {
+            item {
+                Spacer(Modifier.height(if (active.isEmpty()) 22.dp else 10.dp))
+                TodoDisclosureRow(
+                    title = "Show completed",
+                    count = completed.size,
+                    open = showCompleted,
+                    onClick = onShowCompleted
+                )
             }
         }
-        item {
-            CollapsedHeader("Archived", archived.size, showArchived, onShowArchived)
+        if (showCompleted) {
+            items(completedTree, key = { it.item.id }) { entry ->
+                val item = entry.item
+                TodoRow(
+                    item = item,
+                    subtaskCount = tasks.count { it.parentItemId == item.id },
+                    thread = state.threads.find { it.id == item.strategyThreadId },
+                    depth = entry.depth,
+                    onToggleDone = { onRestore(item) },
+                    onArchive = { onArchive(item) },
+                    onSelect = { onSelect(item) }
+                )
+            }
+        }
+        if (archived.isNotEmpty()) {
+            item {
+                Spacer(Modifier.height(6.dp))
+                ArchiveDisclosureRow(count = archived.size, open = showArchived, onClick = onShowArchived)
+            }
         }
         if (showArchived) {
+            item {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onClearArchived) {
+                        Text("Clear archive", color = ResolveColors.Danger, fontSize = ResolveType.Caption)
+                    }
+                }
+            }
             items(archived, key = { it.id }) { item ->
-                TodoRow(item = item, thread = state.threads.find { it.id == item.strategyThreadId }, onToggleDone = {}, onSelect = { onSelect(item) })
+                ArchivedTodoRow(
+                    item = item,
+                    thread = state.threads.find { it.id == item.strategyThreadId },
+                    onRestore = { onRestore(item) },
+                    onDelete = { onDeleteArchived(item) }
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun TodoRow(
+    item: ResolveItem,
+    subtaskCount: Int,
+    thread: StrategyThread?,
+    depth: Int = 0,
+    onToggleDone: () -> Unit,
+    onArchive: () -> Unit,
+    onSelect: () -> Unit
+) {
+    val isChild = depth > 0
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        if (isChild) {
+            Spacer(Modifier.width(((depth - 1).coerceAtLeast(0) * 14).dp))
+            Box(
+                modifier = Modifier
+                    .width(16.dp)
+                    .height(34.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .width(1.dp)
+                        .height(28.dp)
+                        .background(ResolveColors.Line)
+                )
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .width(12.dp)
+                        .height(1.dp)
+                        .background(ResolveColors.Line)
+                )
+            }
+        }
+        OutlinedCard(
+            modifier = (if (isChild) Modifier.weight(1f) else Modifier.fillMaxWidth())
+                .combinedClickable(
+                    onClick = onSelect,
+                    onLongClick = onArchive
+                ),
+            shape = RoundedCornerShape(if (isChild) 11.dp else 13.dp),
+            colors = CardDefaults.outlinedCardColors(
+                containerColor = when {
+                    item.status == ItemStatus.Archived -> Color(0xFFFAFBFD)
+                    isChild -> Color(0xFFFBFCFF)
+                    else -> ResolveColors.Surface
+                }
+            )
+        ) {
+            Row(Modifier.padding(horizontal = if (isChild) 8.dp else 10.dp, vertical = if (isChild) 3.dp else 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onToggleDone, modifier = Modifier.size(if (isChild) 24.dp else 27.dp)) {
+                    Icon(
+                        if (item.status == ItemStatus.Done) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
+                        contentDescription = if (item.status == ItemStatus.Archived) "Restore" else "Toggle done",
+                        tint = if (item.status == ItemStatus.Done) ResolveColors.Accent else ResolveColors.Muted,
+                        modifier = Modifier.size(if (isChild) 17.dp else 19.dp)
+                    )
+                }
+                Spacer(Modifier.width(if (isChild) 4.dp else 6.dp))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        item.title,
+                        color = if (item.status == ItemStatus.Archived) ResolveColors.Muted else ResolveColors.Text,
+                        fontSize = ResolveType.Body,
+                        lineHeight = 17.sp,
+                        fontWeight = if (isChild) FontWeight.Normal else FontWeight.SemiBold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        textDecoration = if (item.status == ItemStatus.Done) TextDecoration.LineThrough else TextDecoration.None
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                        item.dueAt?.let { MetaPill(dateLabel(it), tone = "accent") }
+                        thread?.let { MetaPill(it.title) }
+                        if (subtaskCount > 0) MetaPill("$subtaskCount subtasks", tone = "soft")
+                        if (item.notes.isNotBlank()) MetaPill("Comment")
+                        if (item.status == ItemStatus.Archived) MetaPill("Archived")
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun TodoRow(
+private fun ArchivedTodoRow(
     item: ResolveItem,
     thread: StrategyThread?,
-    onToggleDone: () -> Unit,
-    onSelect: () -> Unit
+    onRestore: () -> Unit,
+    onDelete: () -> Unit
 ) {
     OutlinedCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onSelect),
-        colors = CardDefaults.outlinedCardColors(containerColor = ResolveColors.Surface)
+        shape = RoundedCornerShape(13.dp),
+        colors = CardDefaults.outlinedCardColors(containerColor = Color(0xFFFAFBFD)),
+        modifier = Modifier.fillMaxWidth()
     ) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.Top) {
-            IconButton(onClick = onToggleDone, modifier = Modifier.size(32.dp)) {
-                Icon(
-                    if (item.status == ItemStatus.Done) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
-                    contentDescription = "Toggle done",
-                    tint = if (item.status == ItemStatus.Done) ResolveColors.Accent else ResolveColors.Muted
-                )
-            }
-            Spacer(Modifier.width(6.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    item.title,
-                    color = if (item.status == ItemStatus.Archived) ResolveColors.Muted else ResolveColors.Text,
-                    fontSize = 15.sp,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    textDecoration = if (item.status == ItemStatus.Done) TextDecoration.LineThrough else TextDecoration.None
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
-                    item.dueAt?.let { MetaPill(dateLabel(it)) }
+        Row(Modifier.padding(horizontal = 10.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(item.title, color = ResolveColors.Muted, fontSize = ResolveType.BodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
                     thread?.let { MetaPill(it.title) }
-                    if (item.notes.isNotBlank()) MetaPill("Comment")
+                    item.dueAt?.let { MetaPill(dateLabel(it), tone = "accent") }
+                    MetaPill("Archived")
                 }
+            }
+            TextButton(onClick = onRestore) {
+                Text("Restore", fontSize = ResolveType.Caption)
+            }
+            TextButton(onClick = onDelete) {
+                Text("Delete", color = ResolveColors.Danger, fontSize = ResolveType.Caption)
             }
         }
     }
@@ -988,6 +1529,8 @@ private fun CalendarScreen(
     onViewMode: (CalendarViewMode) -> Unit,
     onSelectEvent: (CalendarEvent) -> Unit,
     onCloseEvent: () -> Unit,
+    onDeleteEvent: (CalendarEvent) -> Unit,
+    onRestoreEvent: (CalendarEvent) -> Unit,
     onEditEvent: (CalendarEvent) -> Unit,
     onCloseEdit: () -> Unit,
     onUpdateEvent: (CalendarEvent, CalendarDraft) -> Unit,
@@ -997,7 +1540,12 @@ private fun CalendarScreen(
     onExpandDay: (LocalDate) -> Unit
 ) {
     if (selectedEvent != null) {
-        CalendarEventDetailPage(event = selectedEvent, onClose = onCloseEvent, onEdit = { onEditEvent(selectedEvent) })
+        CalendarEventDetailPage(
+            event = selectedEvent,
+            onClose = onCloseEvent,
+            onEdit = { onEditEvent(selectedEvent) },
+            onDelete = { onDeleteEvent(selectedEvent) }
+        )
         return
     }
     if (editingEvent != null) {
@@ -1037,10 +1585,14 @@ private fun CalendarScreen(
     val eventsByDate = displayEvents
         .groupBy { it.startsAt.atZone(zone).toLocalDate() }
         .mapValues { (_, events) -> events.sortedBy { it.startsAt } }
+    val archivedEvents = state.calendarEvents
+        .filter(::calendarEventArchived)
+        .sortedByDescending { it.startsAt }
     val inlineExpandedDate = expandedDate?.takeIf { date ->
         (normalizedViewMode == CalendarViewMode.Week && date in weekDays) ||
             (normalizedViewMode == CalendarViewMode.Month && monthWeeks.any { date in it })
     }
+    var archiveOpen by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(1.dp)) {
         CalendarToolbar(
@@ -1120,7 +1672,8 @@ private fun CalendarScreen(
                         ExpandedDayInlinePanel(
                             date = date,
                             events = eventsByDate[date].orEmpty(),
-                            onSelectEvent = onSelectEvent
+                            onSelectEvent = onSelectEvent,
+                            onDeleteEvent = onDeleteEvent
                         )
                     }
                 } else {
@@ -1149,12 +1702,21 @@ private fun CalendarScreen(
                             ExpandedDayInlinePanel(
                                 date = inlineExpandedDate,
                                 events = eventsByDate[inlineExpandedDate].orEmpty(),
-                                onSelectEvent = onSelectEvent
+                                onSelectEvent = onSelectEvent,
+                                onDeleteEvent = onDeleteEvent
                             )
                         }
                     }
                 }
             }
+        }
+        if (archivedEvents.isNotEmpty()) {
+            CalendarArchivePanel(
+                events = archivedEvents,
+                open = archiveOpen,
+                onToggle = { archiveOpen = !archiveOpen },
+                onRestoreEvent = onRestoreEvent
+            )
         }
     }
 }
@@ -1193,7 +1755,7 @@ private fun CalendarToolbar(
         Text(
             calendarRangeTitle(selectedDate, viewMode),
             color = ResolveColors.Text,
-            fontSize = 15.sp,
+            fontSize = ResolveType.CardTitle,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -1212,7 +1774,7 @@ private fun CalendarToolbar(
                     modifier = Modifier.padding(start = 8.dp, end = 5.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(calendarViewModeLabel(viewMode), color = ResolveColors.Secondary, fontSize = 11.sp)
+                    Text(calendarViewModeLabel(viewMode), color = ResolveColors.Secondary, fontSize = ResolveType.Caption)
                     Icon(Icons.Filled.KeyboardArrowDown, contentDescription = null, tint = ResolveColors.Muted, modifier = Modifier.size(14.dp))
                 }
             }
@@ -1238,31 +1800,6 @@ private fun CalendarToolbar(
             Box(contentAlignment = Alignment.Center) {
                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next", tint = ResolveColors.Secondary, modifier = Modifier.size(19.dp))
             }
-        }
-    }
-}
-
-@Composable
-private fun CalendarNavigator(
-    selectedDate: LocalDate,
-    viewMode: CalendarViewMode,
-    onDate: (LocalDate) -> Unit
-) {
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-        IconButton(onClick = { onDate(shiftCalendarDate(selectedDate, viewMode, -1)) }) {
-            Icon(
-                Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = "Previous",
-                tint = ResolveColors.Secondary,
-                modifier = Modifier.rotate(180f)
-            )
-        }
-        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(calendarRangeTitle(selectedDate, viewMode), color = ResolveColors.Text, fontWeight = FontWeight.SemiBold)
-            Text("Today ${LocalDate.now().format(DateTimeFormatter.ofPattern("M月d日"))}", color = ResolveColors.Muted, fontSize = 12.sp)
-        }
-        IconButton(onClick = { onDate(shiftCalendarDate(selectedDate, viewMode, 1)) }) {
-            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next", tint = ResolveColors.Secondary)
         }
     }
 }
@@ -1407,7 +1944,8 @@ private fun CalendarEventChip(event: CalendarEvent, isPast: Boolean, onClick: ()
 private fun ExpandedDayInlinePanel(
     date: LocalDate,
     events: List<CalendarEvent>,
-    onSelectEvent: (CalendarEvent) -> Unit
+    onSelectEvent: (CalendarEvent) -> Unit,
+    onDeleteEvent: (CalendarEvent) -> Unit
 ) {
     Surface(
         color = Color(0xFFF0F2F5),
@@ -1422,30 +1960,36 @@ private fun ExpandedDayInlinePanel(
                 Text(
                     date.format(DateTimeFormatter.ofPattern("M月d日")),
                     color = ResolveColors.Text,
-                    fontSize = 13.sp,
+                    fontSize = ResolveType.Body,
                     fontWeight = FontWeight.SemiBold
                 )
                 Spacer(Modifier.width(8.dp))
-                Text("${events.size} events", color = ResolveColors.Muted, fontSize = 11.sp)
+                Text("${events.size} 项", color = ResolveColors.Muted, fontSize = ResolveType.Pill)
             }
             if (events.isEmpty()) {
-                Text("这一天还没有日程", color = ResolveColors.Muted, fontSize = 12.sp)
+                Text("这一天还没有日程", color = ResolveColors.Muted, fontSize = ResolveType.BodySmall)
             } else {
                 events.forEach { event ->
-                    CalendarExpandedEventRow(event = event, onClick = { onSelectEvent(event) })
+                    CalendarExpandedEventRow(
+                        event = event,
+                        onClick = { onSelectEvent(event) },
+                        onDelete = { onDeleteEvent(event) }
+                    )
                 }
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun CalendarExpandedEventRow(event: CalendarEvent, onClick: () -> Unit) {
+private fun CalendarExpandedEventRow(event: CalendarEvent, onClick: () -> Unit, onDelete: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .clickable(onClick = onClick)
+            .clip(RoundedCornerShape(11.dp))
+            .combinedClickable(onClick = onClick, onLongClick = onDelete)
+            .background(Color(0xFFF0F2F5))
             .padding(horizontal = 3.dp, vertical = 3.dp),
         verticalAlignment = Alignment.Top
     ) {
@@ -1461,15 +2005,15 @@ private fun CalendarExpandedEventRow(event: CalendarEvent, onClick: () -> Unit) 
             Text(
                 event.title,
                 color = ResolveColors.Text,
-                fontSize = 15.sp,
+                fontSize = ResolveType.BodySmall,
                 fontWeight = FontWeight.Medium,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
             Text(
                 calendarExpandedEventMeta(event),
-                color = ResolveColors.Secondary,
-                fontSize = 12.sp,
+                color = ResolveColors.Muted,
+                fontSize = ResolveType.Caption,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
@@ -1478,8 +2022,64 @@ private fun CalendarExpandedEventRow(event: CalendarEvent, onClick: () -> Unit) 
 }
 
 @Composable
-private fun CalendarEventDetailPage(event: CalendarEvent, onClose: () -> Unit, onEdit: () -> Unit) {
+private fun CalendarArchivePanel(
+    events: List<CalendarEvent>,
+    open: Boolean,
+    onToggle: () -> Unit,
+    onRestoreEvent: (CalendarEvent) -> Unit
+) {
+    Surface(color = Color.Transparent, modifier = Modifier.fillMaxWidth()) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(999.dp))
+                    .clickable(onClick = onToggle)
+                    .padding(horizontal = 8.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    if (open) Icons.Filled.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = ResolveColors.Muted,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(5.dp))
+                Text("Calendar archive", color = ResolveColors.Muted, fontSize = ResolveType.Caption, modifier = Modifier.weight(1f))
+                Text(events.size.toString(), color = ResolveColors.Muted, fontSize = ResolveType.Pill)
+            }
+            if (open) {
+                events.take(8).forEach { event ->
+                    Surface(color = ResolveColors.Surface, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(event.title, color = ResolveColors.Text, fontSize = ResolveType.BodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(calendarEventDateTimeLabel(event), color = ResolveColors.Muted, fontSize = ResolveType.Pill, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                            TextButton(onClick = { onRestoreEvent(event) }) {
+                                Text("Restore", fontSize = ResolveType.Caption)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CalendarEventDetailPage(
+    event: CalendarEvent,
+    onClose: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
     val context = LocalContext.current
+    val canEdit = event.provider != "feishu" || event.canEdit
+    val deleteAction = calendarDeleteActionLabel(event)
     Surface(color = ResolveColors.Bg, modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
@@ -1506,24 +2106,21 @@ private fun CalendarEventDetailPage(event: CalendarEvent, onClose: () -> Unit, o
                     }
                 }
                 Spacer(Modifier.width(10.dp))
-                Text("Event", color = ResolveColors.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Text("Event", color = ResolveColors.Muted, fontSize = ResolveType.Caption, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.weight(1f))
-                MetaPill(if (event.status == "readonly" || !event.canEdit) "Readonly" else event.provider)
+                MetaPill(if (!canEdit) "Readonly" else "Editable", tone = if (!canEdit) "muted" else "accent")
             }
 
             Surface(color = ResolveColors.Surface, shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(event.title, color = ResolveColors.Text, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+                    Text(event.title, color = ResolveColors.Text, fontSize = ResolveType.DetailTitle, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold)
                     CalendarEventInfoRow(label = "Time", value = calendarEventDateTimeLabel(event))
                     if (event.description.isNotBlank()) {
                         CalendarEventInfoRow(label = "Comment", value = event.description)
                     } else {
                         CalendarEventInfoRow(label = "Comment", value = "No comment")
                     }
-                    CalendarEventInfoRow(
-                        label = "Source",
-                        value = if (event.status == "readonly" || !event.canEdit) "Readonly from Feishu" else "${event.provider} · ${event.status}"
-                    )
+                    CalendarEventInfoRow(label = "Calendar", value = calendarEventSourceLabel(event))
                     event.meetingUrl?.takeIf { it.isNotBlank() }?.let { url ->
                         Button(
                             onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) },
@@ -1535,11 +2132,20 @@ private fun CalendarEventDetailPage(event: CalendarEvent, onClose: () -> Unit, o
                     }
                     Button(
                         onClick = onEdit,
-                        enabled = event.provider != "feishu" || event.canEdit,
+                        enabled = canEdit,
                         colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.Accent),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(if (event.provider == "feishu" && !event.canEdit) "Readonly" else "Edit")
+                        Text(if (canEdit) "Edit" else "Readonly")
+                    }
+                    TextButton(
+                        onClick = onDelete,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.textButtonColors(contentColor = ResolveColors.Danger)
+                    ) {
+                        Icon(Icons.Filled.Delete, contentDescription = null, modifier = Modifier.size(17.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(deleteAction)
                     }
                 }
             }
@@ -1580,91 +2186,8 @@ private fun CalendarEditPage(
 @Composable
 private fun CalendarEventInfoRow(label: String, value: String) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(label, color = ResolveColors.Muted, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-        Text(value, color = ResolveColors.Secondary, fontSize = 14.sp)
-    }
-}
-
-@Composable
-private fun SelectedDayPreview(
-    date: LocalDate,
-    events: List<CalendarEvent>,
-    modifier: Modifier = Modifier,
-    onOpenDraft: () -> Unit,
-    onSelectEvent: (CalendarEvent) -> Unit,
-    onViewAll: () -> Unit
-) {
-    Surface(
-        color = ResolveColors.Surface,
-        shape = RoundedCornerShape(18.dp),
-        modifier = modifier
-    ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        date.format(DateTimeFormatter.ofPattern("M月d日 EEE")),
-                        color = ResolveColors.Text,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text("${events.size} events", color = ResolveColors.Muted, fontSize = 12.sp)
-                }
-                TextButton(onClick = onOpenDraft) {
-                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(3.dp))
-                    Text("New")
-                }
-            }
-            if (events.isEmpty()) {
-                Surface(color = ResolveColors.Pill, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        "这一天还没有日程",
-                        color = ResolveColors.Muted,
-                        fontSize = 13.sp,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
-                    )
-                }
-            } else {
-                events.take(3).forEach { event ->
-                    CalendarSelectedDayEventRow(event = event, onClick = { onSelectEvent(event) })
-                }
-                if (events.size > 3) {
-                    TextButton(onClick = onViewAll, modifier = Modifier.fillMaxWidth()) {
-                        Text("View all · 还有 ${events.size - 3} 项")
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun CalendarSelectedDayEventRow(event: CalendarEvent, onClick: () -> Unit) {
-    Surface(
-        color = if (event.provider == "feishu") Color(0xFFF2FAFF) else ResolveColors.Pill,
-        shape = RoundedCornerShape(14.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.Top
-        ) {
-            Text(
-                eventTimeLabel(event.startsAt),
-                color = ResolveColors.Accent,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(event.title, color = ResolveColors.Text, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                val status = if (event.status == "readonly" || !event.canEdit) "Readonly from Feishu" else "${event.provider} · ${event.status}"
-                Text(status, color = ResolveColors.Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-        }
+        Text(label, color = ResolveColors.Muted, fontSize = ResolveType.Caption, fontWeight = FontWeight.SemiBold)
+        Text(value, color = ResolveColors.Secondary, fontSize = ResolveType.Body)
     }
 }
 
@@ -1722,19 +2245,25 @@ private fun CalendarDraftEditorPage(
                 }
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(title, color = ResolveColors.Text, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-                    Text(draft.date.format(DateTimeFormatter.ofPattern("M月d日 EEE")), color = ResolveColors.Muted, fontSize = 12.sp)
+                    Text(title, color = ResolveColors.Text, fontSize = ResolveType.CardTitle, fontWeight = FontWeight.SemiBold)
+                    Text(draft.date.format(DateTimeFormatter.ofPattern("M月d日 EEE")), color = ResolveColors.Muted, fontSize = ResolveType.Caption)
                 }
             }
 
             Surface(color = ResolveColors.Surface, shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedTextField(
+                    CompactInputField(
                         value = draft.title,
                         onValueChange = { onDraft(draft.copy(title = it)) },
                         modifier = Modifier.fillMaxWidth(),
-                        placeholder = { Text("日程标题") },
-                        colors = inputColors()
+                        placeholder = "日程标题",
+                        minHeight = 40.dp,
+                        textStyle = TextStyle(
+                            color = ResolveColors.Text,
+                            fontSize = ResolveType.Body,
+                            lineHeight = 17.sp,
+                            platformStyle = PlatformTextStyle(includeFontPadding = false)
+                        )
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
                         AssistChip(
@@ -1764,13 +2293,19 @@ private fun CalendarDraftEditorPage(
                             label = { Text(draft.time.format(DateTimeFormatter.ofPattern("HH:mm"))) }
                         )
                     }
-                    OutlinedTextField(
+                    CompactInputField(
                         value = draft.description,
                         onValueChange = { onDraft(draft.copy(description = it)) },
                         modifier = Modifier.fillMaxWidth(),
-                        minLines = 4,
-                        placeholder = { Text("备注，可选") },
-                        colors = inputColors()
+                        placeholder = "备注，可选",
+                        singleLine = false,
+                        minHeight = 82.dp,
+                        textStyle = TextStyle(
+                            color = ResolveColors.Text,
+                            fontSize = ResolveType.Body,
+                            lineHeight = 17.sp,
+                            platformStyle = PlatformTextStyle(includeFontPadding = false)
+                        )
                     )
                     Button(
                         onClick = onSubmit,
@@ -1787,61 +2322,186 @@ private fun CalendarDraftEditorPage(
 }
 
 @Composable
-private fun CalendarEventDetailSheet(event: CalendarEvent, onClose: () -> Unit) {
-    Column(Modifier.padding(horizontal = 18.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(event.title, color = ResolveColors.Text, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-                Text(calendarEventDateTimeLabel(event), color = ResolveColors.Secondary, fontSize = 13.sp)
+private fun DetailPageHeader(title: String, onClose: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        Surface(
+            color = ResolveColors.Pill,
+            shape = CircleShape,
+            modifier = Modifier
+                .size(32.dp)
+                .clickable(onClick = onClose)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = "Back",
+                    tint = ResolveColors.Secondary,
+                    modifier = Modifier.rotate(180f).size(20.dp)
+                )
             }
-            IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close") }
         }
-        MetaPill(if (event.status == "readonly" || !event.canEdit) "Readonly from Feishu" else "${event.provider} · ${event.status}")
-        Surface(color = ResolveColors.Pill, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Comment", color = ResolveColors.Muted, fontSize = 12.sp)
-                Text(event.description.ifBlank { "No comment" }, color = ResolveColors.Secondary, fontSize = 14.sp)
+        Spacer(Modifier.width(9.dp))
+        Text(title, color = ResolveColors.Muted, fontSize = ResolveType.BodySmall, fontWeight = FontWeight.Medium)
+    }
+}
+
+@Composable
+private fun DetailSectionTitle(title: String, count: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        Text(title, color = ResolveColors.Text, fontSize = ResolveType.CardTitle, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+        Text(count, color = ResolveColors.Muted, fontSize = ResolveType.Caption)
+    }
+}
+
+@Composable
+private fun SubtaskRow(item: ResolveItem, depth: Int, onToggle: () -> Unit) {
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        if (depth > 0) {
+            Spacer(Modifier.width(((depth - 1).coerceAtLeast(0) * 13).dp))
+            Box(
+                modifier = Modifier
+                    .width(15.dp)
+                    .height(30.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .width(1.dp)
+                        .height(24.dp)
+                        .background(ResolveColors.Line)
+                )
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .width(10.dp)
+                        .height(1.dp)
+                        .background(ResolveColors.Line)
+                )
+            }
+        }
+        Surface(
+            color = if (depth > 0) Color(0xFFFBFCFF) else ResolveColors.Surface,
+            shape = RoundedCornerShape(12.dp),
+            modifier = if (depth > 0) Modifier.weight(1f) else Modifier.fillMaxWidth()
+        ) {
+            Row(Modifier.padding(horizontal = 8.dp, vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onToggle, modifier = Modifier.size(24.dp)) {
+                    Icon(
+                        if (item.status == ItemStatus.Done) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
+                        contentDescription = "Toggle subtask",
+                        tint = if (item.status == ItemStatus.Done) ResolveColors.Accent else ResolveColors.Muted,
+                        modifier = Modifier.size(17.dp)
+                    )
+                }
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    item.title,
+                    color = if (item.status == ItemStatus.Done) ResolveColors.Muted else ResolveColors.Text,
+                    fontSize = ResolveType.Body,
+                    lineHeight = 17.sp,
+                    textDecoration = if (item.status == ItemStatus.Done) TextDecoration.LineThrough else TextDecoration.None,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
             }
         }
     }
 }
 
 @Composable
-private fun CalendarDayListSheet(
-    date: LocalDate,
-    events: List<CalendarEvent>,
-    onClose: () -> Unit,
-    onSelect: (CalendarEvent) -> Unit
+private fun StrategyOverviewCard(
+    thread: StrategyThread,
+    total: Int,
+    done: Int,
+    onClick: () -> Unit
 ) {
-    Column(Modifier.padding(horizontal = 18.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(date.format(DateTimeFormatter.ofPattern("M月d日 EEE")), color = ResolveColors.Text, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-                Text("${events.size} events", color = ResolveColors.Muted, fontSize = 13.sp)
-            }
-            IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close") }
-        }
-        events.forEach { event ->
-            CalendarRow(event = event, onClick = { onSelect(event) })
-        }
-    }
-}
-
-@Composable
-private fun CalendarRow(event: CalendarEvent, onClick: (() -> Unit)? = null) {
-    OutlinedCard(
+    Surface(
+        color = ResolveColors.Surface,
+        shape = RoundedCornerShape(18.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .let { if (onClick != null) it.clickable(onClick = onClick) else it },
-        colors = CardDefaults.outlinedCardColors(containerColor = ResolveColors.Surface)
+            .clickable(onClick = onClick)
     ) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.Top) {
-            Text(eventTimeLabel(event.startsAt), color = ResolveColors.Accent, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(event.title, color = ResolveColors.Text, fontSize = 15.sp)
-                Text("${event.provider} · ${event.status}", color = ResolveColors.Muted, fontSize = 12.sp)
-                if (event.description.isNotBlank()) Text(event.description, color = ResolveColors.Secondary, fontSize = 13.sp, maxLines = 2)
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 13.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    thread.title,
+                    color = ResolveColors.Text,
+                    fontSize = ResolveType.CardTitle,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = ResolveColors.Muted, modifier = Modifier.size(18.dp))
+            }
+            Text(
+                thread.currentHypothesis.ifBlank { "No brief yet." },
+                color = ResolveColors.Secondary,
+                fontSize = ResolveType.BodySmall,
+                lineHeight = 16.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                MetaPill("$done/$total subtasks", tone = if (total > 0) "accent" else "muted")
+                MetaPill("Review not set")
+            }
+        }
+    }
+}
+
+@Composable
+private fun NewStrategyDirectionPage(
+    onClose: () -> Unit,
+    onCreate: (String, String) -> Unit
+) {
+    var title by remember { mutableStateOf("") }
+    var hypothesis by remember { mutableStateOf("") }
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        item { DetailPageHeader(title = "New strategy", onClose = onClose) }
+        item {
+            Surface(color = ResolveColors.Surface, shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    CompactInputField(
+                        value = title,
+                        onValueChange = { title = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = "战略方向",
+                        singleLine = true,
+                        minHeight = 44.dp,
+                        textStyle = TextStyle(
+                            color = ResolveColors.Text,
+                            fontSize = ResolveType.CardTitle,
+                            lineHeight = 18.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            platformStyle = PlatformTextStyle(includeFontPadding = false)
+                        )
+                    )
+                    CompactInputField(
+                        value = hypothesis,
+                        onValueChange = { hypothesis = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = "简要介绍 / 当前假设",
+                        singleLine = false,
+                        minHeight = 92.dp,
+                        textStyle = TextStyle(
+                            color = ResolveColors.Text,
+                            fontSize = ResolveType.Body,
+                            lineHeight = 17.sp,
+                            platformStyle = PlatformTextStyle(includeFontPadding = false)
+                        )
+                    )
+                    Button(
+                        onClick = { onCreate(title, hypothesis) },
+                        enabled = title.isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.Accent),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Create strategy")
+                    }
+                }
             }
         }
     }
@@ -1851,66 +2511,129 @@ private fun CalendarRow(event: CalendarEvent, onClick: (() -> Unit)? = null) {
 private fun StrategyScreen(
     state: ResolveState,
     selectedThreadId: String,
+    openedThreadId: String?,
+    showNewThread: Boolean,
     onThread: (String) -> Unit,
+    onOpenThread: (String) -> Unit,
+    onCloseThread: () -> Unit,
+    onCloseNewThread: () -> Unit,
     onAddThread: (String, String) -> Unit,
-    onAddTask: (String) -> Unit,
+    onAddTask: (String, String) -> Unit,
     onSelectTodo: (ResolveItem) -> Unit,
-    onToggleDone: (ResolveItem) -> Unit
+    onToggleDone: (ResolveItem) -> Unit,
+    onArchiveTodo: (ResolveItem) -> Unit
 ) {
-    var title by remember { mutableStateOf("") }
-    var hypothesis by remember { mutableStateOf("") }
     var task by remember { mutableStateOf("") }
-    val selected = state.threads.find { it.id == selectedThreadId } ?: state.threads.firstOrNull()
-    val subtasks = state.items.filter { it.strategyThreadId == selected?.id && it.type == ItemType.Task && it.status == ItemStatus.Active }
+    val opened = state.threads.find { it.id == openedThreadId }
+    val allTasks = state.items.filter { it.type == ItemType.Task }
 
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item {
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(state.threads, key = { it.id }) { thread ->
-                    FilterChip(selected = thread.id == selected?.id, onClick = { onThread(thread.id) }, label = { Text(thread.title) })
-                }
+    if (showNewThread) {
+        NewStrategyDirectionPage(
+            onClose = onCloseNewThread,
+            onCreate = { title, hypothesis -> onAddThread(title, hypothesis) }
+        )
+        return
+    }
+
+    if (opened == null) {
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            item { DetailSectionTitle("Strategy", "${state.threads.size}") }
+            items(state.threads, key = { it.id }) { thread ->
+                val linked = allTasks.filter { it.strategyThreadId == thread.id && it.status != ItemStatus.Archived }
+                StrategyOverviewCard(
+                    thread = thread,
+                    total = linked.size,
+                    done = linked.count { it.status == ItemStatus.Done },
+                    onClick = {
+                        onThread(thread.id)
+                        onOpenThread(thread.id)
+                    }
+                )
             }
         }
+        return
+    }
+
+    val subtasks = state.items
+        .filter { it.strategyThreadId == opened.id && it.type == ItemType.Task && it.status != ItemStatus.Archived }
+        .sortedWith(compareBy<ResolveItem> { it.status == ItemStatus.Done }.thenByDescending { it.createdAt })
+    val subtaskRoots = subtasks.filter { task -> task.parentItemId == null || subtasks.none { it.id == task.parentItemId } }
+    val subtaskTree = flattenTodoTree(subtaskRoots, subtasks)
+
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        item { DetailPageHeader(title = "Strategy", onClose = onCloseThread) }
         item {
-            OutlinedCard(colors = CardDefaults.outlinedCardColors(containerColor = ResolveColors.Surface)) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(selected?.title.orEmpty(), color = ResolveColors.Text, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-                    Text(selected?.currentHypothesis.orEmpty(), color = ResolveColors.Secondary)
-                    OutlinedTextField(value = task, onValueChange = { task = it }, modifier = Modifier.fillMaxWidth(), placeholder = { Text("添加战略子任务") }, colors = inputColors())
-                    Button(
-                        onClick = {
-                            onAddTask(task)
-                            task = ""
-                        },
-                        enabled = task.isNotBlank(),
-                        colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.Accent)
+            Surface(color = ResolveColors.Surface, shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
+                Row(Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Add, contentDescription = null, tint = ResolveColors.Muted, modifier = Modifier.size(22.dp))
+                    Spacer(Modifier.width(8.dp))
+                    CompactInputField(
+                        value = task,
+                        onValueChange = { task = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = "Add task...",
+                        singleLine = true,
+                        minHeight = 36.dp,
+                        textStyle = TextStyle(
+                            color = ResolveColors.Text,
+                            fontSize = ResolveType.BodySmall,
+                            lineHeight = 16.sp,
+                            platformStyle = PlatformTextStyle(includeFontPadding = false)
+                        )
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Surface(
+                        color = if (task.isBlank()) ResolveColors.Pill else ResolveColors.Accent,
+                        shape = CircleShape,
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clickable(enabled = task.isNotBlank()) {
+                                onAddTask(opened.id, task)
+                                task = ""
+                            }
                     ) {
-                        Icon(Icons.Filled.Add, contentDescription = null, Modifier.size(17.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Add Subtask")
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Add", tint = if (task.isBlank()) ResolveColors.Muted else Color.White, modifier = Modifier.size(19.dp))
+                        }
                     }
                 }
             }
-        }
-        item { SectionLabel("Subtasks in Todo", "${subtasks.size} active") }
-        items(subtasks, key = { it.id }) { item ->
-            TodoRow(item = item, thread = null, onToggleDone = { onToggleDone(item) }, onSelect = { onSelectTodo(item) })
         }
         item {
-            OutlinedCard(colors = CardDefaults.outlinedCardColors(containerColor = ResolveColors.Surface)) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("New Direction", color = ResolveColors.Text, fontWeight = FontWeight.SemiBold)
-                    OutlinedTextField(value = title, onValueChange = { title = it }, modifier = Modifier.fillMaxWidth(), placeholder = { Text("战略方向") }, colors = inputColors())
-                    OutlinedTextField(value = hypothesis, onValueChange = { hypothesis = it }, modifier = Modifier.fillMaxWidth(), placeholder = { Text("当前假设，可选") }, colors = inputColors())
-                    TextButton(onClick = {
-                        onAddThread(title, hypothesis)
-                        title = ""
-                        hypothesis = ""
-                    }) {
-                        Text("Create Direction")
+            Surface(
+                color = Color(0xFFFCFBFF),
+                shape = RoundedCornerShape(20.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, Color(0xFFE6E0F4), RoundedCornerShape(20.dp))
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(opened.title, color = ResolveColors.Text, fontSize = ResolveType.CardTitle, lineHeight = 18.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        opened.currentHypothesis.ifBlank { "No brief yet." },
+                        color = ResolveColors.Secondary,
+                        fontSize = ResolveType.BodySmall,
+                        lineHeight = 16.sp
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                        MetaPill("${subtasks.count { it.status == ItemStatus.Done }}/${subtasks.size} done", tone = "accent")
+                        MetaPill("Review not set")
                     }
                 }
             }
+        }
+        item { DetailSectionTitle("Subtasks", "${subtasks.size}") }
+        items(subtaskTree, key = { it.item.id }) { entry ->
+            val item = entry.item
+            TodoRow(
+                item = item,
+                subtaskCount = allTasks.count { it.parentItemId == item.id },
+                thread = null,
+                depth = entry.depth,
+                onToggleDone = { onToggleDone(item) },
+                onArchive = { onArchiveTodo(item) },
+                onSelect = { onSelectTodo(item) }
+            )
         }
     }
 }
@@ -1947,7 +2670,7 @@ private fun SettingsScreen(
                         Icon(Icons.Filled.TaskAlt, contentDescription = null, tint = ResolveColors.Accent)
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
-                            Text("Account", color = ResolveColors.Text, fontSize = 21.sp, fontWeight = FontWeight.SemiBold)
+                            Text("Account", color = ResolveColors.Text, fontSize = ResolveType.SectionTitle, fontWeight = FontWeight.SemiBold)
                             Text(backendStatusLabel(state.backendSettings), color = ResolveColors.Secondary)
                         }
                     }
@@ -1965,7 +2688,7 @@ private fun SettingsScreen(
                                 Spacer(Modifier.width(10.dp))
                                 Column(Modifier.weight(1f)) {
                                     Text("Signed in", color = ResolveColors.Text, fontWeight = FontWeight.SemiBold)
-                                    Text(state.backendSettings.email.ifBlank { "Resolve account" }, color = ResolveColors.Secondary, fontSize = 12.sp)
+                                    Text(state.backendSettings.email.ifBlank { "Resolve account" }, color = ResolveColors.Secondary, fontSize = ResolveType.BodySmall)
                                 }
                             }
                         }
@@ -2005,7 +2728,7 @@ private fun SettingsScreen(
                             Text("Sign out")
                         }
                     }
-                    state.backendSettings.lastError?.let { Text(it, color = ResolveColors.Danger, fontSize = 12.sp) }
+                    state.backendSettings.lastError?.let { Text(it, color = ResolveColors.Danger, fontSize = ResolveType.BodySmall) }
                 }
             }
         }
@@ -2016,7 +2739,7 @@ private fun SettingsScreen(
                         Icon(Icons.Filled.CalendarMonth, contentDescription = null, tint = ResolveColors.Accent)
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
-                            Text("Calendar", color = ResolveColors.Text, fontSize = 21.sp, fontWeight = FontWeight.SemiBold)
+                            Text("Calendar", color = ResolveColors.Text, fontSize = ResolveType.SectionTitle, fontWeight = FontWeight.SemiBold)
                             Text(calendarStatus, color = ResolveColors.Secondary)
                         }
                     }
@@ -2034,7 +2757,7 @@ private fun SettingsScreen(
                                 Spacer(Modifier.width(10.dp))
                                 Column(Modifier.weight(1f)) {
                                     Text("Authorized", color = ResolveColors.Text, fontWeight = FontWeight.SemiBold)
-                                    Text(calendarStatus, color = ResolveColors.Secondary, fontSize = 12.sp)
+                                    Text(calendarStatus, color = ResolveColors.Secondary, fontSize = ResolveType.BodySmall)
                                 }
                             }
                         }
@@ -2051,7 +2774,7 @@ private fun SettingsScreen(
                             }
                         }
                     }
-                    calendarError?.let { Text(it, color = ResolveColors.Danger, fontSize = 12.sp) }
+                    calendarError?.let { Text(it, color = ResolveColors.Danger, fontSize = ResolveType.BodySmall) }
                 }
             }
         }
@@ -2059,11 +2782,14 @@ private fun SettingsScreen(
 }
 
 @Composable
-private fun TodoDetailSheet(
+private fun TodoDetailPage(
     item: ResolveItem,
     threads: List<StrategyThread>,
+    subtasks: List<ResolveItem>,
     onClose: () -> Unit,
     onUpdate: (ResolveItem) -> Unit,
+    onToggleSubtask: (ResolveItem) -> Unit,
+    onAddSubtask: (String) -> Unit,
     onArchive: (ResolveItem) -> Unit,
     onCalendar: (ResolveItem) -> Unit
 ) {
@@ -2075,56 +2801,150 @@ private fun TodoDetailSheet(
     var dueAt by remember(item.id) { mutableStateOf(item.dueAt) }
     val dueDate = dueAt?.atZone(ZoneId.systemDefault())?.toLocalDate() ?: LocalDate.now()
     val dueTime = dueAt?.atZone(ZoneId.systemDefault())?.toLocalTime()?.withSecond(0)?.withNano(0) ?: LocalTime.of(9, 0)
+    var subtaskTitle by remember(item.id) { mutableStateOf("") }
 
     fun currentItem() = item.copy(title = title.trim(), notes = notes.trim(), strategyThreadId = strategyThreadId, dueAt = dueAt)
 
-    Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Todo Detail", color = ResolveColors.Text, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-            IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close") }
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        item {
+            DetailPageHeader(title = "Todo", onClose = onClose)
         }
-        OutlinedTextField(value = title, onValueChange = { title = it }, modifier = Modifier.fillMaxWidth(), placeholder = { Text("Title") }, colors = inputColors())
-        OutlinedTextField(value = notes, onValueChange = { notes = it }, modifier = Modifier.fillMaxWidth(), minLines = 3, placeholder = { Text("Comment") }, colors = inputColors())
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            AssistChip(
-                onClick = {
-                    DatePickerDialog(context, { _, year, month, day ->
-                        dueAt = LocalDate.of(year, month + 1, day).atTime(dueTime).atZone(ZoneId.systemDefault()).toInstant()
-                    }, dueDate.year, dueDate.monthValue - 1, dueDate.dayOfMonth).show()
-                },
-                label = { Text(dueAt?.let { dateLabel(it) } ?: "Set date") }
-            )
-            AssistChip(
-                onClick = {
-                    TimePickerDialog(context, { _, hour, minute ->
-                        dueAt = dueDate.atTime(LocalTime.of(hour, minute)).atZone(ZoneId.systemDefault()).toInstant()
-                    }, dueTime.hour, dueTime.minute, true).show()
-                },
-                label = { Text(dueTime.format(DateTimeFormatter.ofPattern("HH:mm"))) }
-            )
-        }
-        Box {
-            AssistChip(onClick = { expanded = true }, label = { Text(threads.find { it.id == strategyThreadId }?.title ?: "No strategy") })
-            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                DropdownMenuItem(text = { Text("No strategy") }, onClick = { strategyThreadId = null; expanded = false })
-                threads.forEach { thread ->
-                    DropdownMenuItem(text = { Text(thread.title) }, onClick = { strategyThreadId = thread.id; expanded = false })
+        item {
+            Surface(color = ResolveColors.Surface, shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CompactInputField(
+                        value = title,
+                        onValueChange = { title = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = "Title",
+                        singleLine = false,
+                        minHeight = 42.dp,
+                        textStyle = TextStyle(
+                            color = ResolveColors.Text,
+                            fontSize = ResolveType.CardTitle,
+                            lineHeight = 18.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            platformStyle = PlatformTextStyle(includeFontPadding = false)
+                        )
+                    )
+                    CompactInputField(
+                        value = notes,
+                        onValueChange = { notes = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = "Comment",
+                        singleLine = false,
+                        minHeight = 70.dp,
+                        textStyle = TextStyle(
+                            color = ResolveColors.Text,
+                            fontSize = ResolveType.Body,
+                            lineHeight = 17.sp,
+                            platformStyle = PlatformTextStyle(includeFontPadding = false)
+                        )
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                        AssistChip(
+                            onClick = {
+                                DatePickerDialog(context, { _, year, month, day ->
+                                    dueAt = LocalDate.of(year, month + 1, day).atTime(dueTime).atZone(ZoneId.systemDefault()).toInstant()
+                                }, dueDate.year, dueDate.monthValue - 1, dueDate.dayOfMonth).show()
+                            },
+                            modifier = Modifier.height(32.dp),
+                            leadingIcon = { Icon(Icons.Filled.Event, contentDescription = null, Modifier.size(14.dp)) },
+                            label = { Text(dueAt?.let { dateLabel(it) } ?: "Set date", fontSize = ResolveType.Caption) }
+                        )
+                        AssistChip(
+                            onClick = {
+                                TimePickerDialog(context, { _, hour, minute ->
+                                    dueAt = dueDate.atTime(LocalTime.of(hour, minute)).atZone(ZoneId.systemDefault()).toInstant()
+                                }, dueTime.hour, dueTime.minute, true).show()
+                            },
+                            modifier = Modifier.height(32.dp),
+                            leadingIcon = { Icon(Icons.Filled.EditCalendar, contentDescription = null, Modifier.size(14.dp)) },
+                            label = { Text(dueTime.format(DateTimeFormatter.ofPattern("HH:mm")), fontSize = ResolveType.Caption) }
+                        )
+                        Box {
+                            AssistChip(
+                                onClick = { expanded = true },
+                                modifier = Modifier.height(32.dp),
+                                leadingIcon = { Icon(Icons.Filled.Psychology, contentDescription = null, Modifier.size(14.dp)) },
+                                label = { Text(threads.find { it.id == strategyThreadId }?.title ?: "No strategy", fontSize = ResolveType.Caption) }
+                            )
+                            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                                DropdownMenuItem(text = { Text("No strategy") }, onClick = { strategyThreadId = null; expanded = false })
+                                threads.forEach { thread ->
+                                    DropdownMenuItem(text = { Text(thread.title) }, onClick = { strategyThreadId = thread.id; expanded = false })
+                                }
+                            }
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                        Button(
+                            onClick = { onUpdate(currentItem()); onClose() },
+                            colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.Accent),
+                            modifier = Modifier.height(38.dp)
+                        ) {
+                            Text("Save", fontSize = ResolveType.BodySmall)
+                        }
+                        Button(
+                            onClick = { onCalendar(currentItem()) },
+                            colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.InkSoft, contentColor = ResolveColors.Accent),
+                            modifier = Modifier.height(38.dp)
+                        ) {
+                            Icon(Icons.Filled.CalendarMonth, contentDescription = null, Modifier.size(15.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Calendar", fontSize = ResolveType.BodySmall)
+                        }
+                    }
                 }
             }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
-            Button(onClick = { onUpdate(currentItem()); onClose() }, colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.Accent)) {
-                Text("Save")
+        item {
+            DetailSectionTitle("Subtasks", "${subtasks.size}")
+        }
+        val subtaskRoots = subtasks.filter { it.parentItemId == item.id }
+        val subtaskTree = flattenTodoTree(subtaskRoots, subtasks)
+        items(subtaskTree, key = { it.item.id }) { entry ->
+            SubtaskRow(item = entry.item, depth = entry.depth, onToggle = { onToggleSubtask(entry.item) })
+        }
+        item {
+            Surface(color = ResolveColors.Surface, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+                Row(Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    CompactInputField(
+                        value = subtaskTitle,
+                        onValueChange = { subtaskTitle = it },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        placeholder = "Add subtask",
+                        minHeight = 36.dp,
+                        textStyle = TextStyle(
+                            color = ResolveColors.Text,
+                            fontSize = ResolveType.Body,
+                            lineHeight = 17.sp,
+                            platformStyle = PlatformTextStyle(includeFontPadding = false)
+                        )
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = {
+                            onAddSubtask(subtaskTitle)
+                            subtaskTitle = ""
+                        },
+                        enabled = subtaskTitle.isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.Accent),
+                        modifier = Modifier.height(38.dp)
+                    ) {
+                        Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(17.dp))
+                    }
+                }
             }
-            Button(onClick = { onCalendar(currentItem()) }) {
-                Icon(Icons.Filled.CalendarMonth, contentDescription = null, Modifier.size(17.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Calendar")
-            }
-            TextButton(onClick = { onArchive(currentItem()) }) {
-                Icon(Icons.Filled.Archive, contentDescription = null, Modifier.size(17.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Archive")
+        }
+        item {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                TextButton(onClick = { onArchive(currentItem()) }, colors = ButtonDefaults.textButtonColors(contentColor = ResolveColors.Muted)) {
+                    Icon(Icons.Filled.Archive, contentDescription = null, Modifier.size(15.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text("Archive todo", fontSize = ResolveType.Caption)
+                }
             }
         }
     }
@@ -2132,59 +2952,159 @@ private fun TodoDetailSheet(
 
 @Composable
 private fun BottomTabs(tab: Tab, onTab: (Tab) -> Unit) {
-    NavigationBar(containerColor = ResolveColors.Surface) {
-        listOf(Tab.Todo, Tab.Calendar, Tab.Strategy, Tab.Settings).forEach { item ->
-            NavigationBarItem(
-                selected = tab == item,
-                onClick = { onTab(item) },
-                icon = { Icon(item.icon, contentDescription = item.label) },
-                label = { Text(item.label) }
-            )
+    Surface(
+        color = ResolveColors.Surface,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(64.dp)
+            .border(width = 1.dp, color = ResolveColors.Line.copy(alpha = 0.55f))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceAround,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            listOf(Tab.Todo, Tab.Calendar, Tab.Strategy, Tab.Settings).forEach { item ->
+                val selected = tab == item
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(18.dp))
+                        .clickable { onTab(item) }
+                        .padding(vertical = 2.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Surface(
+                        color = if (selected) ResolveColors.InkSoft else Color.Transparent,
+                        shape = RoundedCornerShape(999.dp),
+                        modifier = Modifier.height(30.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier.padding(horizontal = if (selected) 18.dp else 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                        item.icon,
+                        contentDescription = item.label,
+                        tint = if (selected) ResolveColors.Text else ResolveColors.Secondary,
+                        modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                    Text(
+                        item.label,
+                        color = if (selected) ResolveColors.Text else ResolveColors.Secondary,
+                        fontSize = ResolveType.Caption,
+                        lineHeight = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun SectionLabel(title: String, count: String) {
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-        Text(title, color = ResolveColors.Text, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-        Text(count, color = ResolveColors.Muted, fontSize = 12.sp)
+private fun TodoDisclosureRow(title: String, count: Int, open: Boolean, onClick: () -> Unit) {
+    Surface(
+        color = Color.Transparent,
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(if (open) Icons.Filled.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = ResolveColors.Muted, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(5.dp))
+            Text(title, color = ResolveColors.Secondary, fontSize = ResolveType.BodySmall, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+            Surface(color = ResolveColors.Pill, shape = RoundedCornerShape(999.dp)) {
+                Text(count.toString(), color = ResolveColors.Muted, fontSize = ResolveType.Pill, modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp))
+            }
+        }
     }
 }
 
 @Composable
-private fun CollapsedHeader(title: String, count: Int, open: Boolean, onClick: () -> Unit) {
+private fun ArchiveDisclosureRow(count: Int, open: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(top = 2.dp),
+        horizontalArrangement = Arrangement.End
     ) {
-        Icon(if (open) Icons.Filled.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = ResolveColors.Muted)
-        Text(title, color = ResolveColors.Secondary, modifier = Modifier.weight(1f))
-        Text(count.toString(), color = ResolveColors.Muted)
+        Surface(
+            color = if (open) Color(0xFFF5F6F9) else Color.Transparent,
+            shape = RoundedCornerShape(999.dp),
+            modifier = Modifier.clickable(onClick = onClick)
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Filled.Archive, contentDescription = null, tint = ResolveColors.Muted, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(5.dp))
+                Text("Archive", color = ResolveColors.Muted, fontSize = ResolveType.Caption)
+                if (count > 0) {
+                    Spacer(Modifier.width(4.dp))
+                    Text(count.toString(), color = ResolveColors.Muted, fontSize = ResolveType.Caption)
+                }
+            }
+        }
     }
 }
 
 @Composable
-private fun MetaPill(label: String) {
-    Surface(color = ResolveColors.Pill, shape = RoundedCornerShape(999.dp)) {
-        Text(label, color = ResolveColors.Secondary, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), maxLines = 1)
+private fun MetaPill(label: String, tone: String = "muted") {
+    val background = when (tone) {
+        "accent" -> Color(0xFFEAF2FF)
+        "danger" -> Color(0xFFFFECEA)
+        "soft" -> ResolveColors.InkSoft
+        else -> ResolveColors.Pill
+    }
+    val content = when (tone) {
+        "accent" -> ResolveColors.Accent
+        "danger" -> ResolveColors.Danger
+        "soft" -> Color(0xFF4D5B78)
+        else -> ResolveColors.Secondary
+    }
+    Surface(color = background, shape = RoundedCornerShape(999.dp)) {
+        Text(
+            label,
+            color = content,
+            fontSize = ResolveType.Pill,
+            lineHeight = 11.sp,
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
 @Composable
 private fun InlineNotice(message: String, onDismiss: () -> Unit) {
-    Surface(color = Color(0xFFFFF4E4), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+    Surface(color = Color(0xFFFFF6E8), shape = RoundedCornerShape(13.dp), modifier = Modifier.fillMaxWidth()) {
         Row(
-            modifier = Modifier.padding(start = 12.dp, top = 10.dp, end = 8.dp, bottom = 10.dp),
+            modifier = Modifier.padding(start = 10.dp, top = 7.dp, end = 6.dp, bottom = 7.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(message, color = ResolveColors.Secondary, fontSize = 13.sp, modifier = Modifier.weight(1f))
-            IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
-                Icon(Icons.Filled.Close, contentDescription = "Dismiss", tint = ResolveColors.Muted, modifier = Modifier.size(16.dp))
+            Text(
+                message,
+                color = ResolveColors.Secondary,
+                fontSize = ResolveType.Caption,
+                lineHeight = 12.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(onClick = onDismiss, modifier = Modifier.size(26.dp)) {
+                Icon(Icons.Filled.Close, contentDescription = "Dismiss", tint = ResolveColors.Muted, modifier = Modifier.size(14.dp))
             }
         }
     }
@@ -2223,6 +3143,9 @@ private fun monthGridDates(date: LocalDate): List<LocalDate> {
 
 private fun calendarEventVisible(event: CalendarEvent): Boolean =
     event.status !in setOf("archived_locally", "remote_deleted", "local_pending_delete", "cancelled")
+
+private fun calendarEventArchived(event: CalendarEvent): Boolean =
+    event.status in setOf("archived_locally", "local_pending_delete")
 
 private fun expandRecurringCalendarEvents(
     events: List<CalendarEvent>,
@@ -2413,9 +3336,6 @@ private fun calendarStatusLabel(feishu: FeishuSettings, backend: BackendSettings
     else -> feishuStatusLabel(feishu)
 }
 
-private fun eventTimeLabel(instant: Instant): String =
-    instant.atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("HH:mm"))
-
 private fun dateLabel(instant: Instant): String =
     instant.atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("M月d日 HH:mm"))
 
@@ -2435,19 +3355,80 @@ private fun calendarExpandedEventMeta(event: CalendarEvent): String {
     return if (note == null) timeText else "$timeText $note"
 }
 
+private fun flattenTodoTree(
+    roots: List<ResolveItem>,
+    pool: List<ResolveItem>
+): List<TodoTreeEntry> {
+    val childrenByParent = pool
+        .filter { it.parentItemId != null }
+        .groupBy { it.parentItemId }
+    val result = mutableListOf<TodoTreeEntry>()
+
+    fun visit(item: ResolveItem, depth: Int) {
+        result += TodoTreeEntry(item, depth)
+        childrenByParent[item.id]
+            .orEmpty()
+            .sortedWith(compareBy<ResolveItem> { it.status == ItemStatus.Done }.thenByDescending { it.createdAt })
+            .forEach { visit(it, depth + 1) }
+    }
+
+    roots.forEach { visit(it, 0) }
+    return result
+}
+
+private fun descendantsOf(items: List<ResolveItem>, parentId: String): List<ResolveItem> {
+    val childrenByParent = items.groupBy { it.parentItemId }
+    val result = mutableListOf<ResolveItem>()
+
+    fun collect(id: String) {
+        childrenByParent[id].orEmpty().forEach { child ->
+            result += child
+            collect(child.id)
+        }
+    }
+
+    collect(parentId)
+    return result
+}
+
+private fun calendarEventSourceLabel(event: CalendarEvent): String = when {
+    event.provider == "feishu" && (event.status == "readonly" || !event.canEdit) -> "Feishu Calendar · Readonly"
+    event.provider == "feishu" -> "Feishu Calendar"
+    else -> "Local"
+}
+
+private fun calendarDeleteActionLabel(event: CalendarEvent): String = when {
+    event.provider == "feishu" && event.canDelete -> "Delete"
+    event.provider == "local" -> "Archive"
+    else -> "Hide"
+}
+
 private fun relativeTime(instant: Instant): String {
     val minutes = ((System.currentTimeMillis() - instant.toEpochMilli()) / 60_000).coerceAtLeast(0)
     return if (minutes < 1) "just now" else "${minutes}m ago"
 }
 
 private object ResolveColors {
-    val Bg = Color(0xFFF5F5F7)
+    val Bg = Color(0xFFF6F7FA)
     val Surface = Color(0xFFFFFFFF)
-    val Pill = Color(0xFFF0F2F5)
+    val Pill = Color(0xFFF0F2F6)
+    val InkSoft = Color(0xFFEAF2FF)
     val Line = Color(0xFFE0E3EA)
-    val Text = Color(0xFF1D1D1F)
-    val Secondary = Color(0xFF555963)
-    val Muted = Color(0xFF8B909A)
-    val Accent = Color(0xFF2F64D9)
+    val Text = Color(0xFF1C2430)
+    val Secondary = Color(0xFF596274)
+    val Muted = Color(0xFF929AAA)
+    val Accent = Color(0xFF2F66DD)
     val Danger = Color(0xFFC7362F)
+}
+
+private object ResolveType {
+    val PageTitle = 20.sp
+    val DetailTitle = 17.sp
+    val SectionTitle = 15.sp
+    val CardTitle = 14.sp
+    val Body = 13.sp
+    val BodySmall = 12.sp
+    val Caption = 10.sp
+    val Pill = 9.sp
+    val Micro = 8.sp
 }

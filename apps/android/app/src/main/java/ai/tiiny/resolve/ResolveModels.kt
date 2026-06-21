@@ -26,7 +26,8 @@ data class ResolveItem(
     val updatedAt: Instant = Instant.now(),
     val dueAt: Instant? = null,
     val strategyThreadId: String? = null,
-    val sourceItemId: String? = null
+    val sourceItemId: String? = null,
+    val parentItemId: String? = null
 )
 
 data class StrategyThread(

@@ -50,6 +50,7 @@ class ResolveRepository(context: Context) {
         .putOpt("dueAt", item.dueAt?.toString())
         .putOpt("strategyThreadId", item.strategyThreadId)
         .putOpt("sourceItemId", item.sourceItemId)
+        .putOpt("parentItemId", item.parentItemId)
 
     private fun decodeItem(json: JSONObject) = ResolveItem(
         id = json.optString("id"),
@@ -62,7 +63,8 @@ class ResolveRepository(context: Context) {
         updatedAt = instantOrNow(json.optString("updatedAt")),
         dueAt = json.optNullableString("dueAt")?.let(::instantOrNull),
         strategyThreadId = json.optNullableString("strategyThreadId"),
-        sourceItemId = json.optNullableString("sourceItemId")
+        sourceItemId = json.optNullableString("sourceItemId"),
+        parentItemId = json.optNullableString("parentItemId")
     )
 
     private fun encodeThread(thread: StrategyThread) = JSONObject()

@@ -230,6 +230,15 @@ export class FeishuServerClient {
     return mapEvent(calendarId, data.event);
   }
 
+  async deleteEvent(calendarId: string, eventId: string): Promise<void> {
+    await this.request<Record<string, unknown>>(
+      `/calendar/v4/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+      {
+        method: "DELETE"
+      }
+    );
+  }
+
   private async request<T>(path: string, init: RequestInit = {}) {
     const response = await fetch(`${this.apiBaseUrl}${path}`, {
       ...init,

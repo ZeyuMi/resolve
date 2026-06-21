@@ -10,3 +10,5 @@ apps/android/.gradle
 apps/android/build
 apps/android/app/build
 local-data
+apps/backend/supabase/.temp
+releases/*.apk
