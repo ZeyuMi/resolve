@@ -34,7 +34,7 @@ import {
   type ItemPayload,
   type StrategyNotePayload
 } from "@resolve/core";
-import { type ResolveState } from "@resolve/sync";
+import { type ResolveRemoteChangeKind, type ResolveState } from "@resolve/sync";
 import {
   feishuCalendarScopes,
   FeishuOpenApiClient,
@@ -658,6 +658,9 @@ export function App() {
   const backendStatusHydratedRef = useRef(false);
   const appSyncRef = useRef<ResolveAppEncryptedSync | null>(null);
   const appSyncPushTimerRef = useRef<number | null>(null);
+  const appSyncPullTimerRef = useRef<number | null>(null);
+  const appSyncPullNeedsCalendarRef = useRef(false);
+  const localSaveTimerRef = useRef<number | null>(null);
   const applyingRemoteStateRef = useRef(false);
   const [syncSecretReady, setSyncSecretReady] = useState(false);
 
@@ -691,7 +694,11 @@ export function App() {
     () => taskItems.filter((item) => item.meta.status === "archived").sort((a, b) => b.meta.updatedAt.localeCompare(a.meta.updatedAt)),
     [taskItems]
   );
-  const selectedThread = state.strategyThreads.find((thread) => thread.meta.id === selectedThreadId);
+  const strategyThreads = useMemo(
+    () => state.strategyThreads.filter((thread) => thread.meta.status !== "archived"),
+    [state.strategyThreads]
+  );
+  const selectedThread = strategyThreads.find((thread) => thread.meta.id === selectedThreadId);
   const strategyTodos = todoItems.filter((item) => item.meta.strategyThreadId === selectedThreadId);
   const selectedTodo = taskItems.find((item) => item.meta.id === selectedTodoId);
   const selectedStrategyTodo = taskItems.find(
@@ -711,6 +718,24 @@ export function App() {
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  useEffect(() => {
+    return () => {
+      if (localSaveTimerRef.current) {
+        window.clearTimeout(localSaveTimerRef.current);
+        localSaveTimerRef.current = null;
+        repository.current.save(stateRef.current);
+      }
+      if (appSyncPullTimerRef.current) {
+        window.clearTimeout(appSyncPullTimerRef.current);
+        appSyncPullTimerRef.current = null;
+      }
+      if (appSyncPushTimerRef.current) {
+        window.clearTimeout(appSyncPushTimerRef.current);
+        appSyncPushTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     feishuSettingsRef.current = feishuSettings;
@@ -867,8 +892,8 @@ export function App() {
         appSyncRef.current = sync;
         await pullAppStateFromCloud("initial");
         await sync.push(normalizeState(stateRef.current));
-        unsubscribe = sync.subscribe(() => {
-          window.setTimeout(() => void pullAppStateFromCloud("remote"), 150);
+        unsubscribe = sync.subscribe((kind) => {
+          queueRemoteStatePull(kind);
         });
       } catch (error) {
         console.warn("App data sync is not ready", error);
@@ -989,16 +1014,19 @@ export function App() {
     void finishOAuth();
   }, []);
 
-  async function pullAppStateFromCloud(reason: "initial" | "remote" | "manual") {
+  async function pullAppStateFromCloud(
+    reason: "initial" | "remote" | "manual",
+    options: { includeCalendarEvents?: boolean } = {}
+  ) {
     const sync = appSyncRef.current;
     if (!sync) return;
     try {
-      const remote = await sync.pull();
+      const remote = await sync.pull({ includeCalendarEvents: options.includeCalendarEvents ?? true });
       const merged = normalizeState(mergeEncryptedRemoteState(stateRef.current, remote));
       applyingRemoteStateRef.current = true;
-      repository.current.save(merged);
       stateRef.current = merged;
       setState(merged);
+      queueLocalStateSave(merged, 80);
       applyingRemoteStateRef.current = false;
       if (reason === "manual") showToast("Synced app data");
     } catch (error) {
@@ -1017,14 +1045,35 @@ export function App() {
       void sync.push(normalizeState(stateRef.current)).catch((error) => {
         console.warn("Could not push app data", error);
       });
-    }, 220);
+    }, 900);
+  }
+
+  function queueRemoteStatePull(kind: ResolveRemoteChangeKind) {
+    if (kind === "calendarEvents" || kind === "syncStates" || kind === "deviceMessages") {
+      appSyncPullNeedsCalendarRef.current = true;
+    }
+    if (appSyncPullTimerRef.current) window.clearTimeout(appSyncPullTimerRef.current);
+    appSyncPullTimerRef.current = window.setTimeout(() => {
+      const includeCalendarEvents = appSyncPullNeedsCalendarRef.current;
+      appSyncPullTimerRef.current = null;
+      appSyncPullNeedsCalendarRef.current = false;
+      void pullAppStateFromCloud("remote", { includeCalendarEvents });
+    }, 700);
+  }
+
+  function queueLocalStateSave(next: ResolveState, delay = 250) {
+    if (localSaveTimerRef.current) window.clearTimeout(localSaveTimerRef.current);
+    localSaveTimerRef.current = window.setTimeout(() => {
+      localSaveTimerRef.current = null;
+      repository.current.save(normalizeState(stateRef.current ?? next));
+    }, delay);
   }
 
   function persist(next: ResolveState) {
     const normalized = normalizeState(next);
-    repository.current.save(normalized);
     stateRef.current = normalized;
     setState(normalized);
+    queueLocalStateSave(normalized);
     queueAppStatePush(normalized);
   }
 
@@ -1088,6 +1137,89 @@ export function App() {
           : item
       )
     });
+  }
+
+  function collectTodoDescendantIds(items: DecryptedItem[], parentIds: Iterable<string>) {
+    const childrenByParent = new Map<string, DecryptedItem[]>();
+    items.forEach((item) => {
+      const parentId = item.meta.parentItemId;
+      if (!parentId) return;
+      const siblings = childrenByParent.get(parentId) ?? [];
+      siblings.push(item);
+      childrenByParent.set(parentId, siblings);
+    });
+
+    const descendants = new Set<string>();
+    const visit = (id: string) => {
+      childrenByParent.get(id)?.forEach((child) => {
+        if (descendants.has(child.meta.id)) return;
+        descendants.add(child.meta.id);
+        visit(child.meta.id);
+      });
+    };
+    Array.from(parentIds).forEach(visit);
+    return descendants;
+  }
+
+  function archiveTodoWithDescendants(todo: DecryptedItem) {
+    const archivedIds = collectTodoDescendantIds(state.items, [todo.meta.id]);
+    archivedIds.add(todo.meta.id);
+    const timestamp = nowIso();
+    persist({
+      ...state,
+      items: state.items.map((item) =>
+        archivedIds.has(item.meta.id)
+          ? {
+              ...item,
+              meta: {
+                ...item.meta,
+                status: "archived",
+                updatedAt: timestamp
+              }
+            }
+          : item
+      )
+    });
+  }
+
+  function archiveStrategyWithTasks(thread: DecryptedStrategyThread) {
+    const linkedRootIds = state.items
+      .filter((item) => item.meta.type === "task" && item.meta.strategyThreadId === thread.meta.id)
+      .map((item) => item.meta.id);
+    const archivedIds = collectTodoDescendantIds(state.items, linkedRootIds);
+    linkedRootIds.forEach((id) => archivedIds.add(id));
+    const timestamp = nowIso();
+    const nextThreads = state.strategyThreads.map((candidate) =>
+      candidate.meta.id === thread.meta.id
+        ? {
+            ...candidate,
+            meta: {
+              ...candidate.meta,
+              status: "archived" as const,
+              updatedAt: timestamp
+            }
+          }
+        : candidate
+    );
+    const nextActiveThreadId = nextThreads.find((candidate) => candidate.meta.status !== "archived")?.meta.id ?? "";
+    persist({
+      ...state,
+      strategyThreads: nextThreads,
+      items: state.items.map((item) =>
+        archivedIds.has(item.meta.id)
+          ? {
+              ...item,
+              meta: {
+                ...item.meta,
+                status: "archived",
+                updatedAt: timestamp
+              }
+            }
+          : item
+      )
+    });
+    setSelectedThreadId(nextActiveThreadId);
+    setSelectedStrategyTodoId(null);
   }
 
   function updateTodoPayload(itemId: string, patch: Partial<ItemPayload>) {
@@ -1977,7 +2109,7 @@ export function App() {
                 if (selectedTodoId === todo.meta.id) setSelectedTodoId(null);
               }}
               onArchive={(todo) => {
-                updateTodo(todo.meta.id, { status: "archived" });
+                archiveTodoWithDescendants(todo);
                 if (selectedTodoId === todo.meta.id) setSelectedTodoId(null);
               }}
               onRestore={restoreTodo}
@@ -2016,7 +2148,7 @@ export function App() {
           )}
           {tab === "strategy" && (
             <StrategyView
-              threads={state.strategyThreads}
+              threads={strategyThreads}
               selectedThreadId={selectedThreadId}
               selectedThread={selectedThread}
               strategyTodos={strategyTodos}
@@ -2038,9 +2170,10 @@ export function App() {
                 if (selectedStrategyTodoId === todo.meta.id) setSelectedStrategyTodoId(null);
               }}
               onArchive={(todo) => {
-                updateTodo(todo.meta.id, { status: "archived" });
+                archiveTodoWithDescendants(todo);
                 if (selectedStrategyTodoId === todo.meta.id) setSelectedStrategyTodoId(null);
               }}
+              onArchiveThread={archiveStrategyWithTasks}
               onUpdateTodoMeta={updateTodo}
               onUpdateTodoPayload={updateTodoPayload}
             />
@@ -2987,6 +3120,7 @@ function StrategyView({
   onOpenCalendar,
   onComplete,
   onArchive,
+  onArchiveThread,
   onUpdateTodoMeta,
   onUpdateTodoPayload
 }: {
@@ -3009,6 +3143,7 @@ function StrategyView({
   onOpenCalendar: (todo: DecryptedItem) => void;
   onComplete: (todo: DecryptedItem) => void;
   onArchive: (todo: DecryptedItem) => void;
+  onArchiveThread: (thread: DecryptedStrategyThread) => void;
   onUpdateTodoMeta: (itemId: string, patch: Partial<DecryptedItem["meta"]>) => void;
   onUpdateTodoPayload: (itemId: string, patch: Partial<ItemPayload>) => void;
 }) {
@@ -3058,7 +3193,13 @@ function StrategyView({
                 <h2>{selectedThread.payload.title}</h2>
                 <p>{selectedThread.payload.currentHypothesis}</p>
               </div>
-              <StatusPill tone="strategy" label={selectedThread.meta.status} />
+              <div className="thread-heading-actions">
+                <StatusPill tone="strategy" label={selectedThread.meta.status} />
+                <button className="ghost-button" onClick={() => onArchiveThread(selectedThread)}>
+                  <Archive size={15} />
+                  Archive
+                </button>
+              </div>
             </div>
 
             <div className="note-composer">

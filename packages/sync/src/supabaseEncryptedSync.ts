@@ -69,7 +69,8 @@ export class SupabaseEncryptedSync {
     ]);
   }
 
-  async pullState(): Promise<ResolveState> {
+  async pullState(options: { includeCalendarEvents?: boolean } = {}): Promise<ResolveState> {
+    const includeCalendarEvents = options.includeCalendarEvents ?? true;
     const [itemRows, threadRows, eventRows] = await Promise.all([
       throwIfSupabaseError(
         this.client
@@ -85,14 +86,16 @@ export class SupabaseEncryptedSync {
           .eq("user_id", this.userId)
           .order("updated_at", { ascending: false })
       ) as Promise<SupabaseEncryptedStrategyThreadRow[]>,
-      throwIfSupabaseError(
-        this.client
-          .from("resolve_calendar_events")
-          .select("*")
-          .eq("user_id", this.userId)
-          .eq("encryption_scheme", "vault_v1")
-          .order("starts_at", { ascending: true })
-      ) as Promise<SupabaseEncryptedCalendarEventRow[]>
+      includeCalendarEvents
+        ? (throwIfSupabaseError(
+            this.client
+              .from("resolve_calendar_events")
+              .select("*")
+              .eq("user_id", this.userId)
+              .eq("encryption_scheme", "vault_v1")
+              .order("starts_at", { ascending: true })
+          ) as Promise<SupabaseEncryptedCalendarEventRow[]>)
+        : Promise.resolve([] as SupabaseEncryptedCalendarEventRow[])
     ]);
 
     const [items, strategyThreads, calendarEvents] = await Promise.all([

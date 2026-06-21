@@ -34,7 +34,9 @@ data class StrategyThread(
     val id: String = "thread_${UUID.randomUUID()}",
     val title: String,
     val currentHypothesis: String = "",
-    val status: String = "active"
+    val status: String = "active",
+    val createdAt: Instant = Instant.now(),
+    val updatedAt: Instant = Instant.now()
 )
 
 data class CalendarEvent(

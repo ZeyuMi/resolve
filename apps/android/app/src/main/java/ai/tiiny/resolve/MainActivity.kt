@@ -79,11 +79,13 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -107,6 +109,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.Instant
@@ -189,39 +192,66 @@ private fun ResolveAndroidApp(
     var pendingTodoArchive by remember { mutableStateOf<ResolveItem?>(null) }
     var pendingTodoDelete by remember { mutableStateOf<ResolveItem?>(null) }
     var pendingTodoArchiveClear by remember { mutableStateOf(false) }
+    var pendingStrategyArchive by remember { mutableStateOf<StrategyThread?>(null) }
     var pendingCalendarDelete by remember { mutableStateOf<CalendarEvent?>(null) }
     var isSyncing by remember { mutableStateOf(false) }
     var isConnecting by remember { mutableStateOf(false) }
     var hasBackendSession by remember { mutableStateOf(secureVault.loadBackendSession() != null) }
     var syncSecretReady by remember { mutableStateOf(secureVault.loadSyncSecret() != null) }
     var applyingRemoteState by remember { mutableStateOf(false) }
+    var localSaveJob by remember { mutableStateOf<Job?>(null) }
+    var appSyncPushJob by remember { mutableStateOf<Job?>(null) }
+    val latestStateForDispose by rememberUpdatedState(state)
 
-    fun persist(next: ResolveState) {
-        state = next
-        repository.save(next)
-        if (!applyingRemoteState) {
-            val session = secureVault.loadBackendSession()
-            val syncSecret = secureVault.loadSyncSecret()
-            if (session != null && syncSecret != null && next.backendSettings.email.isNotBlank()) {
-                scope.launch {
-                    runCatching {
-                        withContext(Dispatchers.IO) {
-                            AppSyncClient(next.backendSettings, session, syncSecret).pushState(next)
-                        }
-                    }
+    fun queueLocalSave(next: ResolveState, delayMs: Long = 220L) {
+        localSaveJob?.cancel()
+        localSaveJob = scope.launch {
+            delay(delayMs)
+            withContext(Dispatchers.IO) {
+                repository.save(next)
+            }
+        }
+    }
+
+    fun queueAppStatePush(next: ResolveState) {
+        if (applyingRemoteState) return
+        val session = secureVault.loadBackendSession()
+        val syncSecret = secureVault.loadSyncSecret()
+        if (session == null || syncSecret == null || next.backendSettings.email.isBlank()) return
+
+        appSyncPushJob?.cancel()
+        appSyncPushJob = scope.launch {
+            delay(900L)
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    AppSyncClient(next.backendSettings, session, syncSecret).pushState(next)
                 }
             }
         }
     }
 
-    suspend fun syncAppStateWithCloud(pushAfterPull: Boolean = true) {
+    fun persist(next: ResolveState) {
+        state = next
+        queueLocalSave(next)
+        queueAppStatePush(next)
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            localSaveJob?.cancel()
+            appSyncPushJob?.cancel()
+            repository.save(latestStateForDispose)
+        }
+    }
+
+    suspend fun syncAppStateWithCloud(pushAfterPull: Boolean = true, includeCalendarEvents: Boolean = true) {
         val session = secureVault.loadBackendSession() ?: return
         val syncSecret = secureVault.loadSyncSecret() ?: return
         if (state.backendSettings.email.isBlank()) return
         val localSnapshot = state
         val client = AppSyncClient(localSnapshot.backendSettings, session, syncSecret)
         val remote = withContext(Dispatchers.IO) {
-            client.pullState()
+            client.pullState(includeCalendarEvents = includeCalendarEvents)
         }
         val merged = mergeEncryptedRemoteState(localSnapshot, remote)
         applyingRemoteState = true
@@ -237,7 +267,7 @@ private fun ResolveAndroidApp(
     fun pullAppStateFromCloud() {
         scope.launch {
             runCatching {
-                syncAppStateWithCloud()
+                syncAppStateWithCloud(pushAfterPull = false, includeCalendarEvents = false)
             }.onFailure {
                 applyingRemoteState = false
             }
@@ -249,8 +279,47 @@ private fun ResolveAndroidApp(
     }
 
     fun archiveItem(item: ResolveItem) {
-        updateItem(item.copy(status = ItemStatus.Archived))
+        val archivedIds = descendantsOf(state.items, item.id).map { it.id }.toMutableSet()
+        archivedIds += item.id
+        val timestamp = Instant.now()
+        persist(
+            state.copy(
+                items = state.items.map { candidate ->
+                    if (candidate.id in archivedIds) candidate.copy(status = ItemStatus.Archived, updatedAt = timestamp) else candidate
+                }
+            )
+        )
         if (selectedTodoId == item.id) selectedTodoId = null
+        notice = null
+    }
+
+    fun archiveStrategyThread(thread: StrategyThread) {
+        val archivedIds = state.items
+            .filter { it.type == ItemType.Task && it.strategyThreadId == thread.id }
+            .map { it.id }
+            .toMutableSet()
+        archivedIds.toList().forEach { rootId ->
+            descendantsOf(state.items, rootId).forEach { archivedIds += it.id }
+        }
+        val timestamp = Instant.now()
+        persist(
+            state.copy(
+                threads = state.threads.map { candidate ->
+                    if (candidate.id == thread.id) candidate.copy(status = "archived", updatedAt = timestamp) else candidate
+                },
+                items = state.items.map { item ->
+                    if (item.id in archivedIds) item.copy(status = ItemStatus.Archived, updatedAt = timestamp) else item
+                }
+            )
+        )
+        if (openedStrategyThreadId == thread.id) openedStrategyThreadId = null
+        if (selectedThreadId == thread.id) {
+            selectedThreadId = state.threads
+                .firstOrNull { it.id != thread.id && !it.status.equals("archived", ignoreCase = true) }
+                ?.id
+                .orEmpty()
+        }
+        selectedTodoId = null
         notice = null
     }
 
@@ -727,10 +796,10 @@ private fun ResolveAndroidApp(
 
     LaunchedEffect(hasBackendSession, state.backendSettings.email) {
         if (!hasBackendSession || state.backendSettings.email.isBlank() || secureVault.loadSyncSecret() == null) return@LaunchedEffect
-        runCatching { syncAppStateWithCloud() }
+        runCatching { syncAppStateWithCloud(pushAfterPull = false, includeCalendarEvents = false) }
         while (true) {
-            delay(2_000)
-            runCatching { syncAppStateWithCloud() }
+            delay(5_000)
+            runCatching { syncAppStateWithCloud(pushAfterPull = false, includeCalendarEvents = false) }
         }
     }
 
@@ -874,6 +943,7 @@ private fun ResolveAndroidApp(
         pendingTodoArchive != null ||
             pendingTodoDelete != null ||
             pendingTodoArchiveClear ||
+            pendingStrategyArchive != null ||
             pendingCalendarDelete != null ||
             selectedTodoId != null ||
             (tab == Tab.Calendar && (editingCalendarEvent != null || selectedCalendarEvent != null || showCalendarDraft || expandedCalendarDate != null)) ||
@@ -884,6 +954,7 @@ private fun ResolveAndroidApp(
             pendingTodoArchive != null -> pendingTodoArchive = null
             pendingTodoDelete != null -> pendingTodoDelete = null
             pendingTodoArchiveClear -> pendingTodoArchiveClear = false
+            pendingStrategyArchive != null -> pendingStrategyArchive = null
             pendingCalendarDelete != null -> pendingCalendarDelete = null
             selectedTodoId != null -> closeTodoDetail()
             tab == Tab.Calendar && editingCalendarEvent != null -> {
@@ -1133,7 +1204,8 @@ private fun ResolveAndroidApp(
                             onToggleDone = { item ->
                                 updateItem(item.copy(status = if (item.status == ItemStatus.Done) ItemStatus.Active else ItemStatus.Done))
                             },
-                            onArchiveTodo = { pendingTodoArchive = it }
+                            onArchiveTodo = { pendingTodoArchive = it },
+                            onArchiveThread = { pendingStrategyArchive = it }
                         )
 
                         Tab.Settings -> SettingsScreen(
@@ -1189,6 +1261,19 @@ private fun ResolveAndroidApp(
                     clearArchivedItems()
                     showArchived = false
                     pendingTodoArchiveClear = false
+                }
+            )
+        }
+        pendingStrategyArchive?.let { thread ->
+            ConfirmActionDialog(
+                title = "Archive strategy?",
+                message = "This will also archive its subtasks.",
+                confirmLabel = "Archive",
+                danger = false,
+                onDismiss = { pendingStrategyArchive = null },
+                onConfirm = {
+                    archiveStrategyThread(thread)
+                    pendingStrategyArchive = null
                 }
             )
         }
@@ -2711,10 +2796,12 @@ private fun StrategyScreen(
     onAddTask: (String, String) -> Unit,
     onSelectTodo: (ResolveItem) -> Unit,
     onToggleDone: (ResolveItem) -> Unit,
-    onArchiveTodo: (ResolveItem) -> Unit
+    onArchiveTodo: (ResolveItem) -> Unit,
+    onArchiveThread: (StrategyThread) -> Unit
 ) {
     var task by remember { mutableStateOf("") }
-    val opened = state.threads.find { it.id == openedThreadId }
+    val activeThreads = state.threads.filter { !it.status.equals("archived", ignoreCase = true) }
+    val opened = activeThreads.find { it.id == openedThreadId }
     val allTasks = state.items.filter { it.type == ItemType.Task }
 
     if (showNewThread) {
@@ -2727,8 +2814,8 @@ private fun StrategyScreen(
 
     if (opened == null) {
         LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            item { DetailSectionTitle("Strategy", "${state.threads.size}") }
-            items(state.threads, key = { it.id }) { thread ->
+            item { DetailSectionTitle("Strategy", "${activeThreads.size}") }
+            items(activeThreads, key = { it.id }) { thread ->
                 val linked = allTasks.filter { it.strategyThreadId == thread.id && it.status != ItemStatus.Archived }
                 StrategyOverviewCard(
                     thread = thread,
@@ -2808,6 +2895,13 @@ private fun StrategyScreen(
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
                         MetaPill("${subtasks.count { it.status == ItemStatus.Done }}/${subtasks.size} done", tone = "accent")
                         MetaPill("Review not set")
+                        AssistChip(
+                            onClick = { onArchiveThread(opened) },
+                            label = { Text("Archive", fontSize = ResolveType.Caption) },
+                            leadingIcon = {
+                                Icon(Icons.Filled.Archive, contentDescription = null, modifier = Modifier.size(14.dp))
+                            }
+                        )
                     }
                 }
             }

@@ -73,13 +73,20 @@ class ResolveRepository(context: Context) {
         .put("title", thread.title)
         .put("currentHypothesis", thread.currentHypothesis)
         .put("status", thread.status)
+        .put("createdAt", thread.createdAt.toString())
+        .put("updatedAt", thread.updatedAt.toString())
 
-    private fun decodeThread(json: JSONObject) = StrategyThread(
-        id = json.optString("id"),
-        title = json.optString("title"),
-        currentHypothesis = json.optString("currentHypothesis"),
-        status = json.optString("status", "active")
-    )
+    private fun decodeThread(json: JSONObject): StrategyThread {
+        val createdAt = instantOrNull(json.optString("createdAt")) ?: Instant.EPOCH
+        return StrategyThread(
+            id = json.optString("id"),
+            title = json.optString("title"),
+            currentHypothesis = json.optString("currentHypothesis"),
+            status = json.optString("status", "active"),
+            createdAt = createdAt,
+            updatedAt = instantOrNull(json.optString("updatedAt")) ?: createdAt
+        )
+    }
 
     private fun encodeCalendarEvent(event: CalendarEvent) = JSONObject()
         .put("id", event.id)

@@ -77,8 +77,8 @@ export class ResolveAppEncryptedSync {
     return new ResolveAppEncryptedSync(client, new SupabaseEncryptedSync(client, userId, vaultKey));
   }
 
-  async pull() {
-    return this.sync.pullState();
+  async pull(options: { includeCalendarEvents?: boolean } = {}) {
+    return this.sync.pullState(options);
   }
 
   async push(state: ResolveState) {

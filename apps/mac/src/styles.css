@@ -2165,8 +2165,19 @@ button:hover {
 }
 
 .thread-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
   padding-bottom: 12px;
   border-bottom: 1px solid var(--line-soft);
+}
+
+.thread-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .thread-heading h2 {

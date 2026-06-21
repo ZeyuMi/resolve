@@ -23,12 +23,14 @@ class AppSyncClient(
     private val userId = userIdFromAccessToken(session.accessToken)
     private val key = deriveSyncKey(syncSecret, settings.email)
 
-    fun pullState(): ResolveState {
+    fun pullState(includeCalendarEvents: Boolean = true): ResolveState {
         val itemRows = getArray("/rest/v1/resolve_items?select=*&user_id=eq.${encode(userId)}&order=updated_at.desc")
         val threadRows = getArray("/rest/v1/resolve_strategy_threads?select=*&user_id=eq.${encode(userId)}&order=updated_at.desc")
-        val eventRows = getArray(
-            "/rest/v1/resolve_calendar_events?select=*&user_id=eq.${encode(userId)}&encryption_scheme=eq.vault_v1&order=starts_at.asc"
-        )
+        val eventRows = if (includeCalendarEvents) {
+            getArray("/rest/v1/resolve_calendar_events?select=*&user_id=eq.${encode(userId)}&encryption_scheme=eq.vault_v1&order=starts_at.asc")
+        } else {
+            JSONArray()
+        }
 
         return ResolveState(
             items = (0 until itemRows.length()).mapNotNull { itemRows.optJSONObject(it)?.let(::itemFromRow) },
@@ -76,7 +78,6 @@ class AppSyncClient(
     }
 
     private fun threadToRow(thread: StrategyThread): JSONObject {
-        val now = Instant.now().toString()
         val encrypted = encryptJson(
             JSONObject()
                 .put("title", thread.title)
@@ -86,8 +87,8 @@ class AppSyncClient(
             .put("user_id", userId)
             .put("id", thread.id)
             .put("status", thread.status.ifBlank { "active" })
-            .put("created_at", now)
-            .put("updated_at", now)
+            .put("created_at", thread.createdAt.toString())
+            .put("updated_at", thread.updatedAt.toString())
             .put("encrypted_payload", encrypted.payload)
             .put("payload_nonce", encrypted.nonce)
             .put("payload_version", 1)
@@ -147,7 +148,9 @@ class AppSyncClient(
             id = row.optString("id"),
             title = payload.optString("title").ifBlank { "Untitled strategy" },
             currentHypothesis = payload.optString("currentHypothesis"),
-            status = row.optString("status", "active")
+            status = row.optString("status", "active"),
+            createdAt = instantOrNow(row.optString("created_at")),
+            updatedAt = instantOrNow(row.optString("updated_at"))
         )
     }
 
@@ -222,8 +225,9 @@ fun mergeEncryptedRemoteState(local: ResolveState, remote: ResolveState): Resolv
     }
 
     val threads = linkedMapOf<String, StrategyThread>()
-    (remote.threads + local.threads).forEach { thread ->
-        threads.putIfAbsent(thread.id, thread)
+    (local.threads + remote.threads).forEach { thread ->
+        val existing = threads[thread.id]
+        if (existing == null || thread.updatedAt >= existing.updatedAt) threads[thread.id] = thread
     }
 
     val remoteLocalCalendars = remote.calendarEvents.filter { it.provider != "feishu" || it.externalEventId == null }

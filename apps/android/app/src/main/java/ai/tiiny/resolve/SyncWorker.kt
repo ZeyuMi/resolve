@@ -39,7 +39,7 @@ class SyncWorker(
                 val syncSecret = vault.loadSyncSecret()
                 val appSyncedState = if (syncSecret != null && backend.email.isNotBlank()) {
                     val appSync = AppSyncClient(backend, session, syncSecret)
-                    val remote = appSync.pullState()
+                    val remote = appSync.pullState(includeCalendarEvents = false)
                     mergeEncryptedRemoteState(state, remote).also { appSync.pushState(it) }
                 } else {
                     state
