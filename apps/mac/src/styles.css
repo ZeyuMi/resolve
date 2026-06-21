@@ -4318,3 +4318,708 @@ textarea:disabled {
   border: 0;
   background: rgba(247, 248, 251, 0.72);
 }
+
+/* Liquid Glass refinement for the native Mac app. */
+:root {
+  --app-bg:
+    radial-gradient(circle at 8% 6%, rgba(84, 134, 255, 0.17), transparent 31%),
+    radial-gradient(circle at 86% 2%, rgba(125, 92, 255, 0.12), transparent 28%),
+    radial-gradient(circle at 48% 102%, rgba(57, 153, 255, 0.1), transparent 34%),
+    linear-gradient(145deg, #f8faff 0%, #eff4fb 48%, #fbfdff 100%);
+  --panel-bg: rgba(255, 255, 255, 0.68);
+  --panel-soft: rgba(255, 255, 255, 0.44);
+  --panel-pressed: rgba(47, 100, 217, 0.1);
+  --line: rgba(64, 78, 108, 0.13);
+  --line-soft: rgba(64, 78, 108, 0.08);
+  --accent: #2f66dd;
+  --accent-soft: rgba(47, 102, 221, 0.1);
+  --accent-line: rgba(47, 102, 221, 0.22);
+  --liquid-surface: rgba(255, 255, 255, 0.62);
+  --liquid-surface-strong: rgba(255, 255, 255, 0.78);
+  --liquid-surface-soft: rgba(255, 255, 255, 0.42);
+  --liquid-stroke: rgba(255, 255, 255, 0.7);
+  --liquid-shadow: 0 22px 64px rgba(35, 48, 77, 0.12), 0 2px 9px rgba(35, 48, 77, 0.05);
+  --liquid-shadow-soft: 0 12px 34px rgba(35, 48, 77, 0.08);
+  --liquid-blur: blur(28px) saturate(1.36);
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  background: var(--app-bg);
+}
+
+.app-shell {
+  position: relative;
+  isolation: isolate;
+  background: var(--app-bg);
+  color: #1d2430;
+}
+
+.app-shell::before {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    linear-gradient(120deg, rgba(255, 255, 255, 0.34), transparent 42%),
+    radial-gradient(circle at 72% 32%, rgba(255, 255, 255, 0.32), transparent 24%);
+  content: "";
+}
+
+.app-main {
+  min-height: 100vh;
+  padding: 18px 22px 32px;
+}
+
+.focus-sidebar {
+  overflow: hidden;
+  border-right: 1px solid rgba(255, 255, 255, 0.52);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.64), rgba(239, 246, 255, 0.46)),
+    rgba(255, 255, 255, 0.38);
+  -webkit-backdrop-filter: var(--liquid-blur);
+  backdrop-filter: var(--liquid-blur);
+  box-shadow:
+    inset -1px 0 0 rgba(64, 78, 108, 0.06),
+    inset 1px 0 0 rgba(255, 255, 255, 0.64);
+}
+
+.sidebar-brand {
+  min-height: 68px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.56);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.16));
+}
+
+.sidebar-brand strong {
+  color: #1d2430;
+  font-weight: 690;
+}
+
+.sidebar-brand span,
+.eyebrow {
+  color: rgba(74, 86, 108, 0.72);
+}
+
+.brand-mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: linear-gradient(145deg, #4f82ff 0%, #2f66dd 72%, #2552bd 100%);
+  box-shadow:
+    0 10px 24px rgba(47, 102, 221, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.36);
+}
+
+.brand-mark svg {
+  width: 32px;
+  height: 32px;
+  filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.1));
+}
+
+.brand-mark svg circle {
+  fill: transparent;
+}
+
+.sidebar-scroll {
+  padding: 12px;
+  gap: 10px;
+}
+
+.sidebar-nav {
+  gap: 3px;
+}
+
+.sidebar-nav button {
+  min-height: 34px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: rgba(47, 56, 75, 0.78);
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 120ms ease;
+}
+
+.sidebar-nav button:hover {
+  background: rgba(255, 255, 255, 0.46);
+  border-color: rgba(255, 255, 255, 0.58);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.68);
+}
+
+.sidebar-nav button.active {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.48)),
+    rgba(47, 102, 221, 0.08);
+  border-color: rgba(255, 255, 255, 0.74);
+  color: #1d2430;
+  box-shadow:
+    0 10px 26px rgba(35, 48, 77, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.82),
+    inset 0 0 0 1px rgba(47, 102, 221, 0.06);
+}
+
+.sidebar-badge,
+.status-pill,
+.todo-date-pill,
+.more-label {
+  border: 1px solid rgba(255, 255, 255, 0.64);
+  background: rgba(255, 255, 255, 0.54);
+  color: rgba(48, 59, 80, 0.78);
+  -webkit-backdrop-filter: blur(16px) saturate(1.24);
+  backdrop-filter: blur(16px) saturate(1.24);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.top-bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  min-height: 56px;
+  margin: -2px -6px 14px;
+  padding: 9px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.62);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.5);
+  -webkit-backdrop-filter: var(--liquid-blur);
+  backdrop-filter: var(--liquid-blur);
+  box-shadow:
+    0 12px 34px rgba(35, 48, 77, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.74);
+}
+
+.top-bar h1 {
+  font-size: 22px;
+  line-height: 1.08;
+  font-weight: 690;
+}
+
+.top-actions {
+  gap: 8px;
+}
+
+.workspace {
+  padding: 8px 0 0;
+}
+
+.todo-list-pane,
+.todo-detail-panel,
+.section-card,
+.thread-detail,
+.feishu-connect-card,
+.calendar-month,
+.thread-list .new-thread-box {
+  border: 1px solid var(--liquid-stroke);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(255, 255, 255, 0.5)),
+    var(--liquid-surface);
+  -webkit-backdrop-filter: var(--liquid-blur);
+  backdrop-filter: var(--liquid-blur);
+  box-shadow:
+    var(--liquid-shadow),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.todo-list-pane,
+.todo-detail-panel,
+.thread-detail,
+.feishu-connect-card {
+  border-radius: 18px;
+}
+
+.section-card,
+.thread-list .new-thread-box {
+  border-radius: 16px;
+}
+
+.todo-list-pane {
+  overflow: hidden;
+}
+
+.section-title-row,
+.section-card-head {
+  border-bottom: 1px solid rgba(64, 78, 108, 0.08);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0));
+}
+
+.section-title-row h2,
+.section-card-head span,
+.thread-heading h2,
+.calendar-toolbar h2 {
+  color: #1d2430;
+}
+
+.section-title-row p,
+.thread-heading p,
+.meta-row,
+.detail-head,
+.detail-field > span {
+  color: rgba(74, 86, 108, 0.72);
+}
+
+.item-card,
+.strategy-list-card,
+.calendar-event-card,
+.strategy-note,
+.mini-row {
+  border: 1px solid transparent;
+  background: transparent;
+  box-shadow: none;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 120ms ease;
+}
+
+.item-card:hover,
+.strategy-list-card:hover,
+.calendar-event-card:hover,
+.strategy-note:hover,
+.mini-row:hover {
+  background: rgba(255, 255, 255, 0.48);
+  border-color: rgba(255, 255, 255, 0.58);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.todo-card.selected,
+.strategy-list-card.active,
+.strategy-note.selected {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.68), rgba(255, 255, 255, 0.42)),
+    rgba(47, 102, 221, 0.1);
+  border-color: rgba(47, 102, 221, 0.2);
+  box-shadow:
+    0 10px 24px rgba(47, 102, 221, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.completion-circle {
+  border-color: rgba(117, 128, 148, 0.35);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.76), rgba(255, 255, 255, 0.45)),
+    rgba(255, 255, 255, 0.36);
+  color: transparent;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    0 2px 8px rgba(35, 48, 77, 0.06);
+}
+
+.completion-circle:hover,
+.completion-circle.completed {
+  border-color: rgba(47, 102, 221, 0.62);
+  background: linear-gradient(145deg, #4f82ff, #2f66dd);
+  color: white;
+  box-shadow:
+    0 8px 18px rgba(47, 102, 221, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.32);
+}
+
+.primary-button,
+.secondary-button,
+.ghost-button,
+.icon-button,
+.calendar-new-button,
+.collapsed-list-toggle,
+.archive-restore-button,
+.calendar-view-select {
+  border: 1px solid rgba(255, 255, 255, 0.64);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.48)),
+    rgba(255, 255, 255, 0.38);
+  color: rgba(29, 36, 48, 0.86);
+  -webkit-backdrop-filter: blur(18px) saturate(1.26);
+  backdrop-filter: blur(18px) saturate(1.26);
+  box-shadow:
+    0 8px 22px rgba(35, 48, 77, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78);
+  transition:
+    transform 120ms ease,
+    background 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.primary-button {
+  border-color: rgba(47, 102, 221, 0.28);
+  background:
+    linear-gradient(180deg, rgba(79, 130, 255, 0.96), rgba(47, 102, 221, 0.94));
+  color: white;
+  box-shadow:
+    0 12px 26px rgba(47, 102, 221, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.34);
+}
+
+.primary-button:hover,
+.secondary-button:hover,
+.ghost-button:hover,
+.icon-button:hover,
+.calendar-new-button:hover,
+.collapsed-list-toggle:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    0 14px 30px rgba(35, 48, 77, 0.11),
+    inset 0 1px 0 rgba(255, 255, 255, 0.82);
+}
+
+.primary-button:hover {
+  background:
+    linear-gradient(180deg, rgba(88, 140, 255, 0.98), rgba(47, 102, 221, 0.96));
+}
+
+.primary-button:active,
+.secondary-button:active,
+.ghost-button:active,
+.icon-button:active,
+.calendar-new-button:active,
+.collapsed-list-toggle:active {
+  transform: translateY(0);
+}
+
+.capture-box,
+.mobile-capture-bar {
+  border: 1px solid rgba(255, 255, 255, 0.66);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.48)),
+    rgba(255, 255, 255, 0.36);
+  -webkit-backdrop-filter: var(--liquid-blur);
+  backdrop-filter: var(--liquid-blur);
+  box-shadow:
+    var(--liquid-shadow-soft),
+    inset 0 1px 0 rgba(255, 255, 255, 0.76);
+}
+
+.capture-title {
+  color: rgba(74, 86, 108, 0.78);
+}
+
+.capture-box textarea,
+.mobile-capture-bar textarea,
+.detail-field input,
+.detail-field textarea,
+.detail-field select,
+.new-thread-box input,
+.new-thread-box textarea,
+.note-composer input,
+.settings-row input,
+.callback-row input,
+.range-row input {
+  border: 1px solid rgba(64, 78, 108, 0.1);
+  background: rgba(255, 255, 255, 0.54);
+  color: #1d2430;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.capture-box textarea:focus,
+.mobile-capture-bar textarea:focus,
+.detail-field input:focus,
+.detail-field textarea:focus,
+.detail-field select:focus,
+.new-thread-box input:focus,
+.new-thread-box textarea:focus,
+.note-composer input:focus,
+.settings-row input:focus,
+.callback-row input:focus,
+.range-row input:focus,
+.calendar-view-select:focus {
+  border-color: rgba(47, 102, 221, 0.34);
+  box-shadow:
+    0 0 0 3px rgba(47, 102, 221, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.collapsed-list {
+  border-top: 1px solid rgba(64, 78, 108, 0.07);
+}
+
+.collapsed-list-toggle {
+  margin: 8px 12px;
+  min-height: 30px;
+  width: calc(100% - 24px);
+  border-radius: 10px;
+  box-shadow: none;
+}
+
+.collapsed-list-toggle.open {
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.detail-head {
+  border-bottom: 1px solid rgba(64, 78, 108, 0.08);
+}
+
+.detail-actions {
+  border-top: 1px solid rgba(64, 78, 108, 0.08);
+}
+
+.calendar-month {
+  border-radius: 18px;
+}
+
+.calendar-toolbar {
+  padding: 2px;
+}
+
+.calendar-title-block h2 {
+  font-size: 20px;
+  font-weight: 690;
+}
+
+.calendar-view-select {
+  appearance: none;
+  min-height: 27px;
+  border-radius: 999px;
+  padding: 0 23px 0 10px;
+}
+
+.calendar-grid {
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  background: rgba(255, 255, 255, 0.2);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.48);
+}
+
+.calendar-cell {
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.34);
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.calendar-cell:hover {
+  border-color: rgba(255, 255, 255, 0.66);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.calendar-cell.past {
+  background: rgba(231, 235, 243, 0.46);
+  color: rgba(74, 86, 108, 0.46);
+}
+
+.calendar-cell.today {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(239, 246, 255, 0.7)),
+    rgba(47, 102, 221, 0.08);
+  border-color: rgba(47, 102, 221, 0.26);
+  box-shadow:
+    inset 0 0 0 1px rgba(47, 102, 221, 0.26),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78),
+    0 10px 24px rgba(47, 102, 221, 0.08);
+}
+
+.calendar-cell.today > span {
+  background: #2f66dd;
+  color: white;
+  box-shadow: 0 5px 16px rgba(47, 102, 221, 0.24);
+}
+
+.calendar-cell.selected {
+  border-color: rgba(47, 102, 221, 0.3);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(239, 246, 255, 0.74)),
+    rgba(47, 102, 221, 0.08);
+  box-shadow:
+    inset 0 0 0 1px rgba(47, 102, 221, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.calendar-event-chip,
+.calendar-more-label {
+  border: 1px solid rgba(47, 102, 221, 0.08);
+  background:
+    linear-gradient(180deg, rgba(237, 246, 255, 0.92), rgba(220, 236, 255, 0.72));
+  color: rgba(31, 75, 155, 0.88);
+  box-shadow:
+    inset 3px 0 0 rgba(47, 102, 221, 0.8),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.calendar-event-chip::before,
+.calendar-more-label::before {
+  display: none;
+}
+
+.calendar-event-chip:hover,
+.calendar-event-chip.selected,
+.calendar-more-label:hover {
+  background:
+    linear-gradient(180deg, rgba(226, 240, 255, 0.98), rgba(205, 226, 255, 0.84));
+  color: #1f4b9b;
+}
+
+.calendar-popover-backdrop {
+  -webkit-backdrop-filter: blur(10px) saturate(1.18);
+  backdrop-filter: blur(10px) saturate(1.18);
+}
+
+.calendar-popover,
+.quick-capture-panel,
+.modal,
+.sheet {
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(255, 255, 255, 0.62)),
+    rgba(255, 255, 255, 0.56);
+  -webkit-backdrop-filter: blur(34px) saturate(1.4);
+  backdrop-filter: blur(34px) saturate(1.4);
+  box-shadow:
+    0 30px 92px rgba(35, 48, 77, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.84);
+}
+
+.thread-list {
+  gap: 10px;
+}
+
+.strategy-list-card {
+  border-radius: 13px;
+  padding: 12px;
+}
+
+.strategy-list-card p {
+  color: rgba(74, 86, 108, 0.68);
+}
+
+.strategy-note {
+  border-radius: 12px;
+}
+
+.feishu-connect-card {
+  max-width: 760px;
+}
+
+.feishu-connect-icon {
+  border: 1px solid rgba(255, 255, 255, 0.66);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(239, 246, 255, 0.5)),
+    rgba(47, 102, 221, 0.08);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.account-summary-row,
+.feishu-status-strip > div {
+  border: 1px solid rgba(255, 255, 255, 0.62);
+  background: rgba(255, 255, 255, 0.48);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.settings-error {
+  border-color: rgba(199, 54, 47, 0.18);
+  background: rgba(255, 240, 239, 0.72);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --app-bg:
+      radial-gradient(circle at 10% 4%, rgba(84, 134, 255, 0.16), transparent 32%),
+      radial-gradient(circle at 90% 0%, rgba(125, 92, 255, 0.13), transparent 29%),
+      linear-gradient(145deg, #161b24 0%, #111720 48%, #171c24 100%);
+    --text: #f4f7fb;
+    --text-2: rgba(229, 235, 245, 0.72);
+    --text-3: rgba(229, 235, 245, 0.52);
+    --liquid-surface: rgba(32, 38, 50, 0.58);
+    --liquid-surface-strong: rgba(39, 46, 60, 0.74);
+    --liquid-surface-soft: rgba(32, 38, 50, 0.4);
+    --liquid-stroke: rgba(255, 255, 255, 0.12);
+    --line: rgba(255, 255, 255, 0.11);
+    --line-soft: rgba(255, 255, 255, 0.08);
+  }
+
+  .app-shell {
+    color: #f4f7fb;
+  }
+
+  .top-bar,
+  .focus-sidebar,
+  .todo-list-pane,
+  .todo-detail-panel,
+  .section-card,
+  .thread-detail,
+  .feishu-connect-card,
+  .calendar-month,
+  .thread-list .new-thread-box {
+    background:
+      linear-gradient(180deg, rgba(46, 54, 70, 0.72), rgba(24, 30, 42, 0.52)),
+      var(--liquid-surface);
+    border-color: rgba(255, 255, 255, 0.12);
+  }
+
+  .sidebar-brand strong,
+  .top-bar h1,
+  .section-title-row h2,
+  .section-card-head span,
+  .thread-heading h2,
+  .calendar-toolbar h2,
+  .item-main p,
+  .feishu-connect-copy h2,
+  .account-summary-row strong {
+    color: #f4f7fb;
+  }
+
+  .sidebar-brand span,
+  .eyebrow,
+  .section-title-row p,
+  .thread-heading p,
+  .meta-row,
+  .detail-head,
+  .detail-field > span {
+    color: rgba(229, 235, 245, 0.62);
+  }
+
+  .sidebar-nav button,
+  .secondary-button,
+  .ghost-button,
+  .icon-button,
+  .collapsed-list-toggle,
+  .calendar-view-select {
+    color: rgba(244, 247, 251, 0.82);
+    background: rgba(255, 255, 255, 0.07);
+    border-color: rgba(255, 255, 255, 0.1);
+  }
+
+  .item-card:hover,
+  .strategy-list-card:hover,
+  .calendar-event-card:hover,
+  .strategy-note:hover,
+  .mini-row:hover,
+  .sidebar-nav button:hover,
+  .sidebar-nav button.active {
+    background: rgba(255, 255, 255, 0.09);
+    border-color: rgba(255, 255, 255, 0.14);
+  }
+
+  .capture-box textarea,
+  .mobile-capture-bar textarea,
+  .detail-field input,
+  .detail-field textarea,
+  .detail-field select,
+  .new-thread-box input,
+  .new-thread-box textarea,
+  .note-composer input,
+  .settings-row input,
+  .callback-row input,
+  .range-row input {
+    background: rgba(255, 255, 255, 0.08);
+    color: #f4f7fb;
+    border-color: rgba(255, 255, 255, 0.1);
+  }
+
+  .calendar-cell {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.06);
+  }
+
+  .calendar-cell.past {
+    background: rgba(255, 255, 255, 0.04);
+    color: rgba(229, 235, 245, 0.42);
+  }
+}

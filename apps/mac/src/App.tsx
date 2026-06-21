@@ -3086,6 +3086,7 @@ function SettingsView({
     : signedIn
       ? "Authorization needed"
       : "Sign in first";
+  const signInError = !signedIn ? backendSettings.lastError : undefined;
   const calendarError = signedIn ? backendSettings.lastError ?? settings.lastError : undefined;
 
   return (
@@ -3150,7 +3151,7 @@ function SettingsView({
             </div>
           </>
         )}
-        {signedIn && backendSettings.lastError && <p className="settings-error">{backendSettings.lastError}</p>}
+        {signInError && <p className="settings-error">{signInError}</p>}
       </section>
 
       <section className="feishu-connect-card">
@@ -3186,15 +3187,6 @@ function SettingsView({
             <button className="secondary-button" disabled>
               <Check size={16} />
               Authorized
-            </button>
-          </div>
-        )}
-
-        {calendarError && (
-          <div className="settings-actions">
-            <button className="secondary-button" onClick={() => void onConnect()} disabled={connecting || !signedIn}>
-            <ExternalLink size={16} />
-              Authorize
             </button>
           </div>
         )}
