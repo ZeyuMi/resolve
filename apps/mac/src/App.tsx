@@ -1863,6 +1863,7 @@ export function App() {
         <TopBar
           tab={tab}
           feishuSettings={feishuSettings}
+          backendSettings={backendSettings}
         />
 
         <section className="workspace">
@@ -1988,10 +1989,12 @@ export function App() {
 
 function TopBar({
   tab,
-  feishuSettings
+  feishuSettings,
+  backendSettings
 }: {
   tab: Tab;
   feishuSettings: FeishuSettingsState;
+  backendSettings: BackendSettingsState;
 }) {
   const title = {
     todo: "Todo",
@@ -2007,7 +2010,7 @@ function TopBar({
         <h1>{title}</h1>
       </div>
       <div className="top-actions">
-        <SyncStatusBadge settings={feishuSettings} />
+        <SyncStatusBadge feishuSettings={feishuSettings} backendSettings={backendSettings} />
       </div>
     </header>
   );
@@ -2173,16 +2176,8 @@ function SyncPanel({
   feishuSettings: FeishuSettingsState;
   backendSettings: BackendSettingsState;
 }) {
-  const lastSyncedAt = backendSettings.lastSyncedAt ?? feishuSettings.lastSyncedAt;
-  const connected = backendSettings.feishuConnected || feishuSettings.status === "connected";
-  const status = connected
-    ? lastSyncedAt
-      ? `Synced ${relativeAgeLabel(lastSyncedAt)}`
-      : "Connected"
-    : "Not connected";
-  const signedIn = backendSettings.status === "connected" || backendSettings.feishuConnected;
-  const error = signedIn ? backendSettings.lastError ?? feishuSettings.lastError : undefined;
-  const accountStatus = signedIn ? "Signed in" : "Signed out";
+  const summary = calendarConnectionSummary(feishuSettings, backendSettings);
+  const accountStatus = summary.signedIn ? "Signed in" : "Signed out";
 
   return (
     <section className="sync-panel">
@@ -2191,9 +2186,9 @@ function SyncPanel({
         <span>Status</span>
       </div>
       <div className="sync-lines">
-        <span>Calendar: {status}</span>
+        <span>Calendar: {summary.panelLabel}</span>
         <span>Account: {accountStatus}</span>
-        {error && <span className="error-line">{error}</span>}
+        {summary.error && <span className="error-line">{summary.error}</span>}
       </div>
     </section>
   );
@@ -3163,7 +3158,7 @@ function SettingsView({
             <div className="eyebrow">Calendar</div>
             <h2>Calendar</h2>
           </div>
-          <SyncStatusBadge settings={settings} />
+          <SyncStatusBadge feishuSettings={settings} backendSettings={backendSettings} />
         </div>
 
         <div className="feishu-status-strip">
@@ -3191,7 +3186,7 @@ function SettingsView({
           </div>
         )}
 
-        {calendarError && <p className="settings-error">{calendarError}</p>}
+        {calendarError && <p className="settings-error">{friendlyCalendarError(calendarError)}</p>}
       </section>
 
     </div>
@@ -3644,15 +3639,68 @@ function StatusPill({ label, tone = "muted" }: { label: string; tone?: "success"
   return <span className={`status-pill ${tone}`}>{label}</span>;
 }
 
-function SyncStatusBadge({ settings }: { settings: FeishuSettingsState }) {
-  const label =
-    settings.status === "connected"
-      ? settings.lastSyncedAt
-        ? `Synced ${relativeAgeLabel(settings.lastSyncedAt)}`
-        : "Ready"
-      : settings.status.replace("_", " ");
-  const tone = settings.status === "connected" ? "success" : settings.status === "not_connected" ? "muted" : "warning";
-  return <StatusPill tone={tone} label={`Calendar ${label}`} />;
+function calendarConnectionSummary(feishuSettings: FeishuSettingsState, backendSettings: BackendSettingsState) {
+  const signedIn = backendSettings.status === "connected" || backendSettings.feishuConnected;
+  const connected = backendSettings.feishuConnected || feishuSettings.status === "connected";
+  const lastSyncedAt = backendSettings.lastSyncedAt ?? feishuSettings.lastSyncedAt;
+  const rawError = signedIn ? backendSettings.lastError ?? feishuSettings.lastError : undefined;
+  const friendlyError = friendlyCalendarError(rawError);
+  const needsAuthorization = Boolean(rawError && /attention|authorization|auth|token|permission/i.test(rawError));
+  const hasSyncWarning = connected && Boolean(rawError && !needsAuthorization);
+
+  if (connected) {
+    const syncedLabel = lastSyncedAt ? `Synced ${relativeAgeLabel(lastSyncedAt)}` : "Connected";
+    return {
+      signedIn,
+      connected,
+      tone: hasSyncWarning ? "warning" as const : "success" as const,
+      badgeLabel: hasSyncWarning ? "Calendar sync delayed" : `Calendar ${syncedLabel}`,
+      panelLabel: hasSyncWarning ? "Sync delayed" : syncedLabel,
+      error: friendlyError
+    };
+  }
+
+  if (signedIn) {
+    return {
+      signedIn,
+      connected,
+      tone: "warning" as const,
+      badgeLabel: "Calendar authorization missing",
+      panelLabel: "Needs authorization",
+      error: friendlyError || "Calendar authorization is not available on this device."
+    };
+  }
+
+  return {
+    signedIn,
+    connected,
+    tone: "muted" as const,
+    badgeLabel: "Calendar not connected",
+    panelLabel: "Not connected",
+    error: undefined
+  };
+}
+
+function friendlyCalendarError(error?: string) {
+  if (!error) return undefined;
+  if (/503|service unavailable|temporarily unavailable/i.test(error)) {
+    return "Calendar sync is temporarily unavailable.";
+  }
+  if (/attention|authorization|auth|token|permission/i.test(error)) {
+    return "Calendar authorization missing on backend.";
+  }
+  return error;
+}
+
+function SyncStatusBadge({
+  feishuSettings,
+  backendSettings
+}: {
+  feishuSettings: FeishuSettingsState;
+  backendSettings: BackendSettingsState;
+}) {
+  const summary = calendarConnectionSummary(feishuSettings, backendSettings);
+  return <StatusPill tone={summary.tone} label={summary.badgeLabel} />;
 }
 
 function EmptyState({ label }: { label: string }) {
