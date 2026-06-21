@@ -4,7 +4,6 @@ import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
@@ -78,7 +77,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -91,6 +89,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -854,59 +853,64 @@ private fun ResolveAndroidApp(
             (tab == Tab.Strategy && (openedStrategyThreadId != null || showStrategyDraft))
 
     ResolveTheme {
-        Scaffold(
-            containerColor = ResolveColors.Bg,
-            topBar = {
-                if (!isFullPageDetail) {
-                    TopHeader(
-                        title = tab.label,
-                        settings = state.feishuSettings,
-                        backend = state.backendSettings,
-                        isSyncing = isSyncing,
-                        compact = tab == Tab.Calendar,
-                        showSettings = false,
-                        onSettings = { tab = Tab.Settings }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(ResolveColors.Backdrop)
+        ) {
+            Scaffold(
+                containerColor = Color.Transparent,
+                topBar = {
+                    if (!isFullPageDetail) {
+                        TopHeader(
+                            title = tab.label,
+                            settings = state.feishuSettings,
+                            backend = state.backendSettings,
+                            isSyncing = isSyncing,
+                            compact = tab == Tab.Calendar,
+                            showSettings = false,
+                            onSettings = { tab = Tab.Settings }
+                        )
+                    }
+                },
+                bottomBar = {
+                    BottomTabs(
+                        tab = tab,
+                        onTab = {
+                            tab = it
+                            if (it == Tab.Strategy) openedStrategyThreadId = null
+                            if (it == Tab.Strategy) showStrategyDraft = false
+                            if (it == Tab.Todo) todoReturnStrategyThreadId = null
+                        }
                     )
-                }
-            },
-            bottomBar = {
-                BottomTabs(
-                    tab = tab,
-                    onTab = {
-                        tab = it
-                        if (it == Tab.Strategy) openedStrategyThreadId = null
-                        if (it == Tab.Strategy) showStrategyDraft = false
-                        if (it == Tab.Todo) todoReturnStrategyThreadId = null
-                    }
-                )
-            },
-            floatingActionButton = {
-                if (tab == Tab.Calendar && selectedCalendarEvent == null && editingCalendarEvent == null && !showCalendarDraft) {
-                    FloatingActionButton(
-                        onClick = {
-                            calendarDraft = CalendarDraft(date = selectedDate, time = LocalTime.of(9, 0))
-                            selectedCalendarEvent = null
-                            expandedCalendarDate = selectedDate
-                            showCalendarDraft = true
-                        },
-                        containerColor = ResolveColors.Accent,
-                        contentColor = Color.White,
-                        shape = CircleShape
-                    ) {
-                        Icon(Icons.Filled.Add, contentDescription = "Add event", modifier = Modifier.size(30.dp))
-                    }
-                } else if (tab == Tab.Strategy && openedStrategyThreadId == null && !showStrategyDraft) {
-                    FloatingActionButton(
-                        onClick = { showStrategyDraft = true },
-                        containerColor = Color(0xFF6857D9),
-                        contentColor = Color.White,
-                        shape = RoundedCornerShape(18.dp)
-                    ) {
-                        Icon(Icons.Filled.Add, contentDescription = "Add strategy", modifier = Modifier.size(28.dp))
+                },
+                floatingActionButton = {
+                    if (tab == Tab.Calendar && selectedCalendarEvent == null && editingCalendarEvent == null && !showCalendarDraft) {
+                        FloatingActionButton(
+                            onClick = {
+                                calendarDraft = CalendarDraft(date = selectedDate, time = LocalTime.of(9, 0))
+                                selectedCalendarEvent = null
+                                expandedCalendarDate = selectedDate
+                                showCalendarDraft = true
+                            },
+                            containerColor = ResolveColors.Accent,
+                            contentColor = Color.White,
+                            shape = CircleShape
+                        ) {
+                            Icon(Icons.Filled.Add, contentDescription = "Add event", modifier = Modifier.size(30.dp))
+                        }
+                    } else if (tab == Tab.Strategy && openedStrategyThreadId == null && !showStrategyDraft) {
+                        FloatingActionButton(
+                            onClick = { showStrategyDraft = true },
+                            containerColor = ResolveColors.Strategy,
+                            contentColor = Color.White,
+                            shape = RoundedCornerShape(18.dp)
+                        ) {
+                            Icon(Icons.Filled.Add, contentDescription = "Add strategy", modifier = Modifier.size(28.dp))
+                        }
                     }
                 }
-            }
-        ) { padding ->
+            ) { padding ->
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -1084,6 +1088,7 @@ private fun ResolveAndroidApp(
                 }
             }
         }
+        }
 
         pendingTodoArchive?.let { item ->
             ConfirmActionDialog(
@@ -1220,8 +1225,8 @@ private fun TopHeader(
 ) {
     TopAppBar(
         colors = TopAppBarDefaults.topAppBarColors(
-            containerColor = ResolveColors.Bg,
-            scrolledContainerColor = ResolveColors.Surface,
+            containerColor = Color.Transparent,
+            scrolledContainerColor = ResolveColors.GlassStrong,
             titleContentColor = ResolveColors.Text,
             actionIconContentColor = ResolveColors.Secondary,
             navigationIconContentColor = ResolveColors.Accent
@@ -1255,9 +1260,11 @@ private fun TopHeader(
         },
         actions = {
             Surface(
-                color = ResolveColors.SurfaceHigh,
+                color = ResolveColors.GlassStrong,
                 shape = RoundedCornerShape(999.dp),
-                tonalElevation = 1.dp
+                tonalElevation = 0.dp,
+                shadowElevation = 1.dp,
+                modifier = Modifier.border(1.dp, ResolveColors.GlassStroke, RoundedCornerShape(999.dp))
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = if (compact) 8.dp else 10.dp, vertical = 6.dp),
@@ -1286,11 +1293,15 @@ private fun TopHeader(
 
 @Composable
 private fun CaptureBox(value: String, onChange: (String) -> Unit, onSave: () -> Unit) {
+    val shape = RoundedCornerShape(28.dp)
     Surface(
-        color = ResolveColors.SurfaceHigh,
-        shape = RoundedCornerShape(28.dp),
-        tonalElevation = 1.dp,
-        modifier = Modifier.fillMaxWidth()
+        color = ResolveColors.GlassStrong,
+        shape = shape,
+        tonalElevation = 0.dp,
+        shadowElevation = 2.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, ResolveColors.GlassStroke, shape)
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -1327,7 +1338,7 @@ private fun CaptureBox(value: String, onChange: (String) -> Unit, onSave: () -> 
                 }
             }
             Surface(
-                color = if (value.isBlank()) ResolveColors.Surface else ResolveColors.Accent,
+                color = if (value.isBlank()) ResolveColors.GlassControl else ResolveColors.Accent,
                 shape = CircleShape,
                 onClick = { if (value.isNotBlank()) onSave() },
                 tonalElevation = if (value.isBlank()) 0.dp else 2.dp,
@@ -1361,7 +1372,8 @@ private fun CompactInputField(
         modifier = modifier
             .heightIn(min = minHeight)
             .clip(shape)
-            .border(1.dp, ResolveColors.Line, shape)
+            .background(ResolveColors.GlassControl)
+            .border(1.dp, ResolveColors.GlassStrokeSoft, shape)
             .padding(horizontal = 11.dp, vertical = if (singleLine) 8.dp else 10.dp),
         contentAlignment = if (singleLine) Alignment.CenterStart else Alignment.TopStart
     ) {
@@ -1503,6 +1515,7 @@ private fun TodoRow(
     val isChild = depth > 0
     val scheduledAt = calendarEvent?.startsAt ?: item.dueAt
     val contextLine = todoContextLine(item, thread, calendarEvent, subtaskCount)
+    val rowShape = RoundedCornerShape(if (isChild) 14.dp else 18.dp)
     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         if (isChild) {
             Spacer(Modifier.width(((depth - 1).coerceAtLeast(0) * 14).dp))
@@ -1532,15 +1545,16 @@ private fun TodoRow(
                 .combinedClickable(
                     onClick = onSelect,
                     onLongClick = onArchive
-                ),
-            shape = RoundedCornerShape(if (isChild) 14.dp else 18.dp),
+                )
+                .border(1.dp, if (isChild) ResolveColors.GlassStrokeSoft else ResolveColors.GlassStroke, rowShape),
+            shape = rowShape,
             color = when {
-                item.status == ItemStatus.Archived -> ResolveColors.SurfaceHigh
-                isChild -> ResolveColors.SurfaceHigh
-                else -> ResolveColors.Surface
+                item.status == ItemStatus.Archived -> ResolveColors.GlassMuted
+                isChild -> ResolveColors.GlassSoft
+                else -> ResolveColors.Glass
             },
             tonalElevation = if (isChild) 0.dp else 1.dp,
-            shadowElevation = 0.dp
+            shadowElevation = if (isChild) 0.dp else 1.dp
         ) {
             Row(Modifier.padding(horizontal = if (isChild) 8.dp else 10.dp, vertical = if (isChild) 5.dp else 7.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onToggleDone, modifier = Modifier.size(if (isChild) 32.dp else 36.dp)) {
@@ -1597,11 +1611,14 @@ private fun ArchivedTodoRow(
     onRestore: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val shape = RoundedCornerShape(16.dp)
     Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = ResolveColors.SurfaceHigh,
+        shape = shape,
+        color = ResolveColors.GlassMuted,
         tonalElevation = 0.dp,
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, ResolveColors.GlassStrokeSoft, shape)
     ) {
         Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -3072,8 +3089,8 @@ private fun TodoDetailPage(
 @Composable
 private fun BottomTabs(tab: Tab, onTab: (Tab) -> Unit) {
     NavigationBar(
-        containerColor = ResolveColors.Surface,
-        tonalElevation = 3.dp
+        containerColor = ResolveColors.NavBar,
+        tonalElevation = 0.dp
     ) {
         listOf(Tab.Todo, Tab.Calendar, Tab.Strategy, Tab.Settings).forEach { item ->
             val selected = tab == item
@@ -3099,7 +3116,7 @@ private fun BottomTabs(tab: Tab, onTab: (Tab) -> Unit) {
                 colors = NavigationBarItemDefaults.colors(
                     selectedIconColor = ResolveColors.Accent,
                     selectedTextColor = ResolveColors.Text,
-                    indicatorColor = ResolveColors.InkSoft,
+                    indicatorColor = ResolveColors.GlassControl,
                     unselectedIconColor = ResolveColors.Secondary,
                     unselectedTextColor = ResolveColors.Secondary
                 )
@@ -3124,7 +3141,7 @@ private fun TodoDisclosureRow(title: String, count: Int, open: Boolean, onClick:
             Icon(if (open) Icons.Filled.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = ResolveColors.Muted, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(5.dp))
             Text(title, color = ResolveColors.Secondary, fontSize = ResolveType.BodySmall, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
-            Surface(color = ResolveColors.Pill, shape = RoundedCornerShape(999.dp)) {
+            Surface(color = ResolveColors.GlassControl, shape = RoundedCornerShape(999.dp)) {
                 Text(count.toString(), color = ResolveColors.Muted, fontSize = ResolveType.Pill, modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp))
             }
         }
@@ -3140,7 +3157,7 @@ private fun ArchiveDisclosureRow(count: Int, open: Boolean, onClick: () -> Unit)
         horizontalArrangement = Arrangement.End
     ) {
         Surface(
-            color = if (open) Color(0xFFF5F6F9) else Color.Transparent,
+            color = if (open) ResolveColors.GlassControl else Color.Transparent,
             shape = RoundedCornerShape(999.dp),
             modifier = Modifier.clickable(onClick = onClick)
         ) {
@@ -3163,10 +3180,10 @@ private fun ArchiveDisclosureRow(count: Int, open: Boolean, onClick: () -> Unit)
 @Composable
 private fun MetaPill(label: String, tone: String = "muted") {
     val background = when (tone) {
-        "accent" -> Color(0xFFEAF2FF)
-        "danger" -> Color(0xFFFFECEA)
+        "accent" -> ResolveColors.AccentGlass
+        "danger" -> ResolveColors.DangerGlass
         "soft" -> ResolveColors.InkSoft
-        else -> ResolveColors.Pill
+        else -> ResolveColors.GlassControl
     }
     val content = when (tone) {
         "accent" -> ResolveColors.Accent
@@ -3189,7 +3206,14 @@ private fun MetaPill(label: String, tone: String = "muted") {
 
 @Composable
 private fun InlineNotice(message: String, onDismiss: () -> Unit) {
-    Surface(color = Color(0xFFFFF6E8), shape = RoundedCornerShape(13.dp), modifier = Modifier.fillMaxWidth()) {
+    val shape = RoundedCornerShape(13.dp)
+    Surface(
+        color = ResolveColors.WarningGlass,
+        shape = shape,
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, ResolveColors.WarningStroke, shape)
+    ) {
         Row(
             modifier = Modifier.padding(start = 10.dp, top = 7.dp, end = 6.dp, bottom = 7.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -3393,36 +3417,21 @@ private fun advanceRecurringCursor(cursor: ZonedDateTime, freq: String, interval
 
 @Composable
 private fun ResolveTheme(content: @Composable () -> Unit) {
-    val context = LocalContext.current
-    val colorScheme = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        dynamicLightColorScheme(context).copy(
-            primary = ResolveColors.Accent,
-            secondary = ResolveColors.Accent,
-            background = ResolveColors.Bg,
-            surface = ResolveColors.Surface,
-            surfaceVariant = ResolveColors.SurfaceHigh,
-            onSurface = ResolveColors.Text,
-            onSurfaceVariant = ResolveColors.Secondary,
-            outline = ResolveColors.Line,
-            error = ResolveColors.Danger
-        )
-    } else {
-        lightColorScheme(
-            primary = ResolveColors.Accent,
-            onPrimary = Color.White,
-            primaryContainer = ResolveColors.InkSoft,
-            onPrimaryContainer = ResolveColors.Text,
-            secondary = ResolveColors.Accent,
-            background = ResolveColors.Bg,
-            onBackground = ResolveColors.Text,
-            surface = ResolveColors.Surface,
-            onSurface = ResolveColors.Text,
-            surfaceVariant = ResolveColors.SurfaceHigh,
-            onSurfaceVariant = ResolveColors.Secondary,
-            outline = ResolveColors.Line,
-            error = ResolveColors.Danger
-        )
-    }
+    val colorScheme = lightColorScheme(
+        primary = ResolveColors.Accent,
+        onPrimary = Color.White,
+        primaryContainer = ResolveColors.AccentGlass,
+        onPrimaryContainer = ResolveColors.Text,
+        secondary = ResolveColors.Accent,
+        background = ResolveColors.Bg,
+        onBackground = ResolveColors.Text,
+        surface = ResolveColors.Surface,
+        onSurface = ResolveColors.Text,
+        surfaceVariant = ResolveColors.SurfaceHigh,
+        onSurfaceVariant = ResolveColors.Secondary,
+        outline = ResolveColors.Line,
+        error = ResolveColors.Danger
+    )
     MaterialTheme(
         colorScheme = colorScheme,
         content = content
@@ -3559,16 +3568,36 @@ private fun relativeTime(instant: Instant): String {
 }
 
 private object ResolveColors {
-    val Bg = Color(0xFFF8FAFE)
+    val Bg = Color(0xFFF6F8FE)
+    val Backdrop = Brush.linearGradient(
+        listOf(
+            Color(0xFFF9FBFF),
+            Color(0xFFEFF5FF),
+            Color(0xFFFBFDFF)
+        )
+    )
     val Surface = Color(0xFFFFFFFF)
-    val SurfaceHigh = Color(0xFFF0F4FA)
-    val Pill = Color(0xFFECEFF6)
-    val InkSoft = Color(0xFFE7F0FF)
-    val Line = Color(0xFFDDE3EE)
+    val SurfaceHigh = Color(0xFFF5F8FE)
+    val Glass = Color(0xFFFCFDFF)
+    val GlassStrong = Color(0xFFFFFFFF)
+    val GlassSoft = Color(0xFFF7FAFF)
+    val GlassMuted = Color(0xFFF3F6FC)
+    val GlassControl = Color(0xFFF6FAFF)
+    val GlassStroke = Color(0xD9FFFFFF)
+    val GlassStrokeSoft = Color(0x92FFFFFF)
+    val NavBar = Color(0xFFFCFDFF)
+    val Pill = Color(0xFFF6FAFF)
+    val InkSoft = Color(0xFFEAF2FF)
+    val AccentGlass = Color(0xDDEAF2FF)
+    val DangerGlass = Color(0xDFFFF0EF)
+    val WarningGlass = Color(0xE8FFF7E8)
+    val WarningStroke = Color(0x66E6B45B)
+    val Line = Color(0x2E516178)
     val Text = Color(0xFF1C2430)
     val Secondary = Color(0xFF596274)
     val Muted = Color(0xFF929AAA)
     val Accent = Color(0xFF2F66DD)
+    val Strategy = Color(0xFF6857D9)
     val Danger = Color(0xFFC7362F)
 }
 
