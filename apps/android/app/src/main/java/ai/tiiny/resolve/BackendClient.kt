@@ -1,6 +1,7 @@
 package ai.tiiny.resolve
 
 import org.json.JSONObject
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.time.Instant
@@ -23,6 +24,7 @@ data class BackendOAuthStart(
 
 class BackendApiException(
     val code: String?,
+    val httpStatus: Int?,
     override val message: String
 ) : IllegalStateException(message)
 
@@ -33,6 +35,19 @@ fun Throwable.needsCalendarAuthorization(): Boolean {
         text.contains("connect calendar again") ||
         text.contains("missing feishu refresh token") ||
         text.contains("missing feishu token set")
+}
+
+fun Throwable.isTransientBackendError(): Boolean {
+    if (this is IOException) return true
+    if (this is BackendApiException) {
+        val status = httpStatus
+        return status == 429 || status in 500..599
+    }
+    val text = message.orEmpty().lowercase()
+    return text.contains("http 503") ||
+        text.contains("temporarily unavailable") ||
+        text.contains("timed out") ||
+        text.contains("timeout")
 }
 
 class BackendClient(
@@ -322,16 +337,26 @@ private fun mapServerCalendarEvent(json: JSONObject): CalendarEvent {
 }
 
 private fun postJson(url: String, body: JSONObject, headers: Map<String, String>): JSONObject {
-    val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-        requestMethod = "POST"
-        connectTimeout = 15_000
-        readTimeout = 30_000
-        doInput = true
-        doOutput = true
-        headers.forEach { (key, value) -> setRequestProperty(key, value) }
-        outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+    var lastError: Throwable? = null
+    repeat(3) { attempt ->
+        try {
+            val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15_000
+                readTimeout = 30_000
+                doInput = true
+                doOutput = true
+                headers.forEach { (key, value) -> setRequestProperty(key, value) }
+                outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+            }
+            return connection.readJsonObject()
+        } catch (error: Throwable) {
+            lastError = error
+            if (!error.isTransientBackendError() || attempt == 2) throw error
+            Thread.sleep(350L * (attempt + 1) * (attempt + 1))
+        }
     }
-    return connection.readJsonObject()
+    throw lastError ?: IllegalStateException("Request failed.")
 }
 
 private fun parseSession(json: JSONObject): BackendSession {
@@ -363,7 +388,7 @@ private fun HttpURLConnection.readJsonObject(): JSONObject {
             .ifBlank { json.optString("error_description") }
             .ifBlank { json.optString("error") }
             .ifBlank { "HTTP $responseCode" }
-        throw BackendApiException(code, message)
+        throw BackendApiException(code, responseCode, message)
     }
     return json
 }

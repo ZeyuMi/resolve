@@ -4196,3 +4196,125 @@ textarea:disabled {
     padding: 0;
   }
 }
+
+/* macOS native polish pass */
+.brand-mark {
+  width: 31px;
+  height: 31px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: none;
+}
+
+.brand-mark svg {
+  width: 31px;
+  height: 31px;
+}
+
+.focus-sidebar {
+  background: rgba(236, 240, 247, 0.78);
+  border-right-color: rgba(60, 60, 67, 0.1);
+  backdrop-filter: blur(22px);
+}
+
+.sidebar-brand {
+  border-bottom-color: rgba(60, 60, 67, 0.08);
+}
+
+.workspace {
+  padding: 16px 18px 18px;
+}
+
+.todo-list-pane,
+.todo-detail-panel,
+.section-card,
+.thread-detail,
+.feishu-connect-card {
+  border-color: rgba(60, 60, 67, 0.08);
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: none;
+  backdrop-filter: blur(18px);
+}
+
+.item-card,
+.strategy-list-card,
+.calendar-event-card {
+  border-color: rgba(60, 60, 67, 0.09);
+  box-shadow: none;
+}
+
+.section-card-head,
+.section-title-row {
+  background: transparent;
+  border-bottom-color: rgba(60, 60, 67, 0.07);
+}
+
+.feishu-connect-card {
+  max-width: 720px;
+  border-radius: 15px;
+  padding: 14px;
+}
+
+.feishu-connect-hero {
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.feishu-connect-icon {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(47, 100, 217, 0.09);
+}
+
+.feishu-connect-copy h2 {
+  font-size: 18px;
+  letter-spacing: 0;
+}
+
+.account-summary-row {
+  min-height: 42px;
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-radius: 11px;
+  background: rgba(247, 248, 251, 0.76);
+  padding: 8px 10px 8px 12px;
+}
+
+.account-summary-row div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.account-summary-row span {
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1.1;
+}
+
+.account-summary-row strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.2;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.feishu-status-strip {
+  grid-template-columns: minmax(0, 1fr);
+  margin-top: 12px;
+}
+
+.feishu-status-strip > div {
+  border: 0;
+  background: rgba(247, 248, 251, 0.72);
+}

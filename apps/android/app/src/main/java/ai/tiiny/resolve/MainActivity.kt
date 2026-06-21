@@ -321,11 +321,29 @@ private fun ResolveAndroidApp(
                     )
                     notice = null
                 } else {
-                    if (hasBackendSession) {
-                        patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
+                    if (error.isTransientBackendError()) {
+                        if (hasBackendSession) {
+                            patchBackend(
+                                state.backendSettings.copy(
+                                    status = BackendStatus.Connected,
+                                    lastError = "Calendar is retrying in the background"
+                                )
+                            )
+                        }
+                        patchFeishu(
+                            state.feishuSettings.copy(
+                                status = FeishuStatus.Connected,
+                                lastError = "Calendar is retrying in the background"
+                            )
+                        )
+                        notice = null
+                    } else {
+                        if (hasBackendSession) {
+                            patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
+                        }
+                        patchFeishu(state.feishuSettings.copy(status = FeishuStatus.PermissionError, lastError = error.message))
+                        notice = "Calendar sync failed${error.message?.let { ": $it" }.orEmpty()}"
                     }
-                    patchFeishu(state.feishuSettings.copy(status = FeishuStatus.PermissionError, lastError = error.message))
-                    notice = "Calendar sync failed${error.message?.let { ": $it" }.orEmpty()}"
                 }
             } finally {
                 isSyncing = false
@@ -382,8 +400,18 @@ private fun ResolveAndroidApp(
                         )
                         notice = null
                     } else {
-                        patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
-                        notice = "Saved locally; sync failed${error.message?.let { ": $it" }.orEmpty()}"
+                        if (error.isTransientBackendError()) {
+                            patchBackend(
+                                state.backendSettings.copy(
+                                    status = BackendStatus.Connected,
+                                    lastError = "Calendar is retrying in the background"
+                                )
+                            )
+                            notice = null
+                        } else {
+                            patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
+                            notice = "Saved locally; sync failed${error.message?.let { ": $it" }.orEmpty()}"
+                        }
                     }
                 }
             }
@@ -445,8 +473,18 @@ private fun ResolveAndroidApp(
                         )
                         notice = null
                     } else {
-                        notice = "Saved locally; Feishu update failed${error.message?.let { ": $it" }.orEmpty()}"
-                        patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
+                        if (error.isTransientBackendError()) {
+                            patchBackend(
+                                state.backendSettings.copy(
+                                    status = BackendStatus.Connected,
+                                    lastError = "Calendar is retrying in the background"
+                                )
+                            )
+                            notice = null
+                        } else {
+                            notice = "Saved locally; Feishu update failed${error.message?.let { ": $it" }.orEmpty()}"
+                            patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
+                        }
                     }
                 }
             }
@@ -507,13 +545,26 @@ private fun ResolveAndroidApp(
                         )
                     )
                 } else {
-                    persist(
-                        state.copy(
-                            calendarEvents = replaceCalendarEvent(state.calendarEvents, hiddenEvent, event.copy(status = "error")),
-                            backendSettings = state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message),
-                            feishuSettings = state.feishuSettings.copy(lastError = error.message)
+                    if (error.isTransientBackendError()) {
+                        persist(
+                            state.copy(
+                                calendarEvents = replaceCalendarEvent(state.calendarEvents, hiddenEvent, hiddenEvent),
+                                backendSettings = state.backendSettings.copy(
+                                    status = BackendStatus.Connected,
+                                    lastError = "Calendar is retrying in the background"
+                                ),
+                                feishuSettings = state.feishuSettings.copy(lastError = "Calendar is retrying in the background")
+                            )
                         )
-                    )
+                    } else {
+                        persist(
+                            state.copy(
+                                calendarEvents = replaceCalendarEvent(state.calendarEvents, hiddenEvent, event.copy(status = "error")),
+                                backendSettings = state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message),
+                                feishuSettings = state.feishuSettings.copy(lastError = error.message)
+                            )
+                        )
+                    }
                 }
             }
         }
@@ -714,8 +765,18 @@ private fun ResolveAndroidApp(
                             )
                             notice = null
                         } else {
-                            patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
-                            notice = "Calendar sync failed${error.message?.let { ": $it" }.orEmpty()}"
+                            if (error.isTransientBackendError()) {
+                                patchBackend(
+                                    state.backendSettings.copy(
+                                        status = BackendStatus.Connected,
+                                        lastError = "Calendar is retrying in the background"
+                                    )
+                                )
+                                notice = null
+                            } else {
+                                patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
+                                notice = "Calendar sync failed${error.message?.let { ": $it" }.orEmpty()}"
+                            }
                         }
                     } finally {
                         isSyncing = false
@@ -1050,6 +1111,7 @@ private fun ResolveAndroidApp(
                 onDismiss = { pendingTodoArchiveClear = false },
                 onConfirm = {
                     clearArchivedItems()
+                    showArchived = false
                     pendingTodoArchiveClear = false
                 }
             )
@@ -1328,6 +1390,12 @@ private fun TodoScreen(
     val archived = tasks.filter { it.status == ItemStatus.Archived && (it.parentItemId == null || it.parentItemId !in archivedIds) }
     val activeTree = flattenTodoTree(active, tasks.filter { it.status == ItemStatus.Active })
     val completedTree = flattenTodoTree(completed, tasks.filter { it.status == ItemStatus.Done })
+    val calendarByTodo = state.calendarEvents
+        .filter { calendarEventVisible(it) && it.sourceItemId != null }
+        .groupBy { it.sourceItemId.orEmpty() }
+        .mapValues { (_, events) ->
+            events.sortedWith(compareBy<CalendarEvent> { it.startsAt.isBefore(Instant.now()) }.thenBy { it.startsAt }).first()
+        }
     LazyColumn(verticalArrangement = Arrangement.spacedBy(3.dp)) {
         items(activeTree, key = { it.item.id }) { entry ->
             val item = entry.item
@@ -1335,6 +1403,7 @@ private fun TodoScreen(
                 item = item,
                 subtaskCount = tasks.count { it.parentItemId == item.id },
                 thread = state.threads.find { it.id == item.strategyThreadId },
+                calendarEvent = calendarByTodo[item.id],
                 depth = entry.depth,
                 onToggleDone = { onToggleDone(item) },
                 onArchive = { onArchive(item) },
@@ -1359,6 +1428,7 @@ private fun TodoScreen(
                     item = item,
                     subtaskCount = tasks.count { it.parentItemId == item.id },
                     thread = state.threads.find { it.id == item.strategyThreadId },
+                    calendarEvent = calendarByTodo[item.id],
                     depth = entry.depth,
                     onToggleDone = { onRestore(item) },
                     onArchive = { onArchive(item) },
@@ -1374,9 +1444,16 @@ private fun TodoScreen(
         }
         if (showArchived) {
             item {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = onShowArchived) {
+                        Text("Hide", color = ResolveColors.Muted, fontSize = ResolveType.Caption)
+                    }
                     TextButton(onClick = onClearArchived) {
-                        Text("Clear archive", color = ResolveColors.Danger, fontSize = ResolveType.Caption)
+                        Text("Clear", color = ResolveColors.Danger, fontSize = ResolveType.Caption)
                     }
                 }
             }
@@ -1398,12 +1475,15 @@ private fun TodoRow(
     item: ResolveItem,
     subtaskCount: Int,
     thread: StrategyThread?,
+    calendarEvent: CalendarEvent?,
     depth: Int = 0,
     onToggleDone: () -> Unit,
     onArchive: () -> Unit,
     onSelect: () -> Unit
 ) {
     val isChild = depth > 0
+    val scheduledAt = calendarEvent?.startsAt ?: item.dueAt
+    val contextLine = todoContextLine(item, thread, calendarEvent, subtaskCount)
     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         if (isChild) {
             Spacer(Modifier.width(((depth - 1).coerceAtLeast(0) * 14).dp))
@@ -1464,12 +1544,26 @@ private fun TodoRow(
                         overflow = TextOverflow.Ellipsis,
                         textDecoration = if (item.status == ItemStatus.Done) TextDecoration.LineThrough else TextDecoration.None
                     )
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
-                        item.dueAt?.let { MetaPill(dateLabel(it), tone = "accent") }
-                        thread?.let { MetaPill(it.title) }
-                        if (subtaskCount > 0) MetaPill("$subtaskCount subtasks", tone = "soft")
-                        if (item.notes.isNotBlank()) MetaPill("Comment")
-                        if (item.status == ItemStatus.Archived) MetaPill("Archived")
+                    if (scheduledAt != null || item.status == ItemStatus.Archived) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                            scheduledAt?.let {
+                                MetaPill(
+                                    if (calendarEvent != null) "Calendar ${dateLabel(it)}" else dateLabel(it),
+                                    tone = "accent"
+                                )
+                            }
+                            if (item.status == ItemStatus.Archived) MetaPill("Archived")
+                        }
+                    }
+                    if (contextLine.isNotBlank()) {
+                        Text(
+                            contextLine,
+                            color = ResolveColors.Muted,
+                            fontSize = ResolveType.Caption,
+                            lineHeight = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
             }
@@ -2621,6 +2715,7 @@ private fun StrategyScreen(
                 item = item,
                 subtaskCount = allTasks.count { it.parentItemId == item.id },
                 thread = null,
+                calendarEvent = null,
                 depth = entry.depth,
                 onToggleDone = { onToggleDone(item) },
                 onArchive = { onArchiveTodo(item) },
@@ -3330,6 +3425,30 @@ private fun calendarStatusLabel(feishu: FeishuSettings, backend: BackendSettings
 
 private fun dateLabel(instant: Instant): String =
     instant.atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("M月d日 HH:mm"))
+
+private fun todoContextLine(
+    item: ResolveItem,
+    thread: StrategyThread?,
+    calendarEvent: CalendarEvent?,
+    subtaskCount: Int
+): String {
+    val parts = mutableListOf<String>()
+    parts += "Added ${relativeTime(item.createdAt)}"
+    thread?.title?.takeIf { it.isNotBlank() }?.let { parts += it }
+    val note = briefContext(item.notes).ifBlank { briefContext(calendarEvent?.description.orEmpty()) }
+    if (note.isNotBlank()) parts += note
+    if (subtaskCount > 0) parts += "$subtaskCount subtasks"
+    return parts.joinToString(" · ")
+}
+
+private fun briefContext(text: String): String {
+    val firstLine = text
+        .lineSequence()
+        .map { it.trim() }
+        .firstOrNull { it.isNotBlank() }
+        .orEmpty()
+    return if (firstLine.length > 34) "${firstLine.take(34).trimEnd()}..." else firstLine
+}
 
 private fun calendarEventDateTimeLabel(event: CalendarEvent): String {
     val startsAt = event.startsAt.atZone(ZoneId.systemDefault())

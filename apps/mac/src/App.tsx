@@ -2017,15 +2017,14 @@ function ResolveMark() {
   return (
     <div className="brand-mark" aria-hidden="true">
       <svg viewBox="0 0 32 32" role="img">
-        <circle cx="16" cy="16" r="10.6" fill="#fff" />
-        <circle cx="16" cy="16" r="9.1" fill="none" stroke="#2D5BE3" strokeWidth="3.2" />
+        <circle cx="16" cy="16" r="14" fill="#2F66DD" />
         <path
-          d="M10.2 16.1l4 4 7.6-8.3"
+          d="M9.4 16.3l4.4 4.3 8.8-9.5"
           fill="none"
-          stroke="#2D5BE3"
+          stroke="#fff"
           strokeLinecap="round"
           strokeLinejoin="round"
-          strokeWidth="3.45"
+          strokeWidth="3.25"
         />
       </svg>
     </div>
@@ -3103,43 +3102,54 @@ function SettingsView({
           <StatusPill tone={signedIn ? "success" : "muted"} label={signedIn ? "signed in" : "signed out"} />
         </div>
 
-        <div className="settings-grid advanced-settings-grid">
-          <SettingsRow label="Email">
-            <input
-              value={backendSettings.email}
-              onChange={(event) => onBackendChange({ ...backendSettings, email: event.target.value.trim() })}
-              placeholder="you@example.com"
-              autoComplete="email"
-            />
-          </SettingsRow>
-          <SettingsRow label="Password">
-            <input
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              type="password"
-              placeholder={signedIn ? "Only needed to sign in again" : "Password"}
-              autoComplete="current-password"
-            />
-          </SettingsRow>
-        </div>
+        {signedIn ? (
+          <div className="account-summary-row">
+            <div>
+              <span>Signed in as</span>
+              <strong>{backendSettings.email || "Resolve account"}</strong>
+            </div>
+            <button className="ghost-button" onClick={onBackendSignOut} disabled={connecting}>
+              <X size={16} />
+              Sign out
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="settings-grid advanced-settings-grid">
+              <SettingsRow label="Email">
+                <input
+                  value={backendSettings.email}
+                  onChange={(event) => onBackendChange({ ...backendSettings, email: event.target.value.trim() })}
+                  placeholder="you@example.com"
+                  autoComplete="email"
+                />
+              </SettingsRow>
+              <SettingsRow label="Password">
+                <input
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  type="password"
+                  placeholder="Password"
+                  autoComplete="current-password"
+                />
+              </SettingsRow>
+            </div>
 
-        <div className="settings-actions">
-          <button
-            className="primary-button"
-            onClick={() => {
-              void onBackendSignIn(password);
-              setPassword("");
-            }}
-            disabled={connecting || !backendSettings.email || !password}
-          >
-            <KeyRound size={16} />
-            {signedIn ? "Sign in again" : "Sign in"}
-          </button>
-          <button className="ghost-button" onClick={onBackendSignOut} disabled={!signedIn || connecting}>
-            <X size={16} />
-            Sign out
-          </button>
-        </div>
+            <div className="settings-actions">
+              <button
+                className="primary-button"
+                onClick={() => {
+                  void onBackendSignIn(password);
+                  setPassword("");
+                }}
+                disabled={connecting || !backendSettings.email || !password}
+              >
+                <KeyRound size={16} />
+                Sign in
+              </button>
+            </div>
+          </>
+        )}
         {signedIn && backendSettings.lastError && <p className="settings-error">{backendSettings.lastError}</p>}
       </section>
 
