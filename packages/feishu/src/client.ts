@@ -266,6 +266,7 @@ function mapEvent(calendarId: string, value: unknown): FeishuEvent {
     title: typeof record.summary === "string" ? record.summary : undefined,
     description: typeof record.description === "string" ? record.description : undefined,
     location: typeof record.location === "string" ? record.location : readLocation(record.location),
+    meetingUrl: readMeetingUrl(record),
     startsAt: fromFeishuTime(start) ?? new Date().toISOString(),
     endsAt: fromFeishuTime(end),
     isAllDay: start.date != null,
@@ -291,6 +292,50 @@ function readFeishuPermission(record: Record<string, unknown>, ...keys: string[]
 function readLocation(value: unknown) {
   const record = asRecord(value);
   return typeof record.name === "string" ? record.name : undefined;
+}
+
+function readMeetingUrl(value: unknown) {
+  return findMeetingUrl(value, 0, false);
+}
+
+function findMeetingUrl(value: unknown, depth: number, trustedContext: boolean): string | undefined {
+  if (depth > 6 || value == null) return undefined;
+  if (typeof value === "string") {
+    const url = value.startsWith("http") ? value : firstUrl(value);
+    const cleanUrl = url?.replace(/[.,;:]+$/, "");
+    return cleanUrl && (trustedContext || looksLikeMeetingUrl(cleanUrl)) ? cleanUrl : undefined;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findMeetingUrl(item, depth + 1, trustedContext);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    for (const key of Object.keys(record).sort(meetingKeySort)) {
+      const isTrusted = trustedContext || meetingKeyPattern.test(key);
+      const found = findMeetingUrl(record[key], depth + 1, isTrusted);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
+const meetingKeyPattern = /meeting|vchat|vc|conference|url|link|join|video|online/i;
+
+function meetingKeySort(left: string, right: string) {
+  const score = (key: string) => meetingKeyPattern.test(key) ? 0 : 1;
+  return score(left) - score(right);
+}
+
+function firstUrl(value: string) {
+  return value.match(/https?:\/\/[^\s<>"')，。；、]+/i)?.[0];
+}
+
+function looksLikeMeetingUrl(value: string) {
+  return /https?:\/\//i.test(value) && /(feishu|larksuite|vc|videochat|meeting|meet|zoom|teams|tencent|voov|google)/i.test(value);
 }
 
 function fromFeishuTime(value: Record<string, unknown>) {

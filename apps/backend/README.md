@@ -41,6 +41,11 @@ Supported actions on `feishu-connector`:
   authenticated app.
 - `disconnect`: remove the server token set.
 
+In production, Feishu App ID / App Secret should live in Supabase secrets only.
+Apps should call `start_oauth` for one-time user authorization, then read
+calendar rows with `list_events`; routine refresh is handled by the scheduled
+`feishu-sync-cron` job.
+
 OAuth callback:
 
 ```text

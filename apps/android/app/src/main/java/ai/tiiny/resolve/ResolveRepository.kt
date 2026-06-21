@@ -10,7 +10,13 @@ class ResolveRepository(context: Context) {
 
     fun load(): ResolveState {
         val raw = prefs.getString("state_json", null) ?: return sampleResolveState().also { save(it) }
-        return runCatching { decodeState(JSONObject(raw)) }.getOrElse { sampleResolveState().also { save(it) } }
+        return runCatching {
+            decodeState(JSONObject(raw)).let { state ->
+                val normalized = state.copy(calendarEvents = normalizeCalendarEvents(state.calendarEvents))
+                if (normalized.calendarEvents.size != state.calendarEvents.size) save(normalized)
+                normalized
+            }
+        }.getOrElse { sampleResolveState().also { save(it) } }
     }
 
     fun save(state: ResolveState) {
@@ -79,6 +85,7 @@ class ResolveRepository(context: Context) {
         .put("title", event.title)
         .put("description", event.description)
         .putOpt("recurrence", event.recurrence)
+        .putOpt("meetingUrl", event.meetingUrl)
         .put("startsAt", event.startsAt.toString())
         .putOpt("endsAt", event.endsAt?.toString())
         .putOpt("externalCalendarId", event.externalCalendarId)
@@ -88,22 +95,26 @@ class ResolveRepository(context: Context) {
         .put("canEdit", event.canEdit)
         .put("canDelete", event.canDelete)
 
-    private fun decodeCalendarEvent(json: JSONObject) = CalendarEvent(
-        id = json.optString("id"),
-        provider = json.optString("provider", "local"),
-        status = json.optString("status", "local"),
-        title = json.optString("title"),
-        description = json.optString("description"),
-        recurrence = json.optNullableString("recurrence"),
-        startsAt = instantOrNow(json.optString("startsAt")),
-        endsAt = json.optNullableString("endsAt")?.let(::instantOrNull),
-        externalCalendarId = json.optNullableString("externalCalendarId"),
-        externalEventId = json.optNullableString("externalEventId"),
-        sourceItemId = json.optNullableString("sourceItemId"),
-        strategyThreadId = json.optNullableString("strategyThreadId"),
-        canEdit = json.optBoolean("canEdit", true),
-        canDelete = json.optBoolean("canDelete", true)
-    )
+    private fun decodeCalendarEvent(json: JSONObject): CalendarEvent {
+        val description = json.optString("description")
+        return CalendarEvent(
+            id = json.optString("id"),
+            provider = json.optString("provider", "local"),
+            status = json.optString("status", "local"),
+            title = json.optString("title"),
+            description = description,
+            recurrence = json.optNullableString("recurrence"),
+            meetingUrl = json.optNullableString("meetingUrl") ?: extractMeetingUrlFromText(description),
+            startsAt = instantOrNow(json.optString("startsAt")),
+            endsAt = json.optNullableString("endsAt")?.let(::instantOrNull),
+            externalCalendarId = json.optNullableString("externalCalendarId"),
+            externalEventId = json.optNullableString("externalEventId"),
+            sourceItemId = json.optNullableString("sourceItemId"),
+            strategyThreadId = json.optNullableString("strategyThreadId"),
+            canEdit = json.optBoolean("canEdit", true),
+            canDelete = json.optBoolean("canDelete", true)
+        )
+    }
 
     private fun encodeFeishuSettings(settings: FeishuSettings) = JSONObject()
         .put("appId", settings.appId)

@@ -1,5 +1,6 @@
 package ai.tiiny.resolve
 
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -79,6 +80,30 @@ class FeishuAndroidClient(
             strategyThreadId = draft.strategyThreadId
         )
     }
+
+    fun updateEvent(event: CalendarEvent, draft: CalendarDraft): CalendarEvent {
+        val calendarId = event.externalCalendarId ?: resolveCalendarId("primary")
+        val eventId = event.externalEventId ?: error("Missing Feishu event id.")
+        val startsAt = draft.date.atTime(draft.time).atZone(ZoneId.systemDefault()).toInstant()
+        val durationSeconds = event.endsAt?.epochSecond?.minus(event.startsAt.epochSecond)?.coerceAtLeast(0) ?: 3600
+        val endsAt = startsAt.plusSeconds(durationSeconds)
+        val payload = JSONObject()
+            .put("summary", draft.title.trim())
+            .put("description", draft.description.trim())
+            .put("start_time", feishuTime(startsAt))
+            .put("end_time", feishuTime(endsAt))
+        val response = request(
+            path = "/calendar/v4/calendars/${encode(calendarId)}/events/${encode(eventId)}",
+            method = "PATCH",
+            body = payload
+        )
+        val eventJson = response.optJSONObject("data")?.optJSONObject("event") ?: JSONObject()
+        return mapEvent(calendarId, eventJson).copy(
+            sourceItemId = event.sourceItemId,
+            strategyThreadId = event.strategyThreadId
+        )
+    }
+
 
     fun refreshToken(): FeishuTokenSet {
         val refreshToken = tokenSet.refreshToken ?: error("Missing refresh token. Reconnect Feishu.")
@@ -214,6 +239,7 @@ private fun mapEvent(calendarId: String, json: JSONObject): CalendarEvent {
         title = json.optString("summary", "Untitled Feishu event"),
         description = json.optString("description"),
         recurrence = json.optString("recurrence").takeIf { it.isNotBlank() },
+        meetingUrl = extractMeetingUrlFromJson(json),
         startsAt = startsAt,
         endsAt = feishuInstant(end),
         externalCalendarId = calendarId,

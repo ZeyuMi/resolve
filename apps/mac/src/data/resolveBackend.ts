@@ -32,6 +32,26 @@ export interface BackendCalendarDraft {
   endsAt?: string;
 }
 
+export class ResolveBackendError extends Error {
+  constructor(
+    message: string,
+    readonly code?: string,
+    readonly status?: number
+  ) {
+    super(message);
+    this.name = "ResolveBackendError";
+  }
+}
+
+export function needsCalendarAuthorization(error: unknown) {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return (error instanceof ResolveBackendError && error.code === "feishu_needs_auth") ||
+    message.includes("calendar needs authorization") ||
+    message.includes("connect calendar again") ||
+    message.includes("missing feishu refresh token") ||
+    message.includes("missing feishu token set");
+}
+
 const backendSettingsKey = "resolve:backend-settings:v1";
 const backendSessionKey = "resolve:backend-session:v1";
 
@@ -186,7 +206,11 @@ export class ResolveBackendClient {
     const text = await response.text();
     const json = text ? JSON.parse(text) as Record<string, unknown> : {};
     if (!response.ok) {
-      throw new Error(readErrorMessage(json, `HTTP ${response.status}`));
+      throw new ResolveBackendError(
+        readErrorMessage(json, `HTTP ${response.status}`),
+        typeof json.error === "string" ? json.error : undefined,
+        response.status
+      );
     }
     return json;
   }
@@ -235,6 +259,7 @@ function serverEventToCalendarEvent(value: unknown): DecryptedCalendarEvent {
     title: typeof payload.title === "string" && payload.title.trim() ? payload.title : "Untitled Feishu event",
     description: typeof payload.description === "string" ? payload.description : undefined,
     location: typeof payload.location === "string" ? payload.location : undefined,
+    meetingUrl: typeof payload.meetingUrl === "string" ? payload.meetingUrl : extractMeetingUrl(payload.description),
     recurrence: payload.recurrence,
     feishuRaw: payload.feishuRaw
   };
@@ -265,4 +290,12 @@ function readErrorMessage(json: Record<string, unknown>, fallback: string) {
     if (typeof json[key] === "string" && json[key]) return json[key];
   }
   return fallback;
+}
+
+function extractMeetingUrl(value: unknown) {
+  if (typeof value !== "string") return undefined;
+  const urls = value.match(/https?:\/\/[^\s<>"')，。；、]+/gi) ?? [];
+  return urls.map((url) => url.replace(/[.,;:]+$/, "")).find((url) =>
+    /(feishu|larksuite|vc|videochat|meeting|meet|zoom|teams|tencent|voov|google)/i.test(url)
+  );
 }

@@ -1,13 +1,13 @@
 /// <reference path="../_shared/deno.d.ts" />
 
 import { jsonResponse, methodNotAllowed, readJson } from "../_shared/http.ts";
-import { buildFeishuAuthorizeUrl, type FeishuServerConfig } from "../_shared/feishuApi.ts";
+import { buildFeishuAuthorizeUrl, isFeishuAuthorizationRequiredError, type FeishuServerConfig } from "../_shared/feishuApi.ts";
 import { serverDecryptJson, serverEncryptJson } from "../_shared/serverCrypto.ts";
 import {
   feishuConnectorDisabledBody,
   isFeishuServerConnectorAllowed
 } from "../_shared/security.ts";
-import { createFeishuEventForUser, readServerCalendarEvents, syncFeishuForUser } from "../_shared/feishuSync.ts";
+import { createFeishuEventForUser, readServerCalendarEvents, syncFeishuForUser, updateFeishuEventForUser } from "../_shared/feishuSync.ts";
 import { encodeFilter, getAuthenticatedUser, restInsert, restPatch, restSelect, restUpsert } from "../_shared/supabaseRest.ts";
 
 type ConnectorRequest =
@@ -35,6 +35,17 @@ type ConnectorRequest =
       endsAt?: string;
       calendarId?: string;
       timezone?: string;
+    }
+  | {
+      action: "update_event";
+      calendarId: string;
+      eventId: string;
+      title?: string;
+      description?: string;
+      location?: string;
+      startsAt?: string;
+      endsAt?: string;
+      timezone?: string;
     };
 
 Deno.serve(async (request) => {
@@ -52,26 +63,48 @@ Deno.serve(async (request) => {
     return jsonResponse(await statusForUser(user.id));
   }
 
-  const body = await readJson<ConnectorRequest>(request);
-  switch (body.action) {
-    case "status":
-      return jsonResponse(await statusForUser(user.id));
-    case "configure":
-      return jsonResponse(await configure(user.id, body));
-    case "start_oauth":
-      return jsonResponse(await startOAuth(user.id));
-    case "sync_now":
-      return jsonResponse(await syncFeishuForUser(user.id));
-    case "list_events":
-      return jsonResponse({
-        events: await readServerCalendarEvents(user.id, body.startsAt, body.endsAt)
-      });
-    case "create_event":
-      return jsonResponse(await createFeishuEventForUser(user.id, body));
-    case "disconnect":
-      return jsonResponse(await disconnect(user.id));
-    default:
-      return jsonResponse({ error: "unknown_action" }, { status: 400 });
+  try {
+    const body = await readJson<ConnectorRequest>(request);
+    switch (body.action) {
+      case "status":
+        return jsonResponse(await statusForUser(user.id));
+      case "configure":
+        return jsonResponse(await configure(user.id, body));
+      case "start_oauth":
+        return jsonResponse(await startOAuth(user.id));
+      case "sync_now":
+        return jsonResponse(await syncFeishuForUser(user.id));
+      case "list_events":
+        return jsonResponse({
+          events: await readServerCalendarEvents(user.id, body.startsAt, body.endsAt)
+        });
+      case "create_event":
+        return jsonResponse(await createFeishuEventForUser(user.id, body));
+      case "update_event":
+        return jsonResponse(await updateFeishuEventForUser(user.id, body));
+      case "disconnect":
+        return jsonResponse(await disconnect(user.id));
+      default:
+        return jsonResponse({ error: "unknown_action" }, { status: 400 });
+    }
+  } catch (error) {
+    if (isFeishuAuthorizationRequiredError(error)) {
+      return jsonResponse(
+        {
+          error: "feishu_needs_auth",
+          status: "needs_auth",
+          message: error.message
+        },
+        { status: 409 }
+      );
+    }
+    return jsonResponse(
+      {
+        error: "calendar_sync_failed",
+        message: error instanceof Error ? error.message : "Calendar sync failed."
+      },
+      { status: 500 }
+    );
   }
 });
 

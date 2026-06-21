@@ -28,6 +28,7 @@ export interface FeishuEvent {
   title?: string;
   description?: string;
   location?: string;
+  meetingUrl?: string;
   startsAt: string;
   endsAt?: string;
   isAllDay?: boolean;

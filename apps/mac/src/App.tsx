@@ -62,6 +62,7 @@ import {
   clearBackendSession,
   loadBackendSession,
   loadBackendSettings,
+  needsCalendarAuthorization,
   resolveSupabasePublishableKey,
   resolveSupabaseUrl,
   ResolveBackendClient,
@@ -129,6 +130,7 @@ function calendarEventFromFeishu(
       title: event.title ?? "Untitled Feishu event",
       description: event.description,
       location: event.location,
+      meetingUrl: event.meetingUrl,
       recurrence: event.recurrence,
       feishuRaw: event.raw
     }
@@ -828,7 +830,7 @@ export function App() {
         const next = {
           ...feishuSettings,
           status: "permission_error" as const,
-          lastError: "Feishu OAuth state mismatch. Please reconnect."
+          lastError: "Calendar authorization did not complete."
         };
         setFeishuSettings(next);
         saveFeishuSettings(next);
@@ -840,11 +842,11 @@ export function App() {
         const next = {
           ...feishuSettings,
           status: "permission_error" as const,
-          lastError: "Connect Feishu again from Settings."
+          lastError: "Calendar connection needs attention."
         };
         setFeishuSettings(next);
         saveFeishuSettings(next);
-        showToast("Connect Feishu again");
+        showToast("Calendar needs attention");
         return;
       }
 
@@ -868,7 +870,7 @@ export function App() {
         };
         setFeishuSettings(next);
         saveFeishuSettings(next);
-        showToast("Feishu connection failed");
+        showToast("Calendar authorization failed");
       } finally {
         sessionStorage.removeItem("feishu-oauth-state");
       }
@@ -1052,6 +1054,23 @@ export function App() {
         showToast("Created in Feishu");
         void syncBackendCalendar({ silent: true });
       } catch (error) {
+        if (needsCalendarAuthorization(error)) {
+          handleSaveBackend({
+            ...backendSettingsRef.current,
+            status: "connected",
+            feishuConnected: false,
+            lastError: "Calendar needs attention"
+          });
+          const nextFeishuSettings = {
+            ...feishuSettingsRef.current,
+            status: "not_connected" as const,
+            lastError: "Calendar needs attention"
+          };
+          setFeishuSettings(nextFeishuSettings);
+          saveFeishuSettings(nextFeishuSettings);
+          showToast("Calendar needs attention");
+          return;
+        }
         const latestState = stateRef.current;
         persist({
           ...latestState,
@@ -1126,7 +1145,7 @@ export function App() {
       return;
     }
 
-    showToast("Saved locally; reconnect Feishu to sync");
+    showToast("Saved locally; calendar sync needs attention");
   }
 
   async function deleteCalendarEvent(event: DecryptedCalendarEvent) {
@@ -1173,7 +1192,7 @@ export function App() {
           ...latestState.calendarEvents
         ]
       });
-      showToast("Marked for Feishu delete; reconnect first");
+      showToast("Marked for delete; calendar sync needs attention");
       return;
     }
 
@@ -1255,7 +1274,7 @@ export function App() {
     const settings = feishuSettingsRef.current;
     const tokenSet = loadFeishuToken();
     if (!canSyncRemote || !canUseFeishuConnection(settings, tokenSet)) {
-      showToast(canSyncRemote ? "Saved locally; reconnect Feishu to sync" : "Updated locally");
+      showToast(canSyncRemote ? "Saved locally; calendar sync needs attention" : "Updated locally");
       return;
     }
 
@@ -1380,16 +1399,29 @@ export function App() {
       saveBackendSession(session);
       const authedClient = new ResolveBackendClient(settings, session);
       const status = await authedClient.status().catch(() => undefined);
+      const calendarConnected = status?.connected === true;
+      const calendarNeedsAuth = status?.status === "needs_auth";
       handleSaveBackend({
         ...settings,
         status: "connected",
-        feishuConnected: status?.connected ?? settings.feishuConnected,
+        feishuConnected: calendarConnected,
         lastSyncedAt: status?.lastServerSyncAt ?? settings.lastSyncedAt,
-        lastError: undefined
+        lastError: calendarNeedsAuth ? "Calendar needs attention" : undefined
       });
+      if (!calendarConnected) {
+        const nextFeishuSettings = {
+          ...feishuSettingsRef.current,
+          status: "not_connected" as const,
+          lastError: calendarNeedsAuth ? "Calendar needs attention" : undefined
+        };
+        setFeishuSettings(nextFeishuSettings);
+        saveFeishuSettings(nextFeishuSettings);
+      }
       showToast("Signed in");
-      if (status?.connected) {
+      if (calendarConnected) {
         await syncBackendCalendar({ silent: true });
+      } else if (status?.configured) {
+        await handleBackendFeishuConnect();
       }
     } catch (error) {
       handleSaveBackend({
@@ -1440,6 +1472,23 @@ export function App() {
       saveFeishuSettings(nextFeishuSettings);
       if (!options.silent) showToast(`Synced ${remoteEvents.length} events`);
     } catch (error) {
+      if (needsCalendarAuthorization(error)) {
+        handleSaveBackend({
+          ...backendSettingsRef.current,
+          status: "connected",
+          feishuConnected: false,
+          lastError: "Calendar needs attention"
+        });
+        const nextFeishuSettings = {
+          ...feishuSettingsRef.current,
+          status: "not_connected" as const,
+          lastError: "Calendar needs attention"
+        };
+        setFeishuSettings(nextFeishuSettings);
+        saveFeishuSettings(nextFeishuSettings);
+        if (!options.silent) showToast("Calendar needs attention");
+        return;
+      }
       handleSaveBackend({
         ...backendSettingsRef.current,
         status: "error",
@@ -1464,7 +1513,7 @@ export function App() {
       const oauth = await client.startFeishuOAuth();
       if (!oauth.authorizeUrl) throw new Error("Feishu authorization failed to start.");
       window.open(oauth.authorizeUrl, "_blank", "noopener,noreferrer");
-      showToast("Authorize Feishu");
+      showToast("Authorize Calendar");
 
       for (let index = 0; index < 24; index += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 5000));
@@ -1478,18 +1527,18 @@ export function App() {
             lastError: undefined
           });
           await syncBackendCalendar({ silent: true });
-          showToast("Feishu connected");
+          showToast("Calendar authorized");
           return;
         }
       }
-      showToast("Return after Feishu authorization");
+      showToast("Return after authorization");
     } catch (error) {
       handleSaveBackend({
         ...backendSettingsRef.current,
         status: "error",
         lastError: feishuErrorMessage(error)
       });
-      showToast("Feishu connection failed");
+      showToast("Calendar authorization failed");
     } finally {
       setFeishuConnecting(false);
     }
@@ -1535,11 +1584,11 @@ export function App() {
       const next = {
         ...settings,
         status: "token_expired" as const,
-        lastError: "No local Feishu token. Connect Feishu first."
+        lastError: "Calendar connection needs attention."
       };
       setFeishuSettings(next);
       saveFeishuSettings(next);
-      if (!options.silent) showToast("Connect Feishu first");
+      if (!options.silent) showToast("Calendar needs attention");
       return;
     }
 
@@ -1657,7 +1706,7 @@ export function App() {
             strategyCount={state.strategyThreads.length}
             onChange={setTab}
           />
-          <SyncPanel feishuSettings={feishuSettings} onSync={() => void syncFeishuCalendar()} />
+          <SyncPanel feishuSettings={feishuSettings} backendSettings={backendSettings} />
         </div>
       </aside>
 
@@ -1772,8 +1821,6 @@ export function App() {
                 showToast("Signed out");
               }}
               onConnect={handleConnectFeishu}
-              onSync={() => void syncFeishuCalendar()}
-              onDisconnect={handleDisconnectFeishu}
             />
           )}
         </section>
@@ -1977,28 +2024,34 @@ function QuickCaptureOverlay({
   );
 }
 
-function SyncPanel({ feishuSettings, onSync }: { feishuSettings: FeishuSettingsState; onSync: () => void }) {
+function SyncPanel({
+  feishuSettings,
+  backendSettings
+}: {
+  feishuSettings: FeishuSettingsState;
+  backendSettings: BackendSettingsState;
+}) {
+  const lastSyncedAt = backendSettings.lastSyncedAt ?? feishuSettings.lastSyncedAt;
+  const connected = backendSettings.feishuConnected || feishuSettings.status === "connected";
+  const status = connected
+    ? lastSyncedAt
+      ? `Synced ${relativeAgeLabel(lastSyncedAt)}`
+      : "Connected"
+    : "Not connected";
+  const error = backendSettings.lastError ?? feishuSettings.lastError;
+  const accountStatus = backendSettings.status === "connected" || backendSettings.feishuConnected ? "Signed in" : "Signed out";
+
   return (
     <section className="sync-panel">
       <div className="panel-head">
         <Lock size={16} />
-        <span>Private Vault</span>
+        <span>Status</span>
       </div>
       <div className="sync-lines">
-        <span>Firestore: encrypted payload only</span>
-        <span>Feishu token: local preview storage; Keychain in desktop build</span>
-        <span>
-          Feishu:{" "}
-          {feishuSettings.lastSyncedAt
-            ? `Synced ${relativeAgeLabel(feishuSettings.lastSyncedAt)}`
-            : "Not connected"}
-        </span>
-        {feishuSettings.lastError && <span className="error-line">{feishuSettings.lastError}</span>}
+        <span>Calendar: {status}</span>
+        <span>Account: {accountStatus}</span>
+        {error && <span className="error-line">{error}</span>}
       </div>
-      <button className="ghost-button" onClick={onSync}>
-        <RefreshCw size={15} />
-        Sync Now
-      </button>
     </section>
   );
 }
@@ -2863,9 +2916,7 @@ function SettingsView({
   onBackendChange,
   onBackendSignIn,
   onBackendSignOut,
-  onConnect,
-  onSync,
-  onDisconnect
+  onConnect
 }: {
   settings: FeishuSettingsState;
   backendSettings: BackendSettingsState;
@@ -2874,13 +2925,19 @@ function SettingsView({
   onBackendSignIn: (password: string) => void | Promise<void>;
   onBackendSignOut: () => void;
   onConnect: () => void | Promise<void>;
-  onSync: () => void;
-  onDisconnect: () => void;
 }) {
   const [password, setPassword] = useState("");
   const connected = settings.status === "connected" || backendSettings.feishuConnected;
   const signedIn = backendSettings.status === "connected" || backendSettings.feishuConnected;
-  const lastSyncLabel = settings.lastSyncedAt ? `Last synced ${relativeAgeLabel(settings.lastSyncedAt)}` : "Not synced yet";
+  const lastSyncedAt = backendSettings.lastSyncedAt ?? settings.lastSyncedAt;
+  const lastSyncLabel = connected
+    ? lastSyncedAt
+      ? `Synced ${relativeAgeLabel(lastSyncedAt)}`
+      : "Ready"
+    : signedIn
+      ? "Authorization needed"
+      : "Sign in first";
+  const calendarError = backendSettings.lastError ?? settings.lastError;
 
   return (
     <div className="settings-view">
@@ -2943,7 +3000,7 @@ function SettingsView({
           </div>
           <div className="feishu-connect-copy">
             <div className="eyebrow">Calendar</div>
-            <h2>Feishu Calendar</h2>
+            <h2>Calendar</h2>
           </div>
           <SyncStatusBadge settings={settings} />
         </div>
@@ -2955,22 +3012,34 @@ function SettingsView({
           </div>
         </div>
 
-        <div className="settings-actions">
-          <button className="primary-button" onClick={() => void onConnect()} disabled={connecting || !signedIn}>
-            <ExternalLink size={16} />
-            {connecting ? "Waiting for Feishu" : connected ? "Reconnect Feishu" : "Connect with Feishu"}
-          </button>
-          <button className="secondary-button" onClick={onSync} disabled={!connected || connecting}>
-            <RefreshCw size={16} />
-            Sync Now
-          </button>
-          <button className="ghost-button" onClick={onDisconnect} disabled={connecting}>
-            <X size={16} />
-            Disconnect
-          </button>
-        </div>
+        {!connected && (
+          <div className="settings-actions">
+            <button className="primary-button" onClick={() => void onConnect()} disabled={connecting || !signedIn}>
+              <ExternalLink size={16} />
+              {connecting ? "Opening" : signedIn ? "Authorize Calendar" : "Sign in first"}
+            </button>
+          </div>
+        )}
 
-        {settings.lastError && <p className="settings-error">{settings.lastError}</p>}
+        {connected && (
+          <div className="settings-actions">
+            <button className="secondary-button" disabled>
+              <Check size={16} />
+              Authorized
+            </button>
+          </div>
+        )}
+
+        {calendarError && (
+          <div className="settings-actions">
+            <button className="secondary-button" onClick={() => void onConnect()} disabled={connecting || !signedIn}>
+            <ExternalLink size={16} />
+              Authorize
+            </button>
+          </div>
+        )}
+
+        {calendarError && <p className="settings-error">{calendarError}</p>}
       </section>
 
     </div>
@@ -3157,7 +3226,7 @@ function CalendarDraftDetailPanel({
         <div className="detail-actions">
           <button className="primary-button" onClick={onSave}>
             <Send size={15} />
-            Create in Feishu
+            Create
           </button>
           <button className="ghost-button" onClick={onClose}>
             <X size={15} />
@@ -3229,6 +3298,12 @@ function CalendarEventDetailPanel({
               <span>Comment</span>
               {payload.description ? <p>{payload.description}</p> : <p className="muted-comment">No comment</p>}
             </div>
+            {payload.meetingUrl && (
+              <button className="secondary-button meeting-link-button" onClick={() => window.open(payload.meetingUrl, "_blank", "noopener,noreferrer")}>
+                <ExternalLink size={15} />
+                Open meeting link
+              </button>
+            )}
           </div>
         ) : (
           <>
@@ -3422,10 +3497,10 @@ function SyncStatusBadge({ settings }: { settings: FeishuSettingsState }) {
     settings.status === "connected"
       ? settings.lastSyncedAt
         ? `Synced ${relativeAgeLabel(settings.lastSyncedAt)}`
-        : "Connected"
+        : "Ready"
       : settings.status.replace("_", " ");
   const tone = settings.status === "connected" ? "success" : settings.status === "not_connected" ? "muted" : "warning";
-  return <StatusPill tone={tone} label={`Feishu ${label}`} />;
+  return <StatusPill tone={tone} label={`Calendar ${label}`} />;
 }
 
 function EmptyState({ label }: { label: string }) {

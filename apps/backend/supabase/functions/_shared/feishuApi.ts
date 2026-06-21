@@ -11,12 +11,26 @@ export interface FeishuTokenSet {
   expiresAt?: string;
 }
 
+export class FeishuAuthorizationRequiredError extends Error {
+  readonly code = "feishu_needs_auth";
+
+  constructor(message = "Calendar needs authorization. Connect Calendar again.") {
+    super(message);
+    this.name = "FeishuAuthorizationRequiredError";
+  }
+}
+
+export function isFeishuAuthorizationRequiredError(error: unknown) {
+  return error instanceof FeishuAuthorizationRequiredError;
+}
+
 export interface FeishuServerEvent {
   calendarId: string;
   eventId: string;
   title?: string;
   description?: string;
   location?: string;
+  meetingUrl?: string;
   startsAt: string;
   endsAt?: string;
   isAllDay?: boolean;
@@ -45,6 +59,8 @@ export interface CreateFeishuServerEventInput {
   endsAt?: string;
   timezone?: string;
 }
+
+export type UpdateFeishuServerEventInput = Partial<CreateFeishuServerEventInput>;
 
 const defaultApiBaseUrl = "https://open.feishu.cn/open-apis";
 
@@ -98,7 +114,7 @@ export class FeishuServerClient {
   }
 
   async refreshAccessToken(): Promise<FeishuTokenSet> {
-    if (!this.refreshToken) throw new Error("Missing Feishu refresh token.");
+    if (!this.refreshToken) throw new FeishuAuthorizationRequiredError();
     const response = await fetch(`${this.apiBaseUrl}/authen/v2/oauth/token`, {
       method: "POST",
       headers: {
@@ -112,9 +128,13 @@ export class FeishuServerClient {
       })
     });
     const tokenSet = await parseTokenResponse(response);
+    const nextTokenSet = {
+      ...tokenSet,
+      refreshToken: tokenSet.refreshToken ?? this.refreshToken
+    };
     this.accessToken = tokenSet.accessToken;
-    this.refreshToken = tokenSet.refreshToken ?? this.refreshToken;
-    return tokenSet;
+    this.refreshToken = nextTokenSet.refreshToken;
+    return nextTokenSet;
   }
 
   async getPrimaryCalendar(): Promise<FeishuServerCalendar> {
@@ -145,6 +165,7 @@ export class FeishuServerClient {
 
   async listEvents(params: {
     calendarId: string;
+    anchorTime?: string;
     startsAt?: string;
     endsAt?: string;
     pageToken?: string;
@@ -154,6 +175,7 @@ export class FeishuServerClient {
     const query = new URLSearchParams({
       page_size: String(params.pageSize ?? 1000)
     });
+    if (params.anchorTime) query.set("anchor_time", toUnixSeconds(params.anchorTime));
     if (params.startsAt) query.set("start_time", toUnixSeconds(params.startsAt));
     if (params.endsAt) query.set("end_time", toUnixSeconds(params.endsAt));
     if (params.pageToken) query.set("page_token", params.pageToken);
@@ -191,6 +213,23 @@ export class FeishuServerClient {
     return mapEvent(calendarId, data.event);
   }
 
+  async updateEvent(calendarId: string, eventId: string, input: UpdateFeishuServerEventInput): Promise<FeishuServerEvent> {
+    const body: Record<string, unknown> = {};
+    if (input.title != null) body.summary = input.title;
+    if (input.description != null) body.description = input.description;
+    if (input.location != null) body.location = input.location ? { name: input.location } : undefined;
+    if (input.startsAt != null) body.start_time = toFeishuTime(input.startsAt, input.timezone);
+    if (input.endsAt != null) body.end_time = toFeishuTime(input.endsAt, input.timezone);
+    const data = await this.request<{ event?: unknown }>(
+      `/calendar/v4/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(body)
+      }
+    );
+    return mapEvent(calendarId, data.event);
+  }
+
   private async request<T>(path: string, init: RequestInit = {}) {
     const response = await fetch(`${this.apiBaseUrl}${path}`, {
       ...init,
@@ -207,9 +246,19 @@ export class FeishuServerClient {
 async function parseFeishuResponse<T>(response: Response) {
   const body = await response.json() as { code: number; msg?: string; data?: T };
   if (!response.ok || body.code !== 0) {
-    throw new Error(body.msg ?? `Feishu API failed with HTTP ${response.status}`);
+    const message = body.msg ?? `Feishu API failed with HTTP ${response.status}`;
+    if (response.status === 401 || isTokenFailure(message)) {
+      throw new FeishuAuthorizationRequiredError();
+    }
+    throw new Error(message);
   }
   return (body.data ?? {}) as T;
+}
+
+function isTokenFailure(message: string) {
+  const normalized = message.toLowerCase();
+  return normalized.includes("token") &&
+    (normalized.includes("expired") || normalized.includes("invalid") || normalized.includes("unauthorized"));
 }
 
 async function parseTokenResponse(response: Response) {
@@ -283,6 +332,7 @@ function mapEvent(calendarId: string, value: unknown): FeishuServerEvent {
     title: typeof record.summary === "string" ? record.summary : undefined,
     description: typeof record.description === "string" ? record.description : undefined,
     location: typeof record.location === "string" ? record.location : readLocation(record.location),
+    meetingUrl: readMeetingUrl(record),
     startsAt: fromFeishuTime(start) ?? new Date().toISOString(),
     endsAt: fromFeishuTime(end),
     isAllDay: start.date != null,
@@ -306,6 +356,93 @@ function readPermission(record: Record<string, unknown>, ...keys: string[]) {
 function readLocation(value: unknown) {
   const record = asRecord(value);
   return typeof record.name === "string" ? record.name : undefined;
+}
+
+function readMeetingUrl(record: Record<string, unknown>) {
+  const preferredKeys = [
+    "meeting_url",
+    "meetingUrl",
+    "online_meeting_url",
+    "onlineMeetingUrl",
+    "vc_url",
+    "vcUrl",
+    "join_url",
+    "joinUrl",
+    "conference_url",
+    "conferenceUrl",
+    "url"
+  ];
+  const nestedKeys = [
+    "vchat",
+    "video_meeting",
+    "videoMeeting",
+    "online_meeting",
+    "onlineMeeting",
+    "video_conference",
+    "videoConference",
+    "meeting",
+    "conference",
+    "conference_info",
+    "conferenceInfo",
+    "conference_data",
+    "conferenceData"
+  ];
+
+  for (const key of preferredKeys) {
+    const value = record[key];
+    if (typeof value === "string") {
+      const url = firstUrl(value) ?? value;
+      if (looksLikeMeetingUrl(url) || meetingKeyPattern.test(key)) return cleanUrl(url);
+    }
+  }
+  for (const key of nestedKeys) {
+    const value = findMeetingUrl(record[key], 0, true);
+    if (value) return value;
+  }
+  const fromDescription = typeof record.description === "string" ? firstUrl(record.description) : undefined;
+  return fromDescription && looksLikeMeetingUrl(fromDescription) ? cleanUrl(fromDescription) : findMeetingUrl(record, 0, false);
+}
+
+function findMeetingUrl(value: unknown, depth: number, trustedContext: boolean): string | undefined {
+  if (depth > 5 || value == null) return undefined;
+  if (typeof value === "string") {
+    const url = firstUrl(value);
+    return url && (trustedContext || looksLikeMeetingUrl(url)) ? cleanUrl(url) : undefined;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findMeetingUrl(item, depth + 1, trustedContext);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    for (const key of Object.keys(record).sort(meetingKeySort)) {
+      const found = findMeetingUrl(record[key], depth + 1, trustedContext || meetingKeyPattern.test(key));
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
+const meetingKeyPattern = /meeting|vchat|vc|conference|url|link|join|video|online/i;
+
+function meetingKeySort(left: string, right: string) {
+  const score = (key: string) => meetingKeyPattern.test(key) ? 0 : 1;
+  return score(left) - score(right);
+}
+
+function firstUrl(value: string) {
+  return value.match(/https?:\/\/[^\s<>"')，。；、]+/i)?.[0];
+}
+
+function looksLikeMeetingUrl(value: string) {
+  return /https?:\/\//i.test(value) && /(feishu|larksuite|vc|videochat|meeting|meet|zoom|teams|tencent|voov|google)/i.test(value);
+}
+
+function cleanUrl(value: string) {
+  return value.replace(/[.,;:]+$/, "");
 }
 
 function fromFeishuTime(value: Record<string, unknown>) {

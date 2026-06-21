@@ -95,7 +95,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -162,6 +161,7 @@ private fun ResolveAndroidApp(
     var selectedDate by remember { mutableStateOf(LocalDate.now()) }
     var calendarViewMode by remember { mutableStateOf(CalendarViewMode.Month) }
     var selectedCalendarEvent by remember { mutableStateOf<CalendarEvent?>(null) }
+    var editingCalendarEvent by remember { mutableStateOf<CalendarEvent?>(null) }
     var expandedCalendarDate by remember { mutableStateOf<LocalDate?>(null) }
     var showCalendarDraft by remember { mutableStateOf(false) }
     var showCompleted by remember { mutableStateOf(false) }
@@ -169,6 +169,7 @@ private fun ResolveAndroidApp(
     var isSyncing by remember { mutableStateOf(false) }
     var isConnecting by remember { mutableStateOf(false) }
     var hasBackendSession by remember { mutableStateOf(secureVault.loadBackendSession() != null) }
+    var attemptedBackendCalendarAuth by remember { mutableStateOf(false) }
 
     fun persist(next: ResolveState) {
         state = next
@@ -199,19 +200,6 @@ private fun ResolveAndroidApp(
         capture = ""
         tab = Tab.Todo
         notice = null
-    }
-
-    suspend fun connectedClient(): FeishuAndroidClient {
-        val settings = state.feishuSettings
-        val secret = secureVault.loadFeishuSecret().orEmpty()
-        var token = secureVault.loadFeishuTokens() ?: error("Connect Feishu first.")
-        var client = FeishuAndroidClient(settings.appId, secret, token)
-        if (token.shouldRefresh()) {
-            token = withContext(Dispatchers.IO) { client.refreshToken() }
-            secureVault.saveFeishuTokens(token.accessToken, token.refreshToken, token.expiresAtEpochMillis)
-            client = FeishuAndroidClient(settings.appId, secret, token)
-        }
-        return client
     }
 
     suspend fun connectedBackendClient(): BackendClient {
@@ -258,27 +246,31 @@ private fun ResolveAndroidApp(
                     syncBackendCalendar()
                     notice = null
                 } else {
-                    val client = connectedClient()
-                    val remoteEvents = withContext(Dispatchers.IO) { client.listEvents(state.feishuSettings) }
-                    val nextSettings = state.feishuSettings.copy(
-                        status = FeishuStatus.Connected,
-                        lastSyncedAt = Instant.now(),
-                        lastError = null
-                    )
-                    persist(
-                        state.copy(
-                            calendarEvents = mergeBackendCalendarEvents(state.calendarEvents, remoteEvents),
-                            feishuSettings = nextSettings
-                        )
-                    )
                     notice = null
                 }
             } catch (error: Throwable) {
-                if (hasBackendSession) {
-                    patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
+                if (error.needsCalendarAuthorization()) {
+                    persist(
+                        state.copy(
+                            backendSettings = state.backendSettings.copy(
+                                status = BackendStatus.Connected,
+                                feishuConnected = false,
+                                lastError = "Calendar needs attention"
+                            ),
+                            feishuSettings = state.feishuSettings.copy(
+                                status = FeishuStatus.NotConnected,
+                                lastError = "Calendar needs attention"
+                            )
+                        )
+                    )
+                    notice = null
+                } else {
+                    if (hasBackendSession) {
+                        patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
+                    }
+                    patchFeishu(state.feishuSettings.copy(status = FeishuStatus.PermissionError, lastError = error.message))
+                    notice = "Calendar sync failed${error.message?.let { ": $it" }.orEmpty()}"
                 }
-                patchFeishu(state.feishuSettings.copy(status = FeishuStatus.PermissionError, lastError = error.message))
-                notice = "Calendar sync failed${error.message?.let { ": $it" }.orEmpty()}"
             } finally {
                 isSyncing = false
             }
@@ -318,63 +310,94 @@ private fun ResolveAndroidApp(
                     )
                     notice = null
                 } catch (error: Throwable) {
-                    patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
-                    notice = "Saved locally; sync failed${error.message?.let { ": $it" }.orEmpty()}"
+                    if (error.needsCalendarAuthorization()) {
+                        persist(
+                            state.copy(
+                                backendSettings = state.backendSettings.copy(
+                                    status = BackendStatus.Connected,
+                                    feishuConnected = false,
+                                    lastError = "Calendar needs attention"
+                                ),
+                                feishuSettings = state.feishuSettings.copy(
+                                    status = FeishuStatus.NotConnected,
+                                    lastError = "Calendar needs attention"
+                                )
+                            )
+                        )
+                        notice = null
+                    } else {
+                        patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
+                        notice = "Saved locally; sync failed${error.message?.let { ": $it" }.orEmpty()}"
+                    }
                 }
             }
             return
         }
 
-        val settings = state.feishuSettings
-        if (settings.status == FeishuStatus.Connected && settings.appId.isNotBlank()) {
-            scope.launch {
-                try {
-                    val client = connectedClient()
-                    val remote = withContext(Dispatchers.IO) { client.createEvent(settings, draft) }
-                    persist(
-                        state.copy(
-                            calendarEvents = state.calendarEvents
-                                .filterNot { it.id == localEvent.id }
-                                .plus(remote)
-                                .sortedBy { it.startsAt }
-                        )
-                    )
-                    notice = null
-                } catch (error: Throwable) {
-                    notice = "Saved locally; Feishu create failed${error.message?.let { ": $it" }.orEmpty()}"
-                    patchFeishu(settings.copy(lastError = error.message))
-                }
-            }
-        }
+        notice = null
     }
 
-    fun connectFeishu() {
-        val settings = state.feishuSettings
-        val secret = secureVault.loadFeishuSecret().orEmpty()
-        if (settings.appId.isBlank() || secret.isBlank()) {
-            notice = "Sign in first"
+    fun updateCalendarEvent(event: CalendarEvent, draft: CalendarDraft) {
+        if (draft.title.isBlank()) return
+        val startsAt = draft.date.atTime(draft.time).atZone(ZoneId.systemDefault()).toInstant()
+        val durationSeconds = event.endsAt?.epochSecond?.minus(event.startsAt.epochSecond)?.coerceAtLeast(0) ?: 3600
+        val optimistic = event.copy(
+            title = draft.title.trim(),
+            description = draft.description.trim(),
+            startsAt = startsAt,
+            endsAt = startsAt.plusSeconds(durationSeconds),
+            status = if (event.provider == "feishu" && event.canEdit) "local_pending_update" else event.status
+        )
+        persist(
+            state.copy(calendarEvents = replaceCalendarEvent(state.calendarEvents, event, optimistic))
+        )
+        selectedCalendarEvent = optimistic
+        editingCalendarEvent = null
+        selectedDate = optimistic.startsAt.atZone(ZoneId.systemDefault()).toLocalDate()
+        expandedCalendarDate = selectedDate
+        notice = null
+
+        if (event.provider != "feishu" || !event.canEdit || event.externalEventId.isNullOrBlank()) return
+
+        if (hasBackendSession && state.backendSettings.feishuConnected) {
+            scope.launch {
+                try {
+                    val client = connectedBackendClient()
+                    val remote = withContext(Dispatchers.IO) { client.updateEvent(event, draft) }
+                    persist(
+                        state.copy(
+                            calendarEvents = replaceCalendarEvent(state.calendarEvents, event, remote),
+                            backendSettings = state.backendSettings.copy(lastSyncedAt = Instant.now(), lastError = null),
+                            feishuSettings = state.feishuSettings.copy(status = FeishuStatus.Connected, lastSyncedAt = Instant.now(), lastError = null)
+                        )
+                    )
+                    selectedCalendarEvent = remote
+                } catch (error: Throwable) {
+                    if (error.needsCalendarAuthorization()) {
+                        persist(
+                            state.copy(
+                                backendSettings = state.backendSettings.copy(
+                                    status = BackendStatus.Connected,
+                                    feishuConnected = false,
+                                    lastError = "Calendar needs attention"
+                                ),
+                                feishuSettings = state.feishuSettings.copy(
+                                    status = FeishuStatus.NotConnected,
+                                    lastError = "Calendar needs attention"
+                                )
+                            )
+                        )
+                        notice = null
+                    } else {
+                        notice = "Saved locally; Feishu update failed${error.message?.let { ": $it" }.orEmpty()}"
+                        patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
+                    }
+                }
+            }
             return
         }
-        isConnecting = true
-        scope.launch {
-            try {
-                val (url, expectedState) = FeishuAndroidClient.buildAuthorizeUrl(settings.appId)
-                val codeDeferred = async(Dispatchers.IO) { FeishuAndroidClient.waitForOAuthCode(expectedState) }
-                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                val code = codeDeferred.await()
-                val token = withContext(Dispatchers.IO) { FeishuAndroidClient.exchangeCode(settings.appId, secret, code) }
-                secureVault.saveFeishuTokens(token.accessToken, token.refreshToken, token.expiresAtEpochMillis)
-                patchFeishu(settings.copy(status = FeishuStatus.Connected, lastError = null))
-                tab = Tab.Calendar
-                notice = null
-                syncFeishu()
-            } catch (error: Throwable) {
-                patchFeishu(settings.copy(status = FeishuStatus.PermissionError, lastError = error.message))
-                notice = "Feishu connection failed${error.message?.let { ": $it" }.orEmpty()}"
-            } finally {
-                isConnecting = false
-            }
-        }
+
+        notice = null
     }
 
     fun startBackendFeishuAuth() {
@@ -383,6 +406,7 @@ private fun ResolveAndroidApp(
             return
         }
         isConnecting = true
+        attemptedBackendCalendarAuth = true
         scope.launch {
             try {
                 val client = connectedBackendClient()
@@ -413,10 +437,10 @@ private fun ResolveAndroidApp(
                         return@launch
                     }
                 }
-                notice = "Feishu auth is still pending. Return here after approving."
+                notice = null
             } catch (error: Throwable) {
                 patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
-                notice = "Feishu connection failed${error.message?.let { ": $it" }.orEmpty()}"
+                notice = "Calendar authorization failed${error.message?.let { ": $it" }.orEmpty()}"
             } finally {
                 isConnecting = false
             }
@@ -438,22 +462,25 @@ private fun ResolveAndroidApp(
                 val connectorStatus = runCatching {
                     withContext(Dispatchers.IO) { client.status() }
                 }.getOrNull()
+                val calendarConnected = connectorStatus?.connected == true
+                val calendarNeedsAuth = connectorStatus?.status == "needs_auth"
                 persist(
                     state.copy(
                         backendSettings = state.backendSettings.copy(
                             status = BackendStatus.Connected,
-                            feishuConnected = connectorStatus?.connected ?: state.backendSettings.feishuConnected,
+                            feishuConnected = calendarConnected,
                             lastSyncedAt = connectorStatus?.lastServerSyncAt ?: state.backendSettings.lastSyncedAt,
-                            lastError = null
+                            lastError = if (calendarNeedsAuth) "Calendar needs attention" else null
                         ),
                         feishuSettings = state.feishuSettings.copy(
-                            status = if (connectorStatus?.connected == true) FeishuStatus.Connected else state.feishuSettings.status,
-                            lastSyncedAt = connectorStatus?.lastServerSyncAt ?: state.feishuSettings.lastSyncedAt
+                            status = if (calendarConnected) FeishuStatus.Connected else FeishuStatus.NotConnected,
+                            lastSyncedAt = connectorStatus?.lastServerSyncAt ?: state.feishuSettings.lastSyncedAt,
+                            lastError = if (calendarNeedsAuth) "Calendar needs attention" else null
                         )
                     )
                 )
                 notice = null
-                if (connectorStatus?.connected == true) syncFeishu()
+                if (calendarConnected) syncFeishu()
                 else if (connectorStatus?.configured == true) startFeishuAuthAfterSignIn = true
             } catch (error: Throwable) {
                 patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
@@ -472,6 +499,7 @@ private fun ResolveAndroidApp(
     fun disconnectBackend() {
         secureVault.clearBackendSession()
         hasBackendSession = false
+        attemptedBackendCalendarAuth = false
         patchBackend(state.backendSettings.copy(status = BackendStatus.SignedOut, feishuConnected = false, lastError = null))
         notice = null
     }
@@ -481,22 +509,27 @@ private fun ResolveAndroidApp(
             runCatching {
                 val client = connectedBackendClient()
                 val status = withContext(Dispatchers.IO) { client.status() }
+                val calendarNeedsAuth = status.status == "needs_auth"
                 persist(
                     state.copy(
                         backendSettings = state.backendSettings.copy(
                             status = BackendStatus.Connected,
                             feishuConnected = status.connected,
                             lastSyncedAt = status.lastServerSyncAt ?: state.backendSettings.lastSyncedAt,
-                            lastError = null
+                            lastError = if (calendarNeedsAuth) "Calendar needs attention" else null
                         ),
                         feishuSettings = state.feishuSettings.copy(
-                            status = if (status.connected) FeishuStatus.Connected else state.feishuSettings.status,
+                            status = if (status.connected) FeishuStatus.Connected else FeishuStatus.NotConnected,
                             lastSyncedAt = status.lastServerSyncAt ?: state.feishuSettings.lastSyncedAt,
-                            lastError = null
+                            lastError = if (calendarNeedsAuth) "Calendar needs attention" else null
                         )
                     )
                 )
-                if (status.connected) syncFeishu()
+                if (status.connected) {
+                    syncFeishu()
+                } else if (status.configured && !attemptedBackendCalendarAuth && !isConnecting) {
+                    startBackendFeishuAuth()
+                }
             }.onFailure { error ->
                 patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
             }
@@ -510,7 +543,72 @@ private fun ResolveAndroidApp(
             notice = null
             onIntentHandled()
             if (hasBackendSession) {
-                syncFeishu()
+                scope.launch {
+                    isSyncing = true
+                    try {
+                        val client = connectedBackendClient()
+                        val status = withContext(Dispatchers.IO) { client.status() }
+                        val calendarNeedsAuth = status.status == "needs_auth"
+                        persist(
+                            state.copy(
+                                backendSettings = state.backendSettings.copy(
+                                    status = BackendStatus.Connected,
+                                    feishuConnected = status.connected,
+                                    lastSyncedAt = status.lastServerSyncAt ?: state.backendSettings.lastSyncedAt,
+                                    lastError = if (calendarNeedsAuth) "Calendar needs attention" else null
+                                ),
+                                feishuSettings = state.feishuSettings.copy(
+                                    status = if (status.connected) FeishuStatus.Connected else FeishuStatus.NotConnected,
+                                    lastSyncedAt = status.lastServerSyncAt ?: state.feishuSettings.lastSyncedAt,
+                                    lastError = if (calendarNeedsAuth) "Calendar needs attention" else null
+                                )
+                            )
+                        )
+                        if (status.connected) {
+                            val syncedAt = withContext(Dispatchers.IO) { client.syncFeishuNow() }
+                            val remoteEvents = withContext(Dispatchers.IO) { client.listEvents(state.feishuSettings) }
+                            persist(
+                                state.copy(
+                                    calendarEvents = mergeBackendCalendarEvents(state.calendarEvents, remoteEvents),
+                                    backendSettings = state.backendSettings.copy(
+                                        status = BackendStatus.Connected,
+                                        feishuConnected = true,
+                                        lastSyncedAt = syncedAt,
+                                        lastError = null
+                                    ),
+                                    feishuSettings = state.feishuSettings.copy(
+                                        status = FeishuStatus.Connected,
+                                        lastSyncedAt = syncedAt,
+                                        lastError = null
+                                    )
+                                )
+                            )
+                            notice = null
+                        }
+                    } catch (error: Throwable) {
+                        if (error.needsCalendarAuthorization()) {
+                            persist(
+                                state.copy(
+                                    backendSettings = state.backendSettings.copy(
+                                        status = BackendStatus.Connected,
+                                        feishuConnected = false,
+                                        lastError = "Calendar needs attention"
+                                    ),
+                                    feishuSettings = state.feishuSettings.copy(
+                                        status = FeishuStatus.NotConnected,
+                                        lastError = "Calendar needs attention"
+                                    )
+                                )
+                            )
+                            notice = null
+                        } else {
+                            patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
+                            notice = "Calendar sync failed${error.message?.let { ": $it" }.orEmpty()}"
+                        }
+                    } finally {
+                        isSyncing = false
+                    }
+                }
             }
         }
     }
@@ -526,7 +624,7 @@ private fun ResolveAndroidApp(
             containerColor = ResolveColors.Bg,
             bottomBar = { BottomTabs(tab = tab, onTab = { tab = it }) },
             floatingActionButton = {
-                if (tab == Tab.Calendar && selectedCalendarEvent == null && !showCalendarDraft) {
+                if (tab == Tab.Calendar && selectedCalendarEvent == null && editingCalendarEvent == null && !showCalendarDraft) {
                     FloatingActionButton(
                         onClick = {
                             calendarDraft = CalendarDraft(date = selectedDate, time = LocalTime.of(9, 0))
@@ -588,6 +686,7 @@ private fun ResolveAndroidApp(
                             selectedDate = selectedDate,
                             expandedDate = expandedCalendarDate,
                             selectedEvent = selectedCalendarEvent,
+                            editingEvent = editingCalendarEvent,
                             draft = calendarDraft.takeIf { showCalendarDraft },
                             viewMode = calendarViewMode,
                             onDate = {
@@ -599,9 +698,24 @@ private fun ResolveAndroidApp(
                             onSelectEvent = {
                                 selectedDate = it.startsAt.atZone(ZoneId.systemDefault()).toLocalDate()
                                 selectedCalendarEvent = it
+                                editingCalendarEvent = null
                                 showCalendarDraft = false
                             },
-                            onCloseEvent = { selectedCalendarEvent = null },
+                            onCloseEvent = {
+                                selectedCalendarEvent = null
+                                editingCalendarEvent = null
+                            },
+                            onEditEvent = {
+                                editingCalendarEvent = it
+                                selectedCalendarEvent = null
+                            },
+                            onCloseEdit = {
+                                selectedCalendarEvent = editingCalendarEvent
+                                editingCalendarEvent = null
+                            },
+                            onUpdateEvent = { event, draft ->
+                                updateCalendarEvent(event, draft)
+                            },
                             onDraft = { calendarDraft = it },
                             onCloseDraft = { showCalendarDraft = false },
                             onCreateDraft = {
@@ -612,8 +726,9 @@ private fun ResolveAndroidApp(
                             },
                             onExpandDay = {
                                 selectedDate = it
-                                expandedCalendarDate = it
+                                expandedCalendarDate = if (expandedCalendarDate == it) null else it
                                 selectedCalendarEvent = null
+                                editingCalendarEvent = null
                                 showCalendarDraft = false
                             }
                         )
@@ -647,11 +762,7 @@ private fun ResolveAndroidApp(
                             onBackendSettings = { patchBackend(it) },
                             onBackendSignIn = { signInBackend(it) },
                             onBackendDisconnect = { disconnectBackend() },
-                            onBackendFeishuConnect = { connectBackendFeishu() },
-                            onDisconnect = {
-                                secureVault.clearFeishu()
-                                patchFeishu(state.feishuSettings.copy(status = FeishuStatus.NotConnected, lastError = null, lastSyncedAt = null))
-                            }
+                            onBackendFeishuConnect = { connectBackendFeishu() }
                         )
                     }
                 }
@@ -870,19 +981,31 @@ private fun CalendarScreen(
     selectedDate: LocalDate,
     expandedDate: LocalDate?,
     selectedEvent: CalendarEvent?,
+    editingEvent: CalendarEvent?,
     draft: CalendarDraft?,
     viewMode: CalendarViewMode,
     onDate: (LocalDate) -> Unit,
     onViewMode: (CalendarViewMode) -> Unit,
     onSelectEvent: (CalendarEvent) -> Unit,
     onCloseEvent: () -> Unit,
+    onEditEvent: (CalendarEvent) -> Unit,
+    onCloseEdit: () -> Unit,
+    onUpdateEvent: (CalendarEvent, CalendarDraft) -> Unit,
     onDraft: (CalendarDraft) -> Unit,
     onCloseDraft: () -> Unit,
     onCreateDraft: (CalendarDraft) -> Unit,
     onExpandDay: (LocalDate) -> Unit
 ) {
     if (selectedEvent != null) {
-        CalendarEventDetailPage(event = selectedEvent, onClose = onCloseEvent)
+        CalendarEventDetailPage(event = selectedEvent, onClose = onCloseEvent, onEdit = { onEditEvent(selectedEvent) })
+        return
+    }
+    if (editingEvent != null) {
+        CalendarEditPage(
+            event = editingEvent,
+            onClose = onCloseEdit,
+            onSave = { draft -> onUpdateEvent(editingEvent, draft) }
+        )
         return
     }
     if (draft != null) {
@@ -1355,7 +1478,8 @@ private fun CalendarExpandedEventRow(event: CalendarEvent, onClick: () -> Unit) 
 }
 
 @Composable
-private fun CalendarEventDetailPage(event: CalendarEvent, onClose: () -> Unit) {
+private fun CalendarEventDetailPage(event: CalendarEvent, onClose: () -> Unit, onEdit: () -> Unit) {
+    val context = LocalContext.current
     Surface(color = ResolveColors.Bg, modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
@@ -1397,13 +1521,60 @@ private fun CalendarEventDetailPage(event: CalendarEvent, onClose: () -> Unit) {
                         CalendarEventInfoRow(label = "Comment", value = "No comment")
                     }
                     CalendarEventInfoRow(
-                        label = "Sync",
+                        label = "Source",
                         value = if (event.status == "readonly" || !event.canEdit) "Readonly from Feishu" else "${event.provider} · ${event.status}"
                     )
+                    event.meetingUrl?.takeIf { it.isNotBlank() }?.let { url ->
+                        Button(
+                            onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEAF2FF), contentColor = ResolveColors.Accent),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Open meeting link")
+                        }
+                    }
+                    Button(
+                        onClick = onEdit,
+                        enabled = event.provider != "feishu" || event.canEdit,
+                        colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.Accent),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (event.provider == "feishu" && !event.canEdit) "Readonly" else "Edit")
+                    }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun CalendarEditPage(
+    event: CalendarEvent,
+    onClose: () -> Unit,
+    onSave: (CalendarDraft) -> Unit
+) {
+    val zone = ZoneId.systemDefault()
+    var draft by remember(event.id, event.startsAt) {
+        val start = event.startsAt.atZone(zone)
+        mutableStateOf(
+            CalendarDraft(
+                title = event.title,
+                date = start.toLocalDate(),
+                time = start.toLocalTime().withSecond(0).withNano(0),
+                description = event.description,
+                sourceItemId = event.sourceItemId,
+                strategyThreadId = event.strategyThreadId
+            )
+        )
+    }
+    CalendarDraftEditorPage(
+        title = "Edit Event",
+        draft = draft,
+        primaryAction = "Save",
+        onDraft = { draft = it },
+        onSubmit = { onSave(draft) },
+        onClose = onClose
+    )
 }
 
 @Composable
@@ -1504,6 +1675,25 @@ private fun CalendarDraftPage(
     onCreate: (CalendarDraft) -> Unit,
     onClose: () -> Unit
 ) {
+    CalendarDraftEditorPage(
+        title = "New Event",
+        draft = draft,
+        primaryAction = "Create",
+        onDraft = onDraft,
+        onSubmit = { onCreate(draft) },
+        onClose = onClose
+    )
+}
+
+@Composable
+private fun CalendarDraftEditorPage(
+    title: String,
+    draft: CalendarDraft,
+    primaryAction: String,
+    onDraft: (CalendarDraft) -> Unit,
+    onSubmit: () -> Unit,
+    onClose: () -> Unit
+) {
     val context = LocalContext.current
     Surface(color = ResolveColors.Bg, modifier = Modifier.fillMaxSize()) {
         Column(
@@ -1532,7 +1722,7 @@ private fun CalendarDraftPage(
                 }
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("New Event", color = ResolveColors.Text, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                    Text(title, color = ResolveColors.Text, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
                     Text(draft.date.format(DateTimeFormatter.ofPattern("M月d日 EEE")), color = ResolveColors.Muted, fontSize = 12.sp)
                 }
             }
@@ -1583,12 +1773,12 @@ private fun CalendarDraftPage(
                         colors = inputColors()
                     )
                     Button(
-                        onClick = { onCreate(draft) },
+                        onClick = onSubmit,
                         enabled = draft.title.isNotBlank(),
                         colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.Accent),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Create in Feishu")
+                        Text(primaryAction)
                     }
                 }
             }
@@ -1733,12 +1923,22 @@ private fun SettingsScreen(
     onBackendSettings: (BackendSettings) -> Unit,
     onBackendSignIn: (String) -> Unit,
     onBackendDisconnect: () -> Unit,
-    onBackendFeishuConnect: () -> Unit,
-    onDisconnect: () -> Unit
+    onBackendFeishuConnect: () -> Unit
 ) {
     var email by remember(state.backendSettings.email) { mutableStateOf(state.backendSettings.email) }
     var password by remember { mutableStateOf("") }
     val backendReady = state.backendSettings.status == BackendStatus.Connected || state.backendSettings.feishuConnected
+    val calendarConnected = state.backendSettings.feishuConnected || state.feishuSettings.status == FeishuStatus.Connected
+    val lastSyncedAt = state.backendSettings.lastSyncedAt ?: state.feishuSettings.lastSyncedAt
+    val calendarStatus = when {
+        isSyncing -> "Updating"
+        calendarConnected && lastSyncedAt != null -> "Synced ${relativeTime(lastSyncedAt)}"
+        calendarConnected -> "Ready"
+        state.backendSettings.lastError != null || state.feishuSettings.lastError != null -> "Needs attention"
+        backendReady -> "Authorization needed"
+        else -> "Sign in first"
+    }
+    val calendarError = state.backendSettings.lastError ?: state.feishuSettings.lastError
     LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
             OutlinedCard(colors = CardDefaults.outlinedCardColors(containerColor = ResolveColors.Surface)) {
@@ -1816,23 +2016,42 @@ private fun SettingsScreen(
                         Icon(Icons.Filled.CalendarMonth, contentDescription = null, tint = ResolveColors.Accent)
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
-                            Text("Feishu Calendar", color = ResolveColors.Text, fontSize = 21.sp, fontWeight = FontWeight.SemiBold)
-                            Text(feishuStatusLabel(state.feishuSettings), color = ResolveColors.Secondary)
+                            Text("Calendar", color = ResolveColors.Text, fontSize = 21.sp, fontWeight = FontWeight.SemiBold)
+                            Text(calendarStatus, color = ResolveColors.Secondary)
                         }
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
-                        Button(onClick = onBackendFeishuConnect, enabled = !isConnecting, colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.Accent)) {
-                            Icon(Icons.Filled.OpenInBrowser, contentDescription = null, Modifier.size(17.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(if (isConnecting) "Waiting" else if (backendReady) "Reconnect" else "Connect")
+                    if (calendarConnected) {
+                        Surface(
+                            color = ResolveColors.Pill,
+                            shape = RoundedCornerShape(18.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = ResolveColors.Accent, modifier = Modifier.size(19.dp))
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text("Authorized", color = ResolveColors.Text, fontWeight = FontWeight.SemiBold)
+                                    Text(calendarStatus, color = ResolveColors.Secondary, fontSize = 12.sp)
+                                }
+                            }
                         }
-                        TextButton(onClick = onDisconnect) {
-                            Icon(Icons.Filled.Close, contentDescription = null, Modifier.size(17.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Disconnect")
+                    } else {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                            Button(
+                                onClick = onBackendFeishuConnect,
+                                enabled = !isConnecting && backendReady,
+                                colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.Accent)
+                            ) {
+                                Icon(Icons.Filled.OpenInBrowser, contentDescription = null, Modifier.size(17.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(if (isConnecting) "Opening" else if (backendReady) "Authorize Calendar" else "Sign in first")
+                            }
                         }
                     }
-                    state.feishuSettings.lastError?.let { Text(it, color = ResolveColors.Danger, fontSize = 12.sp) }
+                    calendarError?.let { Text(it, color = ResolveColors.Danger, fontSize = 12.sp) }
                 }
             }
         }
@@ -2020,13 +2239,7 @@ private fun expandRecurringCalendarEvents(
                 expandRecurringCalendarEvent(event, recurrence, rangeStart, rangeEnd, zone)
             }
         }
-        .distinctBy { event ->
-            listOf(
-                event.externalCalendarId ?: event.provider,
-                event.externalEventId ?: event.id,
-                event.startsAt.toString()
-            ).joinToString(":")
-        }
+        .distinctBy(::calendarDisplayKey)
         .sortedBy { it.startsAt }
 
 private fun eventOverlapsWindow(event: CalendarEvent, rangeStart: Instant, rangeEnd: Instant): Boolean {
@@ -2180,10 +2393,10 @@ private fun inputColors() = TextFieldDefaults.colors(
 )
 
 private fun feishuStatusLabel(settings: FeishuSettings): String = when (settings.status) {
-    FeishuStatus.Connected -> settings.lastSyncedAt?.let { "Feishu ${relativeTime(it)}" } ?: "Feishu connected"
-    FeishuStatus.PermissionError -> "Feishu needs attention"
-    FeishuStatus.TokenExpired -> "Feishu expired"
-    FeishuStatus.NotConnected -> "Feishu offline"
+    FeishuStatus.Connected -> settings.lastSyncedAt?.let { "Synced ${relativeTime(it)}" } ?: "Ready"
+    FeishuStatus.PermissionError -> "Needs attention"
+    FeishuStatus.TokenExpired -> "Authorization expired"
+    FeishuStatus.NotConnected -> "Authorization needed"
 }
 
 private fun backendStatusLabel(settings: BackendSettings): String = when (settings.status) {
@@ -2193,8 +2406,12 @@ private fun backendStatusLabel(settings: BackendSettings): String = when (settin
     BackendStatus.NotConfigured -> "Not signed in"
 }
 
-private fun calendarStatusLabel(feishu: FeishuSettings, backend: BackendSettings): String =
-    if (backend.status == BackendStatus.Connected) backendStatusLabel(backend) else feishuStatusLabel(feishu)
+private fun calendarStatusLabel(feishu: FeishuSettings, backend: BackendSettings): String = when {
+    backend.lastError != null || feishu.lastError != null -> "Needs attention"
+    backend.status == BackendStatus.Connected && backend.feishuConnected -> backend.lastSyncedAt?.let { "Synced ${relativeTime(it)}" } ?: "Connected"
+    backend.status == BackendStatus.Connected -> "Authorization needed"
+    else -> feishuStatusLabel(feishu)
+}
 
 private fun eventTimeLabel(instant: Instant): String =
     instant.atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("HH:mm"))

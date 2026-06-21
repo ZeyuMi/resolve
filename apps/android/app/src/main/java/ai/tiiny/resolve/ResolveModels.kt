@@ -43,6 +43,7 @@ data class CalendarEvent(
     val title: String,
     val description: String = "",
     val recurrence: String? = null,
+    val meetingUrl: String? = null,
     val startsAt: Instant,
     val endsAt: Instant? = null,
     val externalCalendarId: String? = null,

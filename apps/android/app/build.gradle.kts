@@ -12,8 +12,8 @@ android {
         applicationId = "ai.tiiny.resolve"
         minSdk = 26
         targetSdk = 35
-        versionCode = 18
-        versionName = "0.1.18"
+        versionCode = 20
+        versionName = "0.1.20"
     }
 
     buildFeatures {

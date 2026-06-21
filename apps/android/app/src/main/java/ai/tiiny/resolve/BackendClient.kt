@@ -20,6 +20,20 @@ data class BackendOAuthStart(
     val expiresAt: Instant?
 )
 
+class BackendApiException(
+    val code: String?,
+    override val message: String
+) : IllegalStateException(message)
+
+fun Throwable.needsCalendarAuthorization(): Boolean {
+    val text = message.orEmpty().lowercase()
+    return (this is BackendApiException && code == "feishu_needs_auth") ||
+        text.contains("calendar needs authorization") ||
+        text.contains("connect calendar again") ||
+        text.contains("missing feishu refresh token") ||
+        text.contains("missing feishu token set")
+}
+
 class BackendClient(
     private val settings: BackendSettings,
     private val session: BackendSession? = null
@@ -45,17 +59,6 @@ class BackendClient(
             defaultCalendarId = response.optNullableString("defaultCalendarId"),
             lastServerSyncAt = response.optNullableString("lastServerSyncAt")?.let(::instantOrNull)
         )
-    }
-
-    fun configureFeishu(appId: String, appSecret: String): BackendOAuthStart {
-        val response = connector(
-            JSONObject()
-                .put("action", "configure")
-                .put("appId", appId.trim())
-                .put("appSecret", appSecret.trim())
-                .put("startOAuth", true)
-        )
-        return oauthStartFrom(response)
     }
 
     fun startFeishuOAuth(): BackendOAuthStart {
@@ -98,6 +101,29 @@ class BackendClient(
         return mapServerCalendarEvent(event).copy(
             sourceItemId = draft.sourceItemId,
             strategyThreadId = draft.strategyThreadId
+        )
+    }
+
+    fun updateEvent(event: CalendarEvent, draft: CalendarDraft): CalendarEvent {
+        val calendarId = event.externalCalendarId ?: error("Missing Feishu calendar id.")
+        val eventId = event.externalEventId ?: error("Missing Feishu event id.")
+        val startsAt = draft.date.atTime(draft.time).atZone(ZoneId.systemDefault()).toInstant()
+        val durationSeconds = event.endsAt?.epochSecond?.minus(event.startsAt.epochSecond)?.coerceAtLeast(0) ?: 3600
+        val endsAt = startsAt.plusSeconds(durationSeconds)
+        val response = connector(
+            JSONObject()
+                .put("action", "update_event")
+                .put("calendarId", calendarId)
+                .put("eventId", eventId)
+                .put("title", draft.title.trim())
+                .put("description", draft.description.trim())
+                .put("startsAt", startsAt.toString())
+                .put("endsAt", endsAt.toString())
+        )
+        val updated = response.optJSONObject("event") ?: response
+        return mapServerCalendarEvent(updated).copy(
+            sourceItemId = event.sourceItemId,
+            strategyThreadId = event.strategyThreadId
         )
     }
 
@@ -160,12 +186,104 @@ class BackendClient(
 
 fun mergeBackendCalendarEvents(existing: List<CalendarEvent>, remoteEvents: List<CalendarEvent>): List<CalendarEvent> {
     val localEvents = existing.filter { it.provider != "feishu" }
-    return (remoteEvents + localEvents).sortedBy { it.startsAt }
+    return normalizeCalendarEvents(remoteEvents + localEvents)
+}
+
+fun normalizeCalendarEvents(events: List<CalendarEvent>): List<CalendarEvent> {
+    val byRemoteIdentity = linkedMapOf<String, CalendarEvent>()
+    val localEvents = mutableListOf<CalendarEvent>()
+
+    for (event in events) {
+        val key = calendarRemoteIdentityKey(event)
+        if (key == null) {
+            localEvents.add(event)
+            continue
+        }
+        val existing = byRemoteIdentity[key]
+        if (existing == null || preferCalendarEvent(event, existing)) {
+            byRemoteIdentity[key] = event
+        }
+    }
+
+    val visibleRemote = linkedMapOf<String, CalendarEvent>()
+    for (event in byRemoteIdentity.values) {
+        val key = calendarDisplayKey(event)
+        val existing = visibleRemote[key]
+        if (existing == null || preferCalendarEvent(event, existing)) {
+            visibleRemote[key] = event
+        }
+    }
+
+    return (visibleRemote.values + localEvents)
+        .distinctBy { calendarStorageKey(it) }
+        .sortedBy { it.startsAt }
+}
+
+fun replaceCalendarEvent(events: List<CalendarEvent>, original: CalendarEvent, replacement: CalendarEvent): List<CalendarEvent> {
+    var replaced = false
+    val next = events.map { event ->
+        if (sameCalendarEventIdentity(event, original)) {
+            replaced = true
+            replacement
+        } else {
+            event
+        }
+    }
+    return (if (replaced) next else next + replacement).sortedBy { it.startsAt }
+}
+
+private fun sameCalendarEventIdentity(left: CalendarEvent, right: CalendarEvent): Boolean {
+    val leftExternal = left.externalCalendarId?.let { calendarId ->
+        left.externalEventId?.let { eventId -> "$calendarId:$eventId" }
+    }
+    val rightExternal = right.externalCalendarId?.let { calendarId ->
+        right.externalEventId?.let { eventId -> "$calendarId:$eventId" }
+    }
+    return when {
+        leftExternal != null && rightExternal != null -> leftExternal == rightExternal
+        else -> left.id == right.id
+    }
+}
+
+private fun calendarRemoteIdentityKey(event: CalendarEvent): String? {
+    val eventId = event.externalEventId ?: return null
+    return listOf(
+        eventId,
+        event.startsAt.toString(),
+        event.endsAt?.toString().orEmpty()
+    ).joinToString("|")
+}
+
+fun calendarDisplayKey(event: CalendarEvent): String =
+    listOf(
+        event.startsAt.toString(),
+        event.endsAt?.toString().orEmpty(),
+        event.title.trim().lowercase()
+    ).joinToString("|")
+
+private fun calendarStorageKey(event: CalendarEvent): String =
+    calendarRemoteIdentityKey(event) ?: event.id
+
+private fun preferCalendarEvent(candidate: CalendarEvent, existing: CalendarEvent): Boolean {
+    val candidateScore = calendarPreferenceScore(candidate)
+    val existingScore = calendarPreferenceScore(existing)
+    if (candidateScore != existingScore) return candidateScore > existingScore
+    return candidate.id >= existing.id
+}
+
+private fun calendarPreferenceScore(event: CalendarEvent): Int {
+    var score = 0
+    if (event.externalCalendarId == "primary") score += 8
+    if (event.canEdit) score += 2
+    if (event.canDelete) score += 1
+    if (event.provider == "feishu") score += 1
+    return score
 }
 
 private fun mapServerCalendarEvent(json: JSONObject): CalendarEvent {
     val meta = json.optJSONObject("meta") ?: JSONObject()
     val payload = json.optJSONObject("payload") ?: JSONObject()
+    val description = payload.optString("description")
     val id = meta.optString("id").ifBlank {
         "feishu_${meta.optString("externalCalendarId")}_${meta.optString("externalEventId")}"
             .replace(Regex("[^a-zA-Z0-9_-]"), "_")
@@ -175,8 +293,11 @@ private fun mapServerCalendarEvent(json: JSONObject): CalendarEvent {
         provider = meta.optString("provider", "feishu"),
         status = meta.optString("status", "synced"),
         title = payload.optString("title", "Untitled Feishu event").ifBlank { "Untitled Feishu event" },
-        description = payload.optString("description"),
+        description = description,
         recurrence = payload.optNullableString("recurrence"),
+        meetingUrl = payload.optNullableString("meetingUrl")
+            ?: extractMeetingUrlFromText(description)
+            ?: extractMeetingUrlFromJson(payload),
         startsAt = instantOrNull(meta.optString("startsAt")) ?: Instant.now(),
         endsAt = meta.optNullableString("endsAt")?.let(::instantOrNull),
         externalCalendarId = meta.optNullableString("externalCalendarId"),
@@ -222,12 +343,13 @@ private fun HttpURLConnection.readJsonObject(): JSONObject {
     val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
     val json = runCatching { JSONObject(text) }.getOrElse { JSONObject().put("message", text) }
     if (responseCode !in 200..299) {
+        val code = json.optString("error").takeIf { it.isNotBlank() }
         val message = json.optString("message")
             .ifBlank { json.optString("msg") }
             .ifBlank { json.optString("error_description") }
             .ifBlank { json.optString("error") }
             .ifBlank { "HTTP $responseCode" }
-        error(message)
+        throw BackendApiException(code, message)
     }
     return json
 }

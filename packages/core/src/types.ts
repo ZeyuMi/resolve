@@ -145,6 +145,7 @@ export interface CalendarEventPayload {
   title: string;
   description?: string;
   location?: string;
+  meetingUrl?: string;
   attendees?: Array<{
     name?: string;
     email?: string;

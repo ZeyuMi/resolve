@@ -56,6 +56,22 @@ class SyncWorker(
                 )
                 Result.success()
             } catch (error: Throwable) {
+                if (error.needsCalendarAuthorization()) {
+                    repository.save(
+                        state.copy(
+                            backendSettings = backend.copy(
+                                status = BackendStatus.Connected,
+                                feishuConnected = false,
+                                lastError = "Calendar needs attention"
+                            ),
+                            feishuSettings = state.feishuSettings.copy(
+                                status = FeishuStatus.NotConnected,
+                                lastError = "Calendar needs attention"
+                            )
+                        )
+                    )
+                    return@withContext Result.success()
+                }
                 repository.save(
                     state.copy(
                         backendSettings = backend.copy(status = BackendStatus.Error, lastError = error.message),

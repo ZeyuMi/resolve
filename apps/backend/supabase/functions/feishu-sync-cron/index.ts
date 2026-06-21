@@ -5,6 +5,7 @@ import {
   feishuConnectorDisabledBody,
   isFeishuServerConnectorAllowed
 } from "../_shared/security.ts";
+import { isFeishuAuthorizationRequiredError } from "../_shared/feishuApi.ts";
 import { syncFeishuForUser } from "../_shared/feishuSync.ts";
 import { restSelect } from "../_shared/supabaseRest.ts";
 
@@ -31,6 +32,7 @@ Deno.serve(async (request) => {
     } catch (error) {
       results.push({
         userId: connection.user_id,
+        status: isFeishuAuthorizationRequiredError(error) ? "needs_auth" : "error",
         error: error instanceof Error ? error.message : "Feishu sync failed."
       });
     }
