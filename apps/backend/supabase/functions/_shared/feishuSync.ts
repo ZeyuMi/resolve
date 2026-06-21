@@ -45,16 +45,42 @@ interface CalendarEventRow {
   payload_version: 1;
 }
 
+interface SyncStateRow {
+  status: string;
+  last_full_sync_at?: string | null;
+  last_incremental_sync_at?: string | null;
+  encrypted_sync_token?: string | null;
+  sync_token_nonce?: string | null;
+}
+
+interface FeishuSyncTokenVault {
+  version: 1;
+  defaultCalendarId?: string;
+  calendarIds?: string[];
+  calendarTokens: Record<string, string>;
+  lastFullSyncAt?: string | null;
+  lastIncrementalSyncAt?: string | null;
+}
+
+interface CalendarFetchResult {
+  events: FeishuServerEvent[];
+  nextSyncToken?: string;
+  mode: "full" | "incremental";
+}
+
 export interface SyncResult {
   userId: string;
   calendarId: string;
   calendarIds: string[];
+  mode: "full" | "incremental" | "mixed";
   upserted: number;
   fetched: number;
   stored: number;
   deduped: number;
   remoteDeleted: number;
   syncedAt: string;
+  fullSyncedCalendars?: string[];
+  incrementalSyncedCalendars?: string[];
   minStartsAt?: string;
   maxStartsAt?: string;
   skippedCalendars?: Array<{ calendarId: string; error: string }>;
@@ -93,16 +119,36 @@ async function syncFeishuForUserUnchecked(userId: string): Promise<SyncResult> {
   const syncedAt = new Date().toISOString();
   const startsAt = new Date(Date.now() - fullSyncPastDays * 24 * 60 * 60 * 1000).toISOString();
   const endsAt = new Date(Date.now() + fullSyncFutureDays * 24 * 60 * 60 * 1000).toISOString();
+  const syncTokenVault = await loadSyncTokenVault(userId);
+  const nextCalendarTokens = {
+    ...syncTokenVault.calendarTokens
+  };
 
   const candidates: Array<{ calendarId: string; event: FeishuServerEvent }> = [];
   const successfulCalendarIds = new Set<string>();
+  const fullSyncedCalendarIds = new Set<string>();
+  const incrementalSyncedCalendarIds = new Set<string>();
   const skippedCalendars: Array<{ calendarId: string; error: string }> = [];
 
   for (const calendar of calendars) {
     try {
-      const events = await fetchEventsForCalendar(client, calendar.calendarId, startsAt, endsAt);
+      const fetchResult = await fetchEventsForCalendar(
+        client,
+        calendar.calendarId,
+        startsAt,
+        endsAt,
+        syncTokenVault.calendarTokens[calendar.calendarId]
+      );
       successfulCalendarIds.add(calendar.calendarId);
-      for (const event of events.filter((item) => item.eventId)) {
+      if (fetchResult.mode === "full") {
+        fullSyncedCalendarIds.add(calendar.calendarId);
+      } else {
+        incrementalSyncedCalendarIds.add(calendar.calendarId);
+      }
+      if (fetchResult.nextSyncToken) {
+        nextCalendarTokens[calendar.calendarId] = fetchResult.nextSyncToken;
+      }
+      for (const event of fetchResult.events.filter((item) => item.eventId)) {
         candidates.push({
           calendarId: event.calendarId || calendar.calendarId,
           event
@@ -143,7 +189,7 @@ async function syncFeishuForUserUnchecked(userId: string): Promise<SyncResult> {
   }
 
   let remoteDeleted = 0;
-  for (const calendarId of successfulCalendarIds) {
+  for (const calendarId of fullSyncedCalendarIds) {
     const remoteIds = remoteIdsByCalendar.get(calendarId) ?? new Set<string>();
     const existingRows = await restSelect<{ id: string }>(
       "resolve_calendar_events",
@@ -175,13 +221,29 @@ async function syncFeishuForUserUnchecked(userId: string): Promise<SyncResult> {
     }
   }
 
+  await saveSyncTokenVault(userId, {
+    version: 1,
+    defaultCalendarId,
+    calendarIds: Array.from(successfulCalendarIds),
+    calendarTokens: nextCalendarTokens,
+    lastFullSyncAt: fullSyncedCalendarIds.size ? syncedAt : syncTokenVault.lastFullSyncAt ?? null,
+    lastIncrementalSyncAt: incrementalSyncedCalendarIds.size ? syncedAt : syncTokenVault.lastIncrementalSyncAt ?? null
+  });
+
+  const syncMode =
+    fullSyncedCalendarIds.size && incrementalSyncedCalendarIds.size
+      ? "mixed"
+      : fullSyncedCalendarIds.size
+        ? "full"
+        : "incremental";
   await restUpsert(
     "resolve_sync_states",
     {
       user_id: userId,
       provider: "feishu",
       status: "ok",
-      last_full_sync_at: syncedAt,
+      last_full_sync_at: fullSyncedCalendarIds.size ? syncedAt : syncTokenVault.lastFullSyncAt ?? null,
+      last_incremental_sync_at: incrementalSyncedCalendarIds.size ? syncedAt : syncTokenVault.lastIncrementalSyncAt ?? null,
       updated_at: syncedAt
     },
     "user_id,provider"
@@ -201,12 +263,15 @@ async function syncFeishuForUserUnchecked(userId: string): Promise<SyncResult> {
     userId,
     calendarId: defaultCalendarId,
     calendarIds: Array.from(successfulCalendarIds),
+    mode: syncMode,
     upserted: rows.length,
     fetched: candidates.length,
     stored: rows.length,
     deduped: candidates.length - rows.length,
     remoteDeleted,
     syncedAt,
+    fullSyncedCalendars: fullSyncedCalendarIds.size ? Array.from(fullSyncedCalendarIds) : undefined,
+    incrementalSyncedCalendars: incrementalSyncedCalendarIds.size ? Array.from(incrementalSyncedCalendarIds) : undefined,
     minStartsAt: rowStarts[0],
     maxStartsAt: rowStarts.at(-1),
     skippedCalendars: skippedCalendars.length ? skippedCalendars : undefined
@@ -217,12 +282,36 @@ async function fetchEventsForCalendar(
   client: FeishuServerClient,
   calendarId: string,
   startsAt: string,
+  endsAt: string,
+  syncToken?: string
+): Promise<CalendarFetchResult> {
+  if (syncToken) {
+    try {
+      return await fetchIncrementalEventsForCalendar(client, calendarId, syncToken);
+    } catch (error) {
+      if (isFeishuAuthorizationRequiredError(error)) {
+        throw error;
+      }
+      if (!isSyncTokenError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  return fetchFullEventsForCalendar(client, calendarId, startsAt, endsAt);
+}
+
+async function fetchFullEventsForCalendar(
+  client: FeishuServerClient,
+  calendarId: string,
+  startsAt: string,
   endsAt: string
-) {
+): Promise<CalendarFetchResult> {
   const eventsByKey = new Map<string, FeishuServerEvent>();
-  const modes: Array<{ startsAt?: string; endsAt?: string; anchorTime?: string }> = [
-    { startsAt, endsAt },
-    { anchorTime: startsAt }
+  let nextSyncToken: string | undefined;
+  const modes: Array<{ startsAt?: string; endsAt?: string; anchorTime?: string; capturesSyncToken?: boolean }> = [
+    { startsAt, endsAt, capturesSyncToken: true },
+    { anchorTime: startsAt, capturesSyncToken: false }
   ];
 
   for (const mode of modes) {
@@ -239,11 +328,50 @@ async function fetchEventsForCalendar(
         if (!event.eventId || !eventOverlapsWindow(event, startsAt, endsAt)) continue;
         eventsByKey.set(feishuCandidateKey(calendarId, event), event);
       }
+      if (mode.capturesSyncToken && page.nextSyncToken) {
+        nextSyncToken = page.nextSyncToken;
+      }
       pageToken = page.nextPageToken;
     } while (pageToken);
   }
 
-  return Array.from(eventsByKey.values());
+  return {
+    events: Array.from(eventsByKey.values()),
+    nextSyncToken,
+    mode: "full"
+  };
+}
+
+async function fetchIncrementalEventsForCalendar(
+  client: FeishuServerClient,
+  calendarId: string,
+  syncToken: string
+): Promise<CalendarFetchResult> {
+  const eventsByKey = new Map<string, FeishuServerEvent>();
+  let pageToken: string | undefined;
+  let nextSyncToken: string | undefined;
+
+  do {
+    const page = await client.listEvents({
+      calendarId,
+      syncToken,
+      pageToken
+    });
+    for (const event of page.events) {
+      if (!event.eventId) continue;
+      eventsByKey.set(feishuCandidateKey(calendarId, event), event);
+    }
+    if (page.nextSyncToken) {
+      nextSyncToken = page.nextSyncToken;
+    }
+    pageToken = page.nextPageToken;
+  } while (pageToken);
+
+  return {
+    events: Array.from(eventsByKey.values()),
+    nextSyncToken: nextSyncToken ?? syncToken,
+    mode: "incremental"
+  };
 }
 
 function dedupeFeishuEventCandidates(
@@ -501,6 +629,57 @@ export async function readServerCalendarEvents(userId: string, startsAt?: string
   );
 }
 
+async function loadSyncTokenVault(userId: string): Promise<FeishuSyncTokenVault> {
+  const rows = await restSelect<SyncStateRow>(
+    "resolve_sync_states",
+    `select=status,last_full_sync_at,last_incremental_sync_at,encrypted_sync_token,sync_token_nonce&user_id=eq.${encodeFilter(userId)}&provider=eq.feishu&limit=1`
+  );
+  const row = rows[0];
+  if (!row?.encrypted_sync_token || !row.sync_token_nonce) {
+    return {
+      version: 1,
+      calendarTokens: {},
+      lastFullSyncAt: row?.last_full_sync_at ?? null,
+      lastIncrementalSyncAt: row?.last_incremental_sync_at ?? null
+    };
+  }
+
+  try {
+    const decrypted = await serverDecryptJson<Partial<FeishuSyncTokenVault>>(row.encrypted_sync_token, row.sync_token_nonce);
+    return {
+      version: 1,
+      defaultCalendarId: decrypted.defaultCalendarId,
+      calendarIds: decrypted.calendarIds,
+      calendarTokens: decrypted.calendarTokens ?? {},
+      lastFullSyncAt: row.last_full_sync_at ?? decrypted.lastFullSyncAt ?? null,
+      lastIncrementalSyncAt: row.last_incremental_sync_at ?? decrypted.lastIncrementalSyncAt ?? null
+    };
+  } catch {
+    return {
+      version: 1,
+      calendarTokens: {},
+      lastFullSyncAt: row.last_full_sync_at ?? null,
+      lastIncrementalSyncAt: row.last_incremental_sync_at ?? null
+    };
+  }
+}
+
+async function saveSyncTokenVault(userId: string, vault: FeishuSyncTokenVault) {
+  const encrypted = await serverEncryptJson(vault);
+  await restUpsert(
+    "resolve_sync_states",
+    {
+      user_id: userId,
+      provider: "feishu",
+      status: "ok",
+      encrypted_sync_token: encrypted.encrypted,
+      sync_token_nonce: encrypted.nonce,
+      updated_at: new Date().toISOString()
+    },
+    "user_id,provider"
+  );
+}
+
 export async function loadConnection(userId: string) {
   const rows = await restSelect<ConnectionRow>(
     "resolve_feishu_connections",
@@ -540,6 +719,13 @@ async function refreshTokenForUser(userId: string, client: FeishuServerClient) {
 function isFeishuTokenError(error: unknown) {
   const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
   return message.includes("refresh token") || (message.includes("token") && message.includes("expired"));
+}
+
+function isSyncTokenError(error: unknown) {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return message.includes("sync_token") ||
+    message.includes("sync token") ||
+    (message.includes("token") && message.includes("expired") && message.includes("sync"));
 }
 
 export async function markFeishuConnectionNeedsAuth(userId: string) {
@@ -607,7 +793,11 @@ async function toCalendarEventRow(
     provider: "feishu",
     external_calendar_id: calendarId,
     external_event_id: event.eventId,
-    status: event.status === "cancelled" ? "remote_deleted" : event.canEdit === false ? "readonly" : "synced",
+    status: ["cancelled", "canceled", "deleted"].includes(String(event.status ?? "").toLowerCase())
+      ? "remote_deleted"
+      : event.canEdit === false
+        ? "readonly"
+        : "synced",
     starts_at: event.startsAt,
     ends_at: event.endsAt ?? null,
     is_all_day: Boolean(event.isAllDay),

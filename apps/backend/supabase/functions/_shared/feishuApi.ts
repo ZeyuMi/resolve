@@ -266,6 +266,9 @@ async function parseFeishuResponse<T>(response: Response) {
 
 function isTokenFailure(message: string) {
   const normalized = message.toLowerCase();
+  if (normalized.includes("sync_token") || normalized.includes("sync token")) {
+    return false;
+  }
   return normalized.includes("token") &&
     (normalized.includes("expired") || normalized.includes("invalid") || normalized.includes("unauthorized"));
 }
