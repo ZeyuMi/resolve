@@ -108,7 +108,7 @@ async function syncFeishuForUserUnchecked(userId: string): Promise<SyncResult> {
   let client = new FeishuServerClient(config, tokenSet);
 
   if (isTokenExpired(tokenSet)) {
-    tokenSet = await refreshTokenForUser(userId, client);
+    tokenSet = await refreshTokenForUser(userId, client, tokenSet);
     await saveToken(userId, tokenSet);
     client = new FeishuServerClient(config, tokenSet);
   }
@@ -476,7 +476,7 @@ async function createFeishuEventForUserUnchecked(
   let client = new FeishuServerClient(config, tokenSet);
 
   if (isTokenExpired(tokenSet)) {
-    tokenSet = await refreshTokenForUser(userId, client);
+    tokenSet = await refreshTokenForUser(userId, client, tokenSet);
     await saveToken(userId, tokenSet);
     client = new FeishuServerClient(config, tokenSet);
   }
@@ -529,7 +529,7 @@ async function updateFeishuEventForUserUnchecked(
   let client = new FeishuServerClient(config, tokenSet);
 
   if (isTokenExpired(tokenSet)) {
-    tokenSet = await refreshTokenForUser(userId, client);
+    tokenSet = await refreshTokenForUser(userId, client, tokenSet);
     await saveToken(userId, tokenSet);
     client = new FeishuServerClient(config, tokenSet);
   }
@@ -580,7 +580,7 @@ async function deleteFeishuEventForUserUnchecked(
   let client = new FeishuServerClient(config, tokenSet);
 
   if (isTokenExpired(tokenSet)) {
-    tokenSet = await refreshTokenForUser(userId, client);
+    tokenSet = await refreshTokenForUser(userId, client, tokenSet);
     await saveToken(userId, tokenSet);
     client = new FeishuServerClient(config, tokenSet);
   }
@@ -704,15 +704,30 @@ async function decryptToken(connection: ConnectionRow) {
   return serverDecryptJson<FeishuTokenSet>(connection.server_encrypted_token_set, connection.server_token_nonce);
 }
 
-async function refreshTokenForUser(userId: string, client: FeishuServerClient) {
+async function refreshTokenForUser(userId: string, client: FeishuServerClient, staleTokenSet: FeishuTokenSet) {
   try {
     return await client.refreshAccessToken();
   } catch (error) {
     if (isFeishuAuthorizationRequiredError(error) || isFeishuTokenError(error)) {
+      const latestTokenSet = await loadLatestTokenIfAnotherSyncRefreshed(userId, staleTokenSet);
+      if (latestTokenSet) return latestTokenSet;
       await markFeishuConnectionNeedsAuth(userId);
       throw new FeishuAuthorizationRequiredError();
     }
     throw error;
+  }
+}
+
+async function loadLatestTokenIfAnotherSyncRefreshed(userId: string, staleTokenSet: FeishuTokenSet) {
+  try {
+    const latestConnection = await loadConnection(userId);
+    const latestTokenSet = await decryptToken(latestConnection);
+    const tokenChanged =
+      Boolean(latestTokenSet.accessToken && latestTokenSet.accessToken !== staleTokenSet.accessToken) ||
+      Boolean(latestTokenSet.refreshToken && latestTokenSet.refreshToken !== staleTokenSet.refreshToken);
+    return tokenChanged && !isTokenExpired(latestTokenSet) ? latestTokenSet : null;
+  } catch {
+    return null;
   }
 }
 

@@ -14,6 +14,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
@@ -95,8 +96,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -110,6 +116,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.graphics.drawscope.Stroke
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -1436,17 +1443,52 @@ private fun Modifier.swipeBack(enabled: Boolean, onBack: () -> Unit): Modifier {
 
 @Composable
 private fun ResolveMark(size: Dp) {
-    Surface(
-        color = ResolveColors.Accent,
-        shape = CircleShape,
-        modifier = Modifier.size(size)
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            Icon(
-                Icons.Filled.Check,
-                contentDescription = null,
-                tint = Color.White,
-                modifier = Modifier.size((size.value * 0.58f).dp)
+    Box(modifier = Modifier.size(size), contentAlignment = Alignment.Center) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val canvasSize = this.size
+            val radius = canvasSize.minDimension * 0.36f
+            val center = Offset(canvasSize.width / 2f, canvasSize.height / 2f)
+            drawCircle(
+                brush = Brush.linearGradient(
+                    listOf(Color(0xFF7DB2FF), Color(0xFF2F66DD), Color(0xFF1E38C8))
+                ),
+                radius = radius,
+                center = center,
+                alpha = 0.94f
+            )
+            drawOval(
+                color = Color.White.copy(alpha = 0.22f),
+                topLeft = Offset(canvasSize.width * 0.28f, canvasSize.height * 0.22f),
+                size = Size(canvasSize.width * 0.42f, canvasSize.height * 0.16f)
+            )
+            drawCircle(
+                color = Color.White.copy(alpha = 0.24f),
+                radius = radius * 0.95f,
+                center = center,
+                style = Stroke(width = canvasSize.minDimension * 0.022f)
+            )
+            val check = Path().apply {
+                moveTo(canvasSize.width * 0.335f, canvasSize.height * 0.512f)
+                lineTo(canvasSize.width * 0.456f, canvasSize.height * 0.632f)
+                lineTo(canvasSize.width * 0.682f, canvasSize.height * 0.384f)
+            }
+            drawPath(
+                path = check,
+                color = Color.White,
+                style = Stroke(
+                    width = canvasSize.width * 0.092f,
+                    cap = StrokeCap.Round,
+                    join = StrokeJoin.Round
+                )
+            )
+            drawPath(
+                path = check,
+                color = Color(0xFFDCEBFF).copy(alpha = 0.42f),
+                style = Stroke(
+                    width = canvasSize.width * 0.036f,
+                    cap = StrokeCap.Round,
+                    join = StrokeJoin.Round
+                )
             )
         }
     }

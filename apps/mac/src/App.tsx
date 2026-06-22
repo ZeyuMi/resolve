@@ -106,6 +106,7 @@ const feishuOAuthScopes = feishuCalendarScopes
   .filter((scope) => scope !== "contact:user.email:readonly");
 const appSyncCursorKey = "resolve:app-sync-cursor:v2";
 const appSyncCursorLookbackMs = 30 * 24 * 60 * 60 * 1000;
+const calendarReauthorizationMessage = "Feishu needs reauthorization.";
 
 function loadAppSyncCursor() {
   return localStorage.getItem(appSyncCursorKey) ?? undefined;
@@ -720,7 +721,7 @@ export function App() {
   const [backendSettings, setBackendSettings] = useState(loadBackendSettings);
   const [feishuConnecting, setFeishuConnecting] = useState(false);
   const [manualSyncing, setManualSyncing] = useState(false);
-  const [selectedThreadId, setSelectedThreadId] = useState(() => state.strategyThreads[0]?.meta.id ?? "");
+  const [selectedThreadId, setSelectedThreadId] = useState("");
   const [strategyTaskText, setStrategyTaskText] = useState("");
   const [strategyDraft, setStrategyDraft] = useState<StrategyDraft>({ title: "", currentHypothesis: "" });
   const [calendarDraft, setCalendarDraft] = useState<CalendarDraft | null>(null);
@@ -935,7 +936,7 @@ export function App() {
           status: "connected",
           feishuConnected: status.connected,
           lastSyncedAt: status.lastServerSyncAt ?? backendSettingsRef.current.lastSyncedAt,
-          lastError: status.needsAuthorization ? "Calendar needs attention" : undefined
+          lastError: status.needsAuthorization ? calendarReauthorizationMessage : undefined
         });
       } catch (error) {
         if (cancelled) return;
@@ -984,7 +985,7 @@ export function App() {
         };
         setFeishuSettings(next);
         saveFeishuSettings(next);
-        showToast("Calendar needs attention");
+        showToast("Reconnect Feishu");
         return;
       }
 
@@ -1446,16 +1447,16 @@ export function App() {
             ...backendSettingsRef.current,
             status: "connected",
             feishuConnected: false,
-            lastError: "Calendar needs attention"
+            lastError: calendarReauthorizationMessage
           });
           const nextFeishuSettings = {
             ...feishuSettingsRef.current,
             status: "not_connected" as const,
-            lastError: "Calendar needs attention"
+            lastError: calendarReauthorizationMessage
           };
           setFeishuSettings(nextFeishuSettings);
           saveFeishuSettings(nextFeishuSettings);
-          showToast("Calendar needs attention");
+          showToast("Reconnect Feishu");
           return;
         }
         const latestState = stateRef.current;
@@ -1585,9 +1586,9 @@ export function App() {
           ...backendSettingsRef.current,
           feishuConnected: !needsCalendarAuthorization(error),
           status: needsCalendarAuthorization(error) ? "connected" : "error",
-          lastError: needsCalendarAuthorization(error) ? "Calendar needs attention" : message
+          lastError: needsCalendarAuthorization(error) ? calendarReauthorizationMessage : message
         });
-        showToast(needsCalendarAuthorization(error) ? "Calendar needs attention" : "Feishu delete failed");
+        showToast(needsCalendarAuthorization(error) ? "Reconnect Feishu" : "Feishu delete failed");
       }
       return;
     }
@@ -1732,9 +1733,9 @@ export function App() {
           ...backendSettingsRef.current,
           feishuConnected: !needsCalendarAuthorization(error),
           status: needsCalendarAuthorization(error) ? "connected" : "error",
-          lastError: needsCalendarAuthorization(error) ? "Calendar needs attention" : feishuErrorMessage(error)
+          lastError: needsCalendarAuthorization(error) ? calendarReauthorizationMessage : feishuErrorMessage(error)
         });
-        showToast(needsCalendarAuthorization(error) ? "Calendar needs attention" : "Feishu update failed");
+        showToast(needsCalendarAuthorization(error) ? "Reconnect Feishu" : "Feishu update failed");
       }
       return;
     }
@@ -2041,13 +2042,13 @@ export function App() {
         status: "connected",
         feishuConnected: calendarConnected,
         lastSyncedAt: status?.lastServerSyncAt ?? settings.lastSyncedAt,
-        lastError: calendarNeedsAuth ? "Calendar needs attention" : undefined
+        lastError: calendarNeedsAuth ? calendarReauthorizationMessage : undefined
       });
       if (!calendarConnected) {
         const nextFeishuSettings = {
           ...feishuSettingsRef.current,
           status: "not_connected" as const,
-          lastError: calendarNeedsAuth ? "Calendar needs attention" : undefined
+          lastError: calendarNeedsAuth ? calendarReauthorizationMessage : undefined
         };
         setFeishuSettings(nextFeishuSettings);
         saveFeishuSettings(nextFeishuSettings);
@@ -2133,16 +2134,16 @@ export function App() {
           ...backendSettingsRef.current,
           status: "connected",
           feishuConnected: false,
-          lastError: "Calendar needs attention"
+          lastError: calendarReauthorizationMessage
         });
         const nextFeishuSettings = {
           ...feishuSettingsRef.current,
           status: "not_connected" as const,
-          lastError: "Calendar needs attention"
+          lastError: calendarReauthorizationMessage
         };
         setFeishuSettings(nextFeishuSettings);
         saveFeishuSettings(nextFeishuSettings);
-        if (!options.silent) showToast("Calendar needs attention");
+        if (!options.silent) showToast("Reconnect Feishu");
         return;
       }
       handleSaveBackend({
@@ -2222,7 +2223,7 @@ export function App() {
     tokenSet = loadFeishuToken(),
     options: { silent?: boolean } = {}
   ) {
-    if (backendSettingsRef.current.feishuConnected && loadBackendSession()) {
+    if (loadBackendSession()) {
       await syncBackendCalendar(options);
       return;
     }
@@ -2242,7 +2243,7 @@ export function App() {
       };
       setFeishuSettings(next);
       saveFeishuSettings(next);
-      if (!options.silent) showToast("Calendar needs attention");
+      if (!options.silent) showToast("Reconnect Feishu");
       return;
     }
 
@@ -2352,7 +2353,6 @@ export function App() {
         </div>
 
         <div className="sidebar-scroll">
-          <CaptureBox value={captureText} onChange={setCaptureText} onSave={handleCapture} disabled={tab !== "todo"} />
           <SidebarNav
             active={tab}
             todoCount={todoItems.length}
@@ -2383,8 +2383,11 @@ export function App() {
               calendarEvents={state.calendarEvents}
               selectedTodo={selectedTodo}
               selectedTodoSubtasks={selectedTodoSubtasks}
+              captureValue={captureText}
               showCompleted={showCompleted}
               showArchived={showArchived}
+              onCaptureChange={setCaptureText}
+              onCaptureSave={handleCapture}
               onOpenCalendar={openCalendarDraft}
               onAttachStrategy={attachTodoToStrategy}
               onComplete={(todo) => {
@@ -2446,6 +2449,7 @@ export function App() {
               strategySignals={strategySignals}
               taskText={strategyTaskText}
               strategyDraft={strategyDraft}
+              allTodos={taskItems}
               onSelectThread={setSelectedThreadId}
               onTaskText={setStrategyTaskText}
               onStrategyDraft={setStrategyDraft}
@@ -2570,15 +2574,17 @@ function CaptureBox({
   value,
   onChange,
   onSave,
-  disabled = false
+  disabled = false,
+  variant = "panel"
 }: {
   value: string;
   onChange: (value: string) => void;
   onSave: () => void;
   disabled?: boolean;
+  variant?: "panel" | "todo-row";
 }) {
   return (
-    <section className={`capture-box ${disabled ? "disabled" : ""}`}>
+    <section className={`capture-box ${variant === "todo-row" ? "todo-capture-row" : ""} ${disabled ? "disabled" : ""}`}>
       <div className="capture-title">
         <Search size={18} />
         <span>快速记录</span>
@@ -2598,6 +2604,7 @@ function CaptureBox({
           if (event.key === "Escape") onChange("");
         }}
         placeholder="记一下..."
+        rows={1}
       />
       <div className="capture-actions">
         <button className="primary-button" onClick={onSave} disabled={disabled}>
@@ -2794,8 +2801,11 @@ function TodoView({
   calendarEvents,
   selectedTodo,
   selectedTodoSubtasks,
+  captureValue,
   showCompleted,
   showArchived,
+  onCaptureChange,
+  onCaptureSave,
   onOpenCalendar,
   onAttachStrategy,
   onComplete,
@@ -2822,8 +2832,11 @@ function TodoView({
   calendarEvents: DecryptedCalendarEvent[];
   selectedTodo?: DecryptedItem;
   selectedTodoSubtasks: DecryptedItem[];
+  captureValue: string;
   showCompleted: boolean;
   showArchived: boolean;
+  onCaptureChange: (value: string) => void;
+  onCaptureSave: () => void;
   onOpenCalendar: (todo: DecryptedItem) => void;
   onAttachStrategy: (todoId: string, threadId: string) => void;
   onComplete: (todo: DecryptedItem) => void;
@@ -2977,6 +2990,7 @@ function TodoView({
   return (
     <div className={`todo-workspace ${selectedTodo ? "has-detail" : ""}`}>
       <div className="todo-list-pane">
+        <CaptureBox value={captureValue} onChange={onCaptureChange} onSave={onCaptureSave} variant="todo-row" />
         <div className="section-title-row">
           <div>
             <h2>Active</h2>
@@ -3729,17 +3743,17 @@ function CalendarView({
               ))}
             </div>
             <div className={`calendar-grid ${viewMode === "week" ? "week-grid" : ""}`} ref={calendarGridRef}>
-	              {days.map((day) => {
-	                const key = formatDateInput(day);
-	                const dayEvents = eventsByDate.get(key) ?? [];
-	                const eventSlots = visibleEventsPerCell;
-	                const compactOverflow = viewMode === "month" && eventSlots === 0 && dayEvents.length > 0;
-	                const hasMoreEvents = dayEvents.length > eventSlots;
-	                const visibleInlineEvents = compactOverflow ? 0 : hasMoreEvents ? Math.max(0, eventSlots - 1) : eventSlots;
-	                const hiddenEventCount = dayEvents.length - visibleInlineEvents;
-	                const isCurrentMonth = day.getMonth() === monthCursor.getMonth();
-	                const isSelected = key === selectedDate;
-	                const isPast = key < todayKey;
+              {days.map((day) => {
+                const key = formatDateInput(day);
+                const dayEvents = eventsByDate.get(key) ?? [];
+                const eventSlots = visibleEventsPerCell;
+                const compactOverflow = viewMode === "month" && eventSlots === 0 && dayEvents.length > 0;
+                const hasMoreEvents = dayEvents.length > eventSlots;
+                const visibleInlineEvents = compactOverflow ? 0 : hasMoreEvents ? Math.max(0, eventSlots - 1) : eventSlots;
+                const hiddenEventCount = dayEvents.length - visibleInlineEvents;
+                const isCurrentMonth = day.getMonth() === monthCursor.getMonth();
+                const isSelected = key === selectedDate;
+                const isPast = key < todayKey;
                 const isToday = key === todayKey;
                 return (
                   <div
@@ -3754,11 +3768,11 @@ function CalendarView({
                         openDraftForDate(key);
                       }
                     }}
-	                  >
-	                    <div className="calendar-day-header">
-                        <span className="calendar-date-number">
-                          {viewMode === "week" ? day.toLocaleDateString("zh-CN", { month: "short", day: "numeric" }) : day.getDate()}
-                        </span>
+                  >
+                    <div className="calendar-day-header">
+                      <span className="calendar-date-number">
+                        {viewMode === "week" ? day.toLocaleDateString("zh-CN", { month: "short", day: "numeric" }) : day.getDate()}
+                      </span>
                         {compactOverflow && (
                           <button
                             className="calendar-day-count"
@@ -3771,13 +3785,13 @@ function CalendarView({
                             type="button"
                           >
                             +{hiddenEventCount}
-                          </button>
-                        )}
-                      </div>
-		                    <div className="calendar-cell-events">
-		                      {dayEvents.slice(0, visibleInlineEvents).map((event) => (
-		                        <button
-		                          className={`calendar-event-chip ${displayCalendarEventKey(event) === selectedEventKey ? "selected" : ""}`}
+                        </button>
+                      )}
+                    </div>
+                    <div className="calendar-cell-events">
+                      {dayEvents.slice(0, visibleInlineEvents).map((event) => (
+                        <button
+                          className={`calendar-event-chip ${displayCalendarEventKey(event) === selectedEventKey ? "selected" : ""}`}
                           key={displayCalendarEventKey(event)}
                           onClick={(clickEvent) => {
                             clickEvent.stopPropagation();
@@ -3785,29 +3799,29 @@ function CalendarView({
                           }}
                           type="button"
                         >
-		                          <span className="calendar-event-dot" />
-                              <span className="calendar-event-time">{eventTimeLabel(event.meta.startsAt)}</span>
-                              <span className="calendar-event-title">{(event.payload as CalendarEventPayload).title}</span>
-		                        </button>
-			                      ))}
-		                    </div>
-		                    {hasMoreEvents && !compactOverflow && (
-		                      <button
-		                        className="calendar-more-label"
-		                        aria-label={`还有 ${hiddenEventCount} 项`}
-		                        title={`还有 ${hiddenEventCount} 项`}
-		                        onClick={(clickEvent) => {
-		                          clickEvent.stopPropagation();
-		                          openDayList(key);
-		                        }}
-		                        type="button"
-		                      >
-		                        <span className="calendar-more-full">还有 {hiddenEventCount} 项</span>
-		                        <span className="calendar-more-compact">+{hiddenEventCount}</span>
-		                        <span className="calendar-more-tiny">{hiddenEventCount}</span>
-		                      </button>
-		                    )}
-		                  </div>
+                          <span className="calendar-event-dot" />
+                          <span className="calendar-event-time">{eventTimeLabel(event.meta.startsAt)}</span>
+                          <span className="calendar-event-title">{(event.payload as CalendarEventPayload).title}</span>
+                        </button>
+                      ))}
+                    </div>
+                    {hasMoreEvents && !compactOverflow && (
+                      <button
+                        className="calendar-more-label"
+                        aria-label={`还有 ${hiddenEventCount} 项`}
+                        title={`还有 ${hiddenEventCount} 项`}
+                        onClick={(clickEvent) => {
+                          clickEvent.stopPropagation();
+                          openDayList(key);
+                        }}
+                        type="button"
+                      >
+                        <span className="calendar-more-full">还有 {hiddenEventCount} 项</span>
+                        <span className="calendar-more-compact">+{hiddenEventCount}</span>
+                        <span className="calendar-more-tiny">{hiddenEventCount}</span>
+                      </button>
+                    )}
+                  </div>
                 );
               })}
             </div>
@@ -3815,37 +3829,35 @@ function CalendarView({
         )}
       </section>
 
-	      {(draft || selectedEvent || expandedDayKey) && (
-	        <div className="calendar-popover-backdrop" onClick={closeCalendarPopover}>
-	          <div className="calendar-popover" onClick={(event) => event.stopPropagation()}>
-	            {draft && (
-	              <CalendarDraftDetailPanel
-                draft={draft}
-                title={draft.todoId ? "Todo -> Calendar" : "New Event"}
-                onChange={onDraft}
-                onClose={() => onDraft(null)}
-                onSave={onSaveDraft}
-              />
-            )}
-            {selectedEvent && (
-              <CalendarEventDetailPanel
-                event={selectedEvent}
-                onClose={() => onSelectedEventKey(null)}
-                onUpdate={(draft) => onUpdateEvent(selectedEvent, draft)}
-	                onDelete={onDeleteEvent}
-	              />
-	            )}
-	            {!draft && !selectedEvent && expandedDayKey && (
-	              <CalendarDayEventListPanel
-	                date={expandedDayKey}
-	                events={expandedDayEvents}
-	                onClose={closeCalendarPopover}
-	                onSelect={selectEvent}
-	              />
-	            )}
-	          </div>
-	        </div>
-	      )}
+      {(draft || selectedEvent || expandedDayKey) && (
+        <aside className="calendar-inspector">
+          {draft && (
+            <CalendarDraftDetailPanel
+              draft={draft}
+              title={draft.todoId ? "Todo -> Calendar" : "New Event"}
+              onChange={onDraft}
+              onClose={() => onDraft(null)}
+              onSave={onSaveDraft}
+            />
+          )}
+          {selectedEvent && (
+            <CalendarEventDetailPanel
+              event={selectedEvent}
+              onClose={() => onSelectedEventKey(null)}
+              onUpdate={(draft) => onUpdateEvent(selectedEvent, draft)}
+              onDelete={onDeleteEvent}
+            />
+          )}
+          {!draft && !selectedEvent && expandedDayKey && (
+            <CalendarDayEventListPanel
+              date={expandedDayKey}
+              events={expandedDayEvents}
+              onClose={closeCalendarPopover}
+              onSelect={selectEvent}
+            />
+          )}
+        </aside>
+      )}
     </div>
   );
 }
@@ -3859,6 +3871,7 @@ function StrategyView({
   strategySignals,
   taskText,
   strategyDraft,
+  allTodos,
   selectedTodo,
   selectedTodoSubtasks,
   calendarEvents,
@@ -3887,6 +3900,7 @@ function StrategyView({
   strategySignals: DecryptedItem[];
   taskText: string;
   strategyDraft: StrategyDraft;
+  allTodos: DecryptedItem[];
   selectedTodo?: DecryptedItem;
   selectedTodoSubtasks: DecryptedItem[];
   calendarEvents: DecryptedCalendarEvent[];
@@ -3922,6 +3936,15 @@ function StrategyView({
   const strategyTodoRoots = strategyTodos.filter(
     (todo) => !todo.meta.parentItemId || !strategyTodoIds.has(todo.meta.parentItemId)
   );
+  const threadStats = new Map(
+    threads.map((thread) => {
+      const linked = allTodos.filter((todo) => todo.meta.strategyThreadId === thread.meta.id && todo.meta.status !== "archived");
+      const active = linked.filter((todo) => todo.meta.status !== "done").length;
+      const done = linked.filter((todo) => todo.meta.status === "done").length;
+      const recent = [thread.meta.updatedAt, ...linked.map((todo) => todo.meta.updatedAt)].sort().at(-1) ?? thread.meta.updatedAt;
+      return [thread.meta.id, { active, done, recent }] as const;
+    })
+  );
   const toggleStrategyTodoCollapse = (todoId: string) => {
     setCollapsedTodoIds((current) => {
       const next = new Set(current);
@@ -3931,25 +3954,66 @@ function StrategyView({
     });
   };
 
+  if (!selectedThread) {
+    return (
+      <div className="strategy-layout strategy-home-layout">
+        <section className="strategy-home">
+          <div className="section-title-row">
+            <div>
+              <h2>Strategy</h2>
+              <p>战略方向、子任务和回看线索都从这里进入。</p>
+            </div>
+            <StatusPill tone="strategy" label={`${threads.length} directions`} />
+          </div>
+
+          <div className="new-thread-box strategy-home-composer">
+            <input
+              value={strategyDraft.title}
+              onChange={(event) => onStrategyDraft({ ...strategyDraft, title: event.target.value })}
+              placeholder="新的战略方向"
+            />
+            <input
+              value={strategyDraft.currentHypothesis}
+              onChange={(event) => onStrategyDraft({ ...strategyDraft, currentHypothesis: event.target.value })}
+              placeholder="当前假设（可选）"
+            />
+            <button className="primary-button" onClick={onAddThread}>
+              <Plus size={15} />
+              Add
+            </button>
+          </div>
+
+          <div className="strategy-overview-list">
+            {threads.map((thread) => {
+              const stats = threadStats.get(thread.meta.id) ?? { active: 0, done: 0, recent: thread.meta.updatedAt };
+              return (
+                <button className="strategy-overview-card" key={thread.meta.id} onClick={() => onSelectThread(thread.meta.id)}>
+                  <div>
+                    <strong>{thread.payload.title}</strong>
+                    <span>{thread.payload.currentHypothesis || "No hypothesis yet"}</span>
+                  </div>
+                  <div className="strategy-overview-meta">
+                    <small>{stats.active} active</small>
+                    <small>{stats.done} done</small>
+                    <small>{relativeAgeLabel(stats.recent)}</small>
+                  </div>
+                  <ChevronRight size={16} />
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className={`strategy-layout ${selectedTodo ? "has-task-detail" : ""}`}>
       <aside className="thread-list">
-        <div className="new-thread-box">
-          <input
-            value={strategyDraft.title}
-            onChange={(event) => onStrategyDraft({ ...strategyDraft, title: event.target.value })}
-            placeholder="新的战略方向"
-          />
-          <textarea
-            value={strategyDraft.currentHypothesis}
-            onChange={(event) => onStrategyDraft({ ...strategyDraft, currentHypothesis: event.target.value })}
-            placeholder="当前假设（可选）"
-          />
-          <button className="primary-button" onClick={onAddThread}>
-            <Plus size={15} />
-            Add Direction
-          </button>
-        </div>
+        <button className="ghost-button strategy-back-button" onClick={() => onSelectThread("")}>
+          <ChevronLeft size={15} />
+          All Strategy
+        </button>
         {threads.map((thread) => (
           <StrategyThreadCard
             key={thread.meta.id}
@@ -4148,7 +4212,7 @@ function SettingsView({
       ? `Synced ${relativeAgeLabel(lastSyncedAt)}`
       : "Ready"
     : signedIn
-      ? "Authorization needed"
+      ? "Reconnect Feishu"
       : "Sign in first";
   const signInError = needsLocalUnlock
     ? "Enter your password once on this Mac to sync Todo."
@@ -4750,9 +4814,9 @@ function calendarConnectionSummary(feishuSettings: FeishuSettingsState, backendS
       signedIn,
       connected,
       tone: "warning" as const,
-      badgeLabel: "Calendar authorization missing",
-      panelLabel: "Needs authorization",
-      error: friendlyError || "Calendar authorization is not available on this device."
+      badgeLabel: "Reconnect Feishu",
+      panelLabel: "Needs reauthorization",
+      error: friendlyError || calendarReauthorizationMessage
     };
   }
 
@@ -4772,7 +4836,7 @@ function friendlyCalendarError(error?: string) {
     return "Calendar sync is temporarily unavailable.";
   }
   if (/attention|authorization|auth|token|permission/i.test(error)) {
-    return "Calendar authorization missing on backend.";
+    return calendarReauthorizationMessage;
   }
   return error;
 }
