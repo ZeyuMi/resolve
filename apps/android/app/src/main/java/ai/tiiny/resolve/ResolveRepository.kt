@@ -3,10 +3,13 @@ package ai.tiiny.resolve
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
+import java.time.Duration
 import java.time.Instant
 
 class ResolveRepository(context: Context) {
     private val prefs = context.getSharedPreferences("resolve_state", Context.MODE_PRIVATE)
+    private val appSyncCursorKey = "last_app_sync_cursor_v2"
+    private val appSyncCursorLookback = Duration.ofDays(30)
 
     fun load(): ResolveState {
         val raw = prefs.getString("state_json", null) ?: return sampleResolveState().also { save(it) }
@@ -25,10 +28,12 @@ class ResolveRepository(context: Context) {
     }
 
     fun loadAppSyncCursor(): Instant? =
-        prefs.getString("last_app_sync_cursor", null)?.let(::instantOrNull)
+        prefs.getString(appSyncCursorKey, null)
+            ?.let(::instantOrNull)
+            ?.minus(appSyncCursorLookback)
 
     fun saveAppSyncCursor(cursor: Instant) {
-        prefs.edit().putString("last_app_sync_cursor", cursor.toString()).apply()
+        prefs.edit().putString(appSyncCursorKey, cursor.toString()).apply()
     }
 
     private fun encodeState(state: ResolveState) = JSONObject()

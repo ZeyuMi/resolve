@@ -94,10 +94,18 @@ import {
 const feishuOAuthScopes = feishuCalendarScopes
   .map((scope) => scope.key)
   .filter((scope) => scope !== "contact:user.email:readonly");
-const appSyncCursorKey = "resolve:app-sync-cursor:v1";
+const appSyncCursorKey = "resolve:app-sync-cursor:v2";
+const appSyncCursorLookbackMs = 30 * 24 * 60 * 60 * 1000;
 
 function loadAppSyncCursor() {
   return localStorage.getItem(appSyncCursorKey) ?? undefined;
+}
+
+function appSyncCursorWithLookback(cursor?: string) {
+  if (!cursor) return undefined;
+  const time = new Date(cursor).getTime();
+  if (!Number.isFinite(time)) return undefined;
+  return new Date(Math.max(0, time - appSyncCursorLookbackMs)).toISOString();
 }
 
 function saveAppSyncCursor(cursor: string) {
@@ -997,7 +1005,8 @@ export function App() {
     try {
       const sync = appSyncRef.current;
       if (sync) {
-        const changedSince = loadAppSyncCursor();
+        const localCursor = loadAppSyncCursor();
+        const changedSince = appSyncCursorWithLookback(localCursor);
         const cursorAfterSync = nowIso();
         await pullAppStateFromCloud("manual", { includeCalendarEvents: false, changedSince });
         await sync.push(normalizeState(stateRef.current), { changedSince });
@@ -2972,11 +2981,18 @@ function CalendarView({
 	    const updateVisibleCount = () => {
 	      const grid = calendarGridRef.current;
 	      if (!grid) return;
+        const gridRect = grid.getBoundingClientRect();
 	      const rows = viewMode === "week" ? 1 : 6;
-	      const cellHeight = grid.getBoundingClientRect().height / rows;
+	      const cellHeight = gridRect.height / rows;
+        const cellWidth = gridRect.width / 7;
       if (viewMode === "month") {
-        const available = Math.max(cellHeight - 22, 0);
-        const monthSlots = Math.max(3, Math.min(9, Math.floor(available / 15)));
+        const dateArea = 31;
+        const verticalPadding = 14;
+        const rowHeight = 17;
+        const rowGap = 4;
+        const available = Math.max(cellHeight - dateArea - verticalPadding, 0);
+        const rawSlots = Math.max(0, Math.min(9, Math.floor((available + rowGap) / (rowHeight + rowGap))));
+        const monthSlots = cellWidth < 92 || cellHeight < 76 ? 0 : rawSlots;
         setVisibleEventsPerCell((current) => (current === monthSlots ? current : monthSlots));
         return;
       }
@@ -3110,8 +3126,9 @@ function CalendarView({
 	                const key = formatDateInput(day);
 	                const dayEvents = eventsByDate.get(key) ?? [];
 	                const eventSlots = visibleEventsPerCell;
+	                const compactOverflow = viewMode === "month" && eventSlots === 0 && dayEvents.length > 0;
 	                const hasMoreEvents = dayEvents.length > eventSlots;
-	                const visibleInlineEvents = hasMoreEvents ? Math.max(1, eventSlots - 1) : eventSlots;
+	                const visibleInlineEvents = compactOverflow ? 0 : hasMoreEvents ? Math.max(0, eventSlots - 1) : eventSlots;
 	                const hiddenEventCount = dayEvents.length - visibleInlineEvents;
 	                const isCurrentMonth = day.getMonth() === monthCursor.getMonth();
 	                const isSelected = key === selectedDate;
@@ -3131,9 +3148,25 @@ function CalendarView({
                       }
                     }}
 	                  >
-	                    <span className="calendar-date-number">
-                        {viewMode === "week" ? day.toLocaleDateString("zh-CN", { month: "short", day: "numeric" }) : day.getDate()}
-                      </span>
+	                    <div className="calendar-day-header">
+                        <span className="calendar-date-number">
+                          {viewMode === "week" ? day.toLocaleDateString("zh-CN", { month: "short", day: "numeric" }) : day.getDate()}
+                        </span>
+                        {compactOverflow && (
+                          <button
+                            className="calendar-day-count"
+                            aria-label={`还有 ${hiddenEventCount} 项`}
+                            title={`还有 ${hiddenEventCount} 项`}
+                            onClick={(clickEvent) => {
+                              clickEvent.stopPropagation();
+                              openDayList(key);
+                            }}
+                            type="button"
+                          >
+                            +{hiddenEventCount}
+                          </button>
+                        )}
+                      </div>
 		                    <div className="calendar-cell-events">
 		                      {dayEvents.slice(0, visibleInlineEvents).map((event) => (
 		                        <button
@@ -3151,7 +3184,7 @@ function CalendarView({
 		                        </button>
 			                      ))}
 		                    </div>
-		                    {hasMoreEvents && (
+		                    {hasMoreEvents && !compactOverflow && (
 		                      <button
 		                        className="calendar-more-label"
 		                        aria-label={`还有 ${hiddenEventCount} 项`}
