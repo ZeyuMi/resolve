@@ -64,6 +64,7 @@ class ResolveRepository(context: Context) {
         .putOpt("strategyThreadId", item.strategyThreadId)
         .putOpt("sourceItemId", item.sourceItemId)
         .putOpt("parentItemId", item.parentItemId)
+        .putOpt("sortOrder", item.sortOrder)
 
     private fun decodeItem(json: JSONObject) = ResolveItem(
         id = json.optString("id"),
@@ -77,7 +78,8 @@ class ResolveRepository(context: Context) {
         dueAt = json.optNullableString("dueAt")?.let(::instantOrNull),
         strategyThreadId = json.optNullableString("strategyThreadId"),
         sourceItemId = json.optNullableString("sourceItemId"),
-        parentItemId = json.optNullableString("parentItemId")
+        parentItemId = json.optNullableString("parentItemId"),
+        sortOrder = json.optNullableDouble("sortOrder")
     )
 
     private fun encodeThread(thread: StrategyThread) = JSONObject()
@@ -250,3 +252,6 @@ private fun instantOrNull(value: String): Instant? =
 
 private fun JSONObject.optNullableString(key: String): String? =
     if (has(key) && !isNull(key)) optString(key).takeIf { it.isNotBlank() } else null
+
+private fun JSONObject.optNullableDouble(key: String): Double? =
+    if (has(key) && !isNull(key)) optDouble(key).takeIf { !it.isNaN() && !it.isInfinite() } else null

@@ -16,6 +16,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.text.BasicTextField
@@ -363,6 +364,45 @@ private fun ResolveAndroidApp(
         persist(state.copy(items = listOf(child) + state.items))
     }
 
+    fun reorderTodo(sourceId: String, targetId: String) {
+        if (sourceId == targetId) return
+        val source = state.items.find { it.id == sourceId } ?: return
+        val target = state.items.find { it.id == targetId } ?: return
+        if (
+            source.type != ItemType.Task ||
+            target.type != ItemType.Task ||
+            source.status != ItemStatus.Active ||
+            target.status != ItemStatus.Active ||
+            source.parentItemId != target.parentItemId ||
+            source.strategyThreadId != target.strategyThreadId
+        ) {
+            return
+        }
+        val siblings = state.items
+            .filter {
+                it.type == ItemType.Task &&
+                    it.status == ItemStatus.Active &&
+                    it.parentItemId == source.parentItemId &&
+                    it.strategyThreadId == source.strategyThreadId
+            }
+            .sortedWith(todoComparator)
+            .toMutableList()
+        val from = siblings.indexOfFirst { it.id == sourceId }
+        val to = siblings.indexOfFirst { it.id == targetId }
+        if (from < 0 || to < 0 || from == to) return
+        val moved = siblings.removeAt(from)
+        siblings.add(to, moved)
+        val timestamp = Instant.now()
+        val nextOrder = siblings.mapIndexed { index, item -> item.id to (index + 1).toDouble() }.toMap()
+        persist(
+            state.copy(
+                items = state.items.map { item ->
+                    nextOrder[item.id]?.let { order -> item.copy(sortOrder = order, updatedAt = timestamp) } ?: item
+                }
+            )
+        )
+    }
+
     fun patchFeishu(settings: FeishuSettings) {
         persist(state.copy(feishuSettings = settings))
     }
@@ -481,25 +521,29 @@ private fun ResolveAndroidApp(
 
     fun createCalendarEvent(draft: CalendarDraft) {
         if (draft.title.isBlank()) return
-        val startsAt = draft.date.atTime(draft.time).atZone(ZoneId.systemDefault()).toInstant()
+        val strategyTitle = draft.strategyThreadId?.let { id -> state.threads.find { it.id == id }?.title }
+        val enrichedDraft = draft.copy(
+            description = calendarDescriptionWithStrategy(draft.description, strategyTitle)
+        )
+        val startsAt = enrichedDraft.date.atTime(enrichedDraft.time).atZone(ZoneId.systemDefault()).toInstant()
         val localEvent = CalendarEvent(
-            title = draft.title.trim(),
-            description = draft.description.trim(),
+            title = enrichedDraft.title.trim(),
+            description = enrichedDraft.description.trim(),
             status = if (hasBackendSession || state.feishuSettings.status == FeishuStatus.Connected) "local_pending_create" else "local",
             startsAt = startsAt,
             endsAt = startsAt.plusSeconds(3600),
-            sourceItemId = draft.sourceItemId,
-            strategyThreadId = draft.strategyThreadId
+            sourceItemId = enrichedDraft.sourceItemId,
+            strategyThreadId = enrichedDraft.strategyThreadId
         )
         persist(state.copy(calendarEvents = (state.calendarEvents + localEvent).sortedBy { it.startsAt }))
-        calendarDraft = CalendarDraft(date = draft.date, time = draft.time.plusHours(1))
+        calendarDraft = CalendarDraft(date = enrichedDraft.date, time = enrichedDraft.time.plusHours(1))
         notice = null
 
         if (hasBackendSession && state.backendSettings.feishuConnected) {
             scope.launch {
                 try {
                     val client = connectedBackendClient()
-                    val remote = withContext(Dispatchers.IO) { client.createEvent(draft) }
+                    val remote = withContext(Dispatchers.IO) { client.createEvent(enrichedDraft) }
                     persist(
                         state.copy(
                             calendarEvents = state.calendarEvents
@@ -1086,7 +1130,8 @@ private fun ResolveAndroidApp(
                                     onShowCompleted = { showCompleted = !showCompleted },
                                     onShowArchived = { showArchived = !showArchived },
                                     onDeleteArchived = { pendingTodoDelete = it },
-                                    onClearArchived = { pendingTodoArchiveClear = true }
+                                    onClearArchived = { pendingTodoArchiveClear = true },
+                                    onReorder = { sourceId, targetId -> reorderTodo(sourceId, targetId) }
                                 )
                             }
                         }
@@ -1542,17 +1587,23 @@ private fun TodoScreen(
     onShowCompleted: () -> Unit,
     onShowArchived: () -> Unit,
     onDeleteArchived: (ResolveItem) -> Unit,
-    onClearArchived: () -> Unit
+    onClearArchived: () -> Unit,
+    onReorder: (String, String) -> Unit
 ) {
     val tasks = state.items.filter { it.type == ItemType.Task }
     val activeIds = tasks.filter { it.status == ItemStatus.Active }.map { it.id }.toSet()
     val completedIds = tasks.filter { it.status == ItemStatus.Done }.map { it.id }.toSet()
     val archivedIds = tasks.filter { it.status == ItemStatus.Archived }.map { it.id }.toSet()
-    val activePool = tasks.filter { it.status == ItemStatus.Active }
+    val activePool = tasks.filter { it.status == ItemStatus.Active }.sortedWith(todoComparator)
     val active = activePool.filter { it.parentItemId == null || it.parentItemId !in activeIds }
-    val completed = tasks.filter { it.status == ItemStatus.Done && (it.parentItemId == null || it.parentItemId !in completedIds) }
-    val archived = tasks.filter { it.status == ItemStatus.Archived && (it.parentItemId == null || it.parentItemId !in archivedIds) }
+    val completed = tasks
+        .filter { it.status == ItemStatus.Done && (it.parentItemId == null || it.parentItemId !in completedIds) }
+        .sortedWith(todoComparator)
+    val archived = tasks
+        .filter { it.status == ItemStatus.Archived && (it.parentItemId == null || it.parentItemId !in archivedIds) }
+        .sortedWith(todoComparator)
     var collapsedTodoIds by remember { mutableStateOf(setOf<String>()) }
+    var collapsedStrategyIds by remember { mutableStateOf(setOf<String>()) }
     val completedTree = flattenTodoTree(completed, tasks.filter { it.status == ItemStatus.Done })
     val calendarByTodo = state.calendarEvents
         .filter { calendarEventVisible(it) && it.sourceItemId != null }
@@ -1571,6 +1622,15 @@ private fun TodoScreen(
         .filterKeys { it.isNotBlank() && state.threads.none { thread -> thread.id == it } }
         .map { (threadId, roots) -> StrategyThread(id = threadId, title = "Strategy") to roots }
 
+    fun moveTodo(item: ResolveItem, direction: Int) {
+        val siblings = activePool.filter {
+            it.parentItemId == item.parentItemId && it.strategyThreadId == item.strategyThreadId
+        }
+        val index = siblings.indexOfFirst { it.id == item.id }
+        val target = siblings.getOrNull(index + direction) ?: return
+        onReorder(item.id, target.id)
+    }
+
     @Composable
     fun RenderTodoEntry(entry: TodoTreeEntry) {
         val item = entry.item
@@ -1587,7 +1647,8 @@ private fun TodoScreen(
             },
             onToggleDone = { onToggleDone(item) },
             onArchive = { onArchive(item) },
-            onSelect = { onSelect(item) }
+            onSelect = { onSelect(item) },
+            onDragReorder = { direction -> moveTodo(item, direction) }
         )
     }
 
@@ -1599,10 +1660,21 @@ private fun TodoScreen(
         }
         (strategyGroups + orphanStrategyGroups).forEach { (thread, roots) ->
             item(key = "strategy-${thread.id}") {
-                StrategyTodoGroupHeader(thread = thread, count = roots.size)
+                val collapsed = thread.id in collapsedStrategyIds
+                StrategyTodoGroupHeader(
+                    thread = thread,
+                    count = roots.size,
+                    collapsed = collapsed,
+                    onToggle = {
+                        collapsedStrategyIds =
+                            if (collapsed) collapsedStrategyIds - thread.id else collapsedStrategyIds + thread.id
+                    }
+                )
             }
-            items(flattenTodoTree(roots, activePool, collapsedTodoIds), key = { it.item.id }) { entry ->
-                RenderTodoEntry(entry)
+            if (thread.id !in collapsedStrategyIds) {
+                items(flattenTodoTree(roots, activePool, collapsedTodoIds), key = { it.item.id }) { entry ->
+                    RenderTodoEntry(entry)
+                }
             }
         }
         if (completed.isNotEmpty()) {
@@ -1678,12 +1750,36 @@ private fun TodoRow(
     onToggleCollapse: () -> Unit = {},
     onToggleDone: () -> Unit,
     onArchive: () -> Unit,
-    onSelect: () -> Unit
+    onSelect: () -> Unit,
+    onDragReorder: ((Int) -> Unit)? = null
 ) {
     val isChild = depth > 0
     val scheduledAt = calendarEvent?.startsAt ?: item.dueAt
-    val contextLine = todoContextLine(item, thread, calendarEvent, subtaskCount)
+    val contextLine = todoContextLine(item, thread, calendarEvent)
     val rowShape = RoundedCornerShape(if (isChild) 14.dp else 18.dp)
+    var dragDeltaY by remember(item.id) { mutableStateOf(0f) }
+    val dragModifier = if (onDragReorder != null && item.status == ItemStatus.Active) {
+        Modifier.pointerInput(item.id) {
+            detectDragGesturesAfterLongPress(
+                onDragStart = { dragDeltaY = 0f },
+                onDragCancel = { dragDeltaY = 0f },
+                onDragEnd = {
+                    val direction = when {
+                        dragDeltaY > 34f -> 1
+                        dragDeltaY < -34f -> -1
+                        else -> 0
+                    }
+                    if (direction != 0) onDragReorder(direction)
+                    dragDeltaY = 0f
+                },
+                onDrag = { _, dragAmount ->
+                    dragDeltaY += dragAmount.y
+                }
+            )
+        }
+    } else {
+        Modifier
+    }
     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         if (isChild) {
             Spacer(Modifier.width(((depth - 1).coerceAtLeast(0) * 14).dp))
@@ -1710,6 +1806,7 @@ private fun TodoRow(
         }
         Surface(
             modifier = (if (isChild) Modifier.weight(1f) else Modifier.fillMaxWidth())
+                .then(dragModifier)
                 .combinedClickable(
                     onClick = onSelect,
                     onLongClick = onArchive
@@ -1734,21 +1831,6 @@ private fun TodoRow(
                     )
                 }
                 Spacer(Modifier.width(if (isChild) 4.dp else 6.dp))
-                if (subtaskCount > 0) {
-                    IconButton(
-                        onClick = onToggleCollapse,
-                        modifier = Modifier.size(if (isChild) 28.dp else 30.dp)
-                    ) {
-                        Icon(
-                            Icons.Filled.KeyboardArrowDown,
-                            contentDescription = if (collapsed) "Expand subtasks" else "Collapse subtasks",
-                            tint = ResolveColors.Muted,
-                            modifier = Modifier
-                                .size(18.dp)
-                                .rotate(if (collapsed) -90f else 0f)
-                        )
-                    }
-                }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(
                         item.title,
@@ -1760,6 +1842,13 @@ private fun TodoRow(
                         overflow = TextOverflow.Ellipsis,
                         textDecoration = if (item.status == ItemStatus.Done) TextDecoration.LineThrough else TextDecoration.None
                     )
+                    if (subtaskCount > 0) {
+                        SubtaskToggleChip(
+                            count = subtaskCount,
+                            collapsed = collapsed,
+                            onClick = onToggleCollapse
+                        )
+                    }
                     if (scheduledAt != null || item.status == ItemStatus.Archived) {
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
                             scheduledAt?.let {
@@ -1823,13 +1912,28 @@ private fun ArchivedTodoRow(
 }
 
 @Composable
-private fun StrategyTodoGroupHeader(thread: StrategyThread, count: Int) {
+private fun StrategyTodoGroupHeader(
+    thread: StrategyThread,
+    count: Int,
+    collapsed: Boolean,
+    onToggle: () -> Unit
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clickable(onClick = onToggle)
             .padding(top = 10.dp, bottom = 4.dp, start = 2.dp, end = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        Icon(
+            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = if (collapsed) "Expand strategy tasks" else "Collapse strategy tasks",
+            tint = ResolveColors.Muted,
+            modifier = Modifier
+                .size(16.dp)
+                .rotate(if (collapsed) 0f else 90f)
+        )
+        Spacer(Modifier.width(4.dp))
         Box(
             modifier = Modifier
                 .size(7.dp)
@@ -2689,7 +2793,14 @@ private fun DetailSectionTitle(title: String, count: String) {
 }
 
 @Composable
-private fun SubtaskRow(item: ResolveItem, depth: Int, onToggle: () -> Unit) {
+private fun SubtaskRow(
+    item: ResolveItem,
+    depth: Int,
+    childCount: Int,
+    collapsed: Boolean,
+    onToggleCollapse: () -> Unit,
+    onToggle: () -> Unit
+) {
     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         if (depth > 0) {
             Spacer(Modifier.width(((depth - 1).coerceAtLeast(0) * 13).dp))
@@ -2729,6 +2840,16 @@ private fun SubtaskRow(item: ResolveItem, depth: Int, onToggle: () -> Unit) {
                     )
                 }
                 Spacer(Modifier.width(4.dp))
+                if (childCount > 0) {
+                    IconButton(onClick = onToggleCollapse, modifier = Modifier.size(24.dp)) {
+                        Icon(
+                            if (collapsed) Icons.AutoMirrored.Filled.KeyboardArrowRight else Icons.Filled.KeyboardArrowDown,
+                            contentDescription = if (collapsed) "Expand subtasks" else "Collapse subtasks",
+                            tint = ResolveColors.Muted,
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
+                }
                 Text(
                     item.title,
                     color = if (item.status == ItemStatus.Done) ResolveColors.Muted else ResolveColors.Text,
@@ -2860,6 +2981,7 @@ private fun StrategyScreen(
 ) {
     var task by remember { mutableStateOf("") }
     var collapsedTodoIds by remember { mutableStateOf(setOf<String>()) }
+    var showCompletedSubtasks by remember(openedThreadId) { mutableStateOf(false) }
     val activeThreads = state.threads.filter { !it.status.equals("archived", ignoreCase = true) }
     val opened = activeThreads.find { it.id == openedThreadId }
     val allTasks = state.items.filter { it.type == ItemType.Task }
@@ -2893,7 +3015,12 @@ private fun StrategyScreen(
 
     val strategyTasks = state.items
         .filter { it.strategyThreadId == opened.id && it.type == ItemType.Task && it.status != ItemStatus.Archived }
-        .sortedWith(compareBy<ResolveItem> { it.status == ItemStatus.Done }.thenByDescending { it.createdAt })
+        .sortedWith(
+            Comparator { first, second ->
+                val statusOrder = compareValues(first.status == ItemStatus.Done, second.status == ItemStatus.Done)
+                if (statusOrder != 0) statusOrder else compareTodoItems(first, second)
+            }
+        )
     val subtasks = strategyTasks.filter { it.status != ItemStatus.Done }
     val completedSubtasks = strategyTasks.filter { it.status == ItemStatus.Done }
     val subtaskRoots = subtasks.filter { task -> task.parentItemId == null || subtasks.none { it.id == task.parentItemId } }
@@ -2992,24 +3119,33 @@ private fun StrategyScreen(
             )
         }
         if (completedSubtasks.isNotEmpty()) {
-            item { DetailSectionTitle("Completed", "${completedSubtasks.size}") }
-            items(flattenTodoTree(completedRoots, completedSubtasks, collapsedTodoIds), key = { "done-${it.item.id}" }) { entry ->
-                val item = entry.item
-                val collapsed = item.id in collapsedTodoIds
-                TodoRow(
-                    item = item,
-                    subtaskCount = entry.childCount,
-                    thread = null,
-                    calendarEvent = null,
-                    depth = entry.depth,
-                    collapsed = collapsed,
-                    onToggleCollapse = {
-                        collapsedTodoIds = if (collapsed) collapsedTodoIds - item.id else collapsedTodoIds + item.id
-                    },
-                    onToggleDone = { onToggleDone(item) },
-                    onArchive = { onArchiveTodo(item) },
-                    onSelect = { onSelectTodo(item) }
+            item {
+                TodoDisclosureRow(
+                    title = "Completed",
+                    count = completedSubtasks.size,
+                    open = showCompletedSubtasks,
+                    onClick = { showCompletedSubtasks = !showCompletedSubtasks }
                 )
+            }
+            if (showCompletedSubtasks) {
+                items(flattenTodoTree(completedRoots, completedSubtasks, collapsedTodoIds), key = { "done-${it.item.id}" }) { entry ->
+                    val item = entry.item
+                    val collapsed = item.id in collapsedTodoIds
+                    TodoRow(
+                        item = item,
+                        subtaskCount = entry.childCount,
+                        thread = null,
+                        calendarEvent = null,
+                        depth = entry.depth,
+                        collapsed = collapsed,
+                        onToggleCollapse = {
+                            collapsedTodoIds = if (collapsed) collapsedTodoIds - item.id else collapsedTodoIds + item.id
+                        },
+                        onToggleDone = { onToggleDone(item) },
+                        onArchive = { onArchiveTodo(item) },
+                        onSelect = { onSelectTodo(item) }
+                    )
+                }
             }
         }
     }
@@ -3202,6 +3338,7 @@ private fun TodoDetailPage(
     var expanded by remember { mutableStateOf(false) }
     var strategyThreadId by remember(item.id) { mutableStateOf(item.strategyThreadId) }
     var dueAt by remember(item.id) { mutableStateOf(item.dueAt) }
+    var collapsedSubtaskIds by remember(item.id) { mutableStateOf(setOf<String>()) }
     val dueDate = dueAt?.atZone(ZoneId.systemDefault())?.toLocalDate() ?: LocalDate.now()
     val dueTime = dueAt?.atZone(ZoneId.systemDefault())?.toLocalTime()?.withSecond(0)?.withNano(0) ?: LocalTime.of(9, 0)
     var subtaskTitle by remember(item.id) { mutableStateOf("") }
@@ -3305,9 +3442,19 @@ private fun TodoDetailPage(
             DetailSectionTitle("Subtasks", "${subtasks.size}")
         }
         val subtaskRoots = subtasks.filter { it.parentItemId == item.id }
-        val subtaskTree = flattenTodoTree(subtaskRoots, subtasks)
+        val subtaskTree = flattenTodoTree(subtaskRoots, subtasks, collapsedSubtaskIds)
         items(subtaskTree, key = { it.item.id }) { entry ->
-            SubtaskRow(item = entry.item, depth = entry.depth, onToggle = { onToggleSubtask(entry.item) })
+            val collapsed = entry.item.id in collapsedSubtaskIds
+            SubtaskRow(
+                item = entry.item,
+                depth = entry.depth,
+                childCount = entry.childCount,
+                collapsed = collapsed,
+                onToggleCollapse = {
+                    collapsedSubtaskIds = if (collapsed) collapsedSubtaskIds - entry.item.id else collapsedSubtaskIds + entry.item.id
+                },
+                onToggle = { onToggleSubtask(entry.item) }
+            )
         }
         item {
             Surface(color = ResolveColors.Surface, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
@@ -3440,6 +3587,37 @@ private fun ArchiveDisclosureRow(count: Int, open: Boolean, onClick: () -> Unit)
                     Text(count.toString(), color = ResolveColors.Muted, fontSize = ResolveType.Caption)
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun SubtaskToggleChip(count: Int, collapsed: Boolean, onClick: () -> Unit) {
+    Surface(
+        color = ResolveColors.AccentGlass,
+        shape = RoundedCornerShape(999.dp),
+        modifier = Modifier.clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = ResolveColors.Accent,
+                modifier = Modifier
+                    .size(13.dp)
+                    .rotate(if (collapsed) 0f else 90f)
+            )
+            Text(
+                "${if (collapsed) "Show" else "Hide"} $count subtasks",
+                color = ResolveColors.Accent,
+                fontSize = ResolveType.Pill,
+                lineHeight = 13.sp,
+                fontWeight = FontWeight.SemiBold
+            )
         }
     }
 }
@@ -3741,18 +3919,47 @@ private fun calendarStatusLabel(feishu: FeishuSettings, backend: BackendSettings
 private fun dateLabel(instant: Instant): String =
     instant.atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("M月d日 HH:mm"))
 
+private fun todoSortOrder(item: ResolveItem): Double? =
+    item.sortOrder?.takeIf { !it.isNaN() && !it.isInfinite() }
+
+private fun compareTodoItems(first: ResolveItem, second: ResolveItem): Int {
+    val firstOrder = todoSortOrder(first)
+    val secondOrder = todoSortOrder(second)
+    if (firstOrder != null && secondOrder != null && firstOrder != secondOrder) {
+        return firstOrder.compareTo(secondOrder)
+    }
+    if (firstOrder != null && secondOrder == null) return -1
+    if (firstOrder == null && secondOrder != null) return 1
+    if (first.dueAt != null && second.dueAt == null) return -1
+    if (first.dueAt == null && second.dueAt != null) return 1
+    val firstDate = first.dueAt ?: first.createdAt
+    val secondDate = second.dueAt ?: second.createdAt
+    return firstDate.compareTo(secondDate)
+}
+
+private val todoComparator = Comparator<ResolveItem> { first, second ->
+    compareTodoItems(first, second)
+}
+
+private fun calendarDescriptionWithStrategy(description: String, strategyTitle: String?): String {
+    val cleanDescription = description.trim()
+    val cleanStrategy = strategyTitle?.trim()
+    if (cleanStrategy.isNullOrBlank()) return cleanDescription
+    val strategyLine = "Strategy: $cleanStrategy"
+    if (cleanDescription.contains(strategyLine)) return cleanDescription
+    return listOf(strategyLine, cleanDescription).filter { it.isNotBlank() }.joinToString("\n\n")
+}
+
 private fun todoContextLine(
     item: ResolveItem,
     thread: StrategyThread?,
-    calendarEvent: CalendarEvent?,
-    subtaskCount: Int
+    calendarEvent: CalendarEvent?
 ): String {
     val parts = mutableListOf<String>()
     parts += "Added ${relativeTime(item.createdAt)}"
     thread?.title?.takeIf { it.isNotBlank() }?.let { parts += it }
     val note = briefContext(item.notes).ifBlank { briefContext(calendarEvent?.description.orEmpty()) }
     if (note.isNotBlank()) parts += note
-    if (subtaskCount > 0) parts += "$subtaskCount subtasks"
     return parts.joinToString(" · ")
 }
 
@@ -3794,7 +4001,7 @@ private fun flattenTodoTree(
     fun visit(item: ResolveItem, depth: Int) {
         val children = childrenByParent[item.id]
             .orEmpty()
-            .sortedWith(compareBy<ResolveItem> { it.status == ItemStatus.Done }.thenByDescending { it.createdAt })
+            .sortedWith(todoComparator)
         result += TodoTreeEntry(item, depth, children.size)
         if (item.id in collapsedIds) return
         children.forEach { visit(it, depth + 1) }

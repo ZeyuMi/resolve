@@ -27,7 +27,8 @@ data class ResolveItem(
     val dueAt: Instant? = null,
     val strategyThreadId: String? = null,
     val sourceItemId: String? = null,
-    val parentItemId: String? = null
+    val parentItemId: String? = null,
+    val sortOrder: Double? = null
 )
 
 data class StrategyThread(

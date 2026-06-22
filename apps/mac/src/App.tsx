@@ -639,6 +639,33 @@ function inputTimeValue(iso?: string) {
   return new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 }
 
+function todoSortOrder(item: DecryptedItem) {
+  const value = (item.payload as ItemPayload).sortOrder;
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function compareTodoItems(a: DecryptedItem, b: DecryptedItem) {
+  const aOrder = todoSortOrder(a);
+  const bOrder = todoSortOrder(b);
+  if (aOrder != null && bOrder != null && aOrder !== bOrder) return aOrder - bOrder;
+  if (aOrder != null && bOrder == null) return -1;
+  if (aOrder == null && bOrder != null) return 1;
+  if (a.meta.dueAt && !b.meta.dueAt) return -1;
+  if (!a.meta.dueAt && b.meta.dueAt) return 1;
+  const aDate = a.meta.dueAt ?? a.meta.createdAt;
+  const bDate = b.meta.dueAt ?? b.meta.createdAt;
+  return aDate.localeCompare(bDate);
+}
+
+function calendarDescriptionWithStrategy(description: string, strategyTitle?: string) {
+  const cleanDescription = description.trim();
+  const cleanStrategy = strategyTitle?.trim();
+  if (!cleanStrategy) return cleanDescription;
+  const strategyLine = `Strategy: ${cleanStrategy}`;
+  if (cleanDescription.includes(strategyLine)) return cleanDescription;
+  return [strategyLine, cleanDescription].filter(Boolean).join("\n\n");
+}
+
 export function App() {
   const repository = useRef(createAppRepository());
   const [state, setState] = useState<ResolveState>(() => {
@@ -681,22 +708,14 @@ export function App() {
     () =>
       state.items
         .filter((item) => item.meta.type === "task")
-        .sort((a, b) => {
-          const aDate = a.meta.dueAt ?? a.meta.updatedAt;
-          const bDate = b.meta.dueAt ?? b.meta.updatedAt;
-          return aDate.localeCompare(bDate);
-        }),
+        .sort(compareTodoItems),
     [state.items]
   );
   const todoItems = useMemo(
     () =>
       taskItems
         .filter((item) => activeTodoStatuses.has(item.meta.status))
-        .sort((a, b) => {
-          if (a.meta.dueAt && !b.meta.dueAt) return -1;
-          if (!a.meta.dueAt && b.meta.dueAt) return 1;
-          return (a.meta.dueAt ?? a.meta.updatedAt).localeCompare(b.meta.dueAt ?? b.meta.updatedAt);
-        }),
+        .sort(compareTodoItems),
     [taskItems]
   );
   const completedTodos = useMemo(
@@ -717,6 +736,14 @@ export function App() {
   const selectedTodo = taskItems.find((item) => item.meta.id === selectedTodoId);
   const selectedStrategyTodo = taskItems.find(
     (item) => item.meta.id === selectedStrategyTodoId && item.meta.strategyThreadId === selectedThreadId
+  );
+  const selectedTodoSubtasks = useMemo(
+    () => directTodoSubtasks(taskItems, selectedTodo?.meta.id),
+    [taskItems, selectedTodo?.meta.id]
+  );
+  const selectedStrategyTodoSubtasks = useMemo(
+    () => directTodoSubtasks(taskItems, selectedStrategyTodo?.meta.id),
+    [taskItems, selectedStrategyTodo?.meta.id]
   );
   const strategySignals = state.items
     .filter((item) => item.meta.type === "strategy_note")
@@ -1182,6 +1209,33 @@ export function App() {
     });
   }
 
+  function updateTodoDetail(
+    itemId: string,
+    metaPatch: Partial<DecryptedItem["meta"]>,
+    payloadPatch: Partial<ItemPayload>
+  ) {
+    const latest = stateRef.current;
+    persist({
+      ...latest,
+      items: latest.items.map((item) =>
+        item.meta.id === itemId
+          ? {
+              ...item,
+              meta: {
+                ...item.meta,
+                ...metaPatch,
+                updatedAt: nowIso()
+              },
+              payload: {
+                ...(item.payload as ItemPayload),
+                ...payloadPatch
+              }
+            }
+          : item
+      )
+    });
+  }
+
   function restoreTodo(itemId: string) {
     updateTodo(itemId, { status: "active" });
     showToast("Restored to Todo");
@@ -1222,12 +1276,18 @@ export function App() {
   }
 
   function openCalendarDraft(todo?: DecryptedItem, date = selectedDate) {
+    const strategyTitle =
+      todo?.meta.strategyThreadId
+        ? stateRef.current.strategyThreads.find((thread) => thread.meta.id === todo.meta.strategyThreadId)?.payload.title
+        : undefined;
+    const todoNotes = todo ? (todo.payload as ItemPayload).notes?.trim() : "";
+    const description = [strategyTitle ? `Strategy: ${strategyTitle}` : "", todoNotes].filter(Boolean).join("\n\n");
     setCalendarDraft({
       todoId: todo?.meta.id,
       date,
       time: "09:00",
       title: todo ? (todo.payload as ItemPayload).title : "",
-      description: ""
+      description
     });
     setTab("calendar");
   }
@@ -1247,11 +1307,15 @@ export function App() {
     const endsAt = new Date(new Date(startsAt).getTime() + 30 * 60_000).toISOString();
     const currentState = stateRef.current;
     const sourceTodo = currentState.items.find((item) => item.meta.id === draft.todoId);
+    const sourceStrategyTitle = sourceTodo?.meta.strategyThreadId
+      ? currentState.strategyThreads.find((thread) => thread.meta.id === sourceTodo.meta.strategyThreadId)?.payload.title
+      : undefined;
+    const draftDescription = calendarDescriptionWithStrategy(draft.description, sourceStrategyTitle);
     const optimisticEvent = createCalendarEvent({
       title: draft.title.trim(),
       startsAt,
       endsAt,
-      description: draft.description.trim() || undefined,
+      description: draftDescription || undefined,
       sourceItemId: draft.todoId,
       strategyThreadId: sourceTodo?.meta.strategyThreadId
     });
@@ -1283,7 +1347,7 @@ export function App() {
           title: draft.title.trim(),
           startsAt,
           endsAt,
-          description: draft.description.trim() || undefined
+          description: draftDescription || undefined
         });
         const syncedEvent = {
           ...remote,
@@ -1351,7 +1415,7 @@ export function App() {
           title: draft.title.trim(),
           startsAt,
           endsAt,
-          description: draft.description.trim() || undefined
+          description: draftDescription || undefined
         });
         const syncedEvent = calendarEventFromFeishu(remote, {
           existing: optimisticEvent,
@@ -1666,6 +1730,85 @@ export function App() {
     });
     setStrategyTaskText("");
     showToast("Subtask added to Todo");
+  }
+
+  function addTodoSubtask(parentTodo: DecryptedItem, title: string) {
+    const cleanTitle = title.trim();
+    if (!cleanTitle) return;
+    const subtask = createTodoItem({
+      title: cleanTitle,
+      parentItemId: parentTodo.meta.id,
+      strategyThreadId: parentTodo.meta.strategyThreadId
+    });
+    const latest = stateRef.current;
+    persist({
+      ...latest,
+      items: [
+        subtask,
+        ...latest.items.map((item) =>
+          item.meta.id === parentTodo.meta.id
+            ? {
+                ...item,
+                meta: {
+                  ...item.meta,
+                  updatedAt: nowIso()
+                }
+              }
+            : item
+        )
+      ]
+    });
+    showToast("Subtask added");
+  }
+
+  function reorderTodo(sourceId: string, targetId: string) {
+    if (sourceId === targetId) return;
+    const latest = stateRef.current;
+    const source = latest.items.find((item) => item.meta.id === sourceId);
+    const target = latest.items.find((item) => item.meta.id === targetId);
+    if (!source || !target || source.meta.type !== "task" || target.meta.type !== "task") return;
+    const sameParent = (source.meta.parentItemId ?? "") === (target.meta.parentItemId ?? "");
+    const sameStrategy = (source.meta.strategyThreadId ?? "") === (target.meta.strategyThreadId ?? "");
+    if (!sameParent || !sameStrategy) {
+      showToast("Move within the same group");
+      return;
+    }
+
+    const siblings = latest.items
+      .filter(
+        (item) =>
+          item.meta.type === "task" &&
+          activeTodoStatuses.has(item.meta.status) &&
+          (item.meta.parentItemId ?? "") === (source.meta.parentItemId ?? "") &&
+          (item.meta.strategyThreadId ?? "") === (source.meta.strategyThreadId ?? "")
+      )
+      .sort(compareTodoItems);
+    const sourceItem = siblings.find((item) => item.meta.id === sourceId);
+    if (!sourceItem) return;
+    const withoutSource = siblings.filter((item) => item.meta.id !== sourceId);
+    const targetIndex = withoutSource.findIndex((item) => item.meta.id === targetId);
+    if (targetIndex < 0) return;
+    const reordered = [...withoutSource.slice(0, targetIndex), sourceItem, ...withoutSource.slice(targetIndex)];
+    const nextOrder = new Map(reordered.map((item, index) => [item.meta.id, index + 1]));
+    const timestamp = nowIso();
+    persist({
+      ...latest,
+      items: latest.items.map((item) => {
+        const sortOrder = nextOrder.get(item.meta.id);
+        if (sortOrder == null) return item;
+        return {
+          ...item,
+          meta: {
+            ...item.meta,
+            updatedAt: timestamp
+          },
+          payload: {
+            ...(item.payload as ItemPayload),
+            sortOrder
+          }
+        };
+      })
+    });
   }
 
   function addStrategyThread() {
@@ -2065,6 +2208,7 @@ export function App() {
               threads={strategyThreads}
               calendarEvents={state.calendarEvents}
               selectedTodo={selectedTodo}
+              selectedTodoSubtasks={selectedTodoSubtasks}
               showCompleted={showCompleted}
               showArchived={showArchived}
               onOpenCalendar={openCalendarDraft}
@@ -2082,6 +2226,10 @@ export function App() {
               onCloseDetail={() => setSelectedTodoId(null)}
               onUpdateTodoMeta={updateTodo}
               onUpdateTodoPayload={updateTodoPayload}
+              onSaveTodoDetail={updateTodoDetail}
+              onAddSubtask={addTodoSubtask}
+              onToggleSubtask={(todo) => updateTodo(todo.meta.id, { status: todo.meta.status === "done" ? "active" : "done" })}
+              onReorderTodo={reorderTodo}
               onToggleCompleted={() => setShowCompleted((value) => !value)}
               onToggleArchived={() => setShowArchived((value) => !value)}
               onDeleteArchived={(todo) => deleteTodosPermanently([todo.meta.id])}
@@ -2129,6 +2277,7 @@ export function App() {
               onAddThread={addStrategyThread}
               onAddTask={addStrategyTask}
               selectedTodo={selectedStrategyTodo}
+              selectedTodoSubtasks={selectedStrategyTodoSubtasks}
               calendarEvents={state.calendarEvents}
               onSelectTodo={(todo) => setSelectedStrategyTodoId(todo.meta.id)}
               onCloseDetail={() => setSelectedStrategyTodoId(null)}
@@ -2144,6 +2293,9 @@ export function App() {
               onArchiveThread={archiveStrategyWithTasks}
               onUpdateTodoMeta={updateTodo}
               onUpdateTodoPayload={updateTodoPayload}
+              onSaveTodoDetail={updateTodoDetail}
+              onAddSubtask={addTodoSubtask}
+              onToggleSubtask={(todo) => updateTodo(todo.meta.id, { status: todo.meta.status === "done" ? "active" : "done" })}
             />
           )}
           {tab === "settings" && (
@@ -2421,7 +2573,7 @@ function buildTodoTreeEntries(roots: DecryptedItem[], pool: DecryptedItem[], col
       parentId,
       [...children].sort((a, b) => {
         if (a.meta.status !== b.meta.status) return a.meta.status === "done" ? 1 : -1;
-        return b.meta.createdAt.localeCompare(a.meta.createdAt);
+        return compareTodoItems(a, b);
       })
     );
   });
@@ -2437,6 +2589,25 @@ function buildTodoTreeEntries(roots: DecryptedItem[], pool: DecryptedItem[], col
   return entries;
 }
 
+function todoIdsWithChildren(pool: DecryptedItem[]) {
+  const ids = new Set<string>();
+  pool.forEach((todo) => {
+    const parentId = todo.meta.parentItemId;
+    if (parentId) ids.add(parentId);
+  });
+  return ids;
+}
+
+function directTodoSubtasks(pool: DecryptedItem[], parentId?: string) {
+  if (!parentId) return [];
+  return pool
+    .filter((todo) => todo.meta.parentItemId === parentId && todo.meta.status !== "archived" && todo.meta.status !== "deleted")
+    .sort((a, b) => {
+      if (a.meta.status !== b.meta.status) return a.meta.status === "done" ? 1 : -1;
+      return compareTodoItems(a, b);
+    });
+}
+
 function TodoView({
   todos,
   completedTodos,
@@ -2444,6 +2615,7 @@ function TodoView({
   threads,
   calendarEvents,
   selectedTodo,
+  selectedTodoSubtasks,
   showCompleted,
   showArchived,
   onOpenCalendar,
@@ -2455,6 +2627,10 @@ function TodoView({
   onCloseDetail,
   onUpdateTodoMeta,
   onUpdateTodoPayload,
+  onSaveTodoDetail,
+  onAddSubtask,
+  onToggleSubtask,
+  onReorderTodo,
   onToggleCompleted,
   onToggleArchived,
   onDeleteArchived,
@@ -2466,6 +2642,7 @@ function TodoView({
   threads: DecryptedStrategyThread[];
   calendarEvents: DecryptedCalendarEvent[];
   selectedTodo?: DecryptedItem;
+  selectedTodoSubtasks: DecryptedItem[];
   showCompleted: boolean;
   showArchived: boolean;
   onOpenCalendar: (todo: DecryptedItem) => void;
@@ -2477,12 +2654,23 @@ function TodoView({
   onCloseDetail: () => void;
   onUpdateTodoMeta: (itemId: string, patch: Partial<DecryptedItem["meta"]>) => void;
   onUpdateTodoPayload: (itemId: string, patch: Partial<ItemPayload>) => void;
+  onSaveTodoDetail: (
+    itemId: string,
+    metaPatch: Partial<DecryptedItem["meta"]>,
+    payloadPatch: Partial<ItemPayload>
+  ) => void;
+  onAddSubtask: (parentTodo: DecryptedItem, title: string) => void;
+  onToggleSubtask: (todo: DecryptedItem) => void;
+  onReorderTodo: (sourceId: string, targetId: string) => void;
   onToggleCompleted: () => void;
   onToggleArchived: () => void;
   onDeleteArchived: (todo: DecryptedItem) => void;
   onClearArchived: () => void;
 }) {
   const [collapsedTodoIds, setCollapsedTodoIds] = useState<Set<string>>(() => new Set());
+  const [collapsedStrategyIds, setCollapsedStrategyIds] = useState<Set<string>>(() => new Set());
+  const [draggedTodoId, setDraggedTodoId] = useState<string | null>(null);
+  const [dragOverTodoId, setDragOverTodoId] = useState<string | null>(null);
   const calendarByTodo = new Map(
     calendarEvents
       .filter((event) => event.meta.sourceItemId)
@@ -2510,6 +2698,14 @@ function TodoView({
       return next;
     });
   };
+  const toggleStrategyGroup = (threadId: string) => {
+    setCollapsedStrategyIds((current) => {
+      const next = new Set(current);
+      if (next.has(threadId)) next.delete(threadId);
+      else next.add(threadId);
+      return next;
+    });
+  };
   const renderEntry = (entry: TodoTreeEntry) => (
     <TodoCard
       key={entry.todo.meta.id}
@@ -2517,10 +2713,28 @@ function TodoView({
       threads={threads}
       calendarEvent={calendarByTodo.get(entry.todo.meta.id)}
       selected={selectedTodo?.meta.id === entry.todo.meta.id}
+      dragging={draggedTodoId === entry.todo.meta.id}
+      dragOver={dragOverTodoId === entry.todo.meta.id && draggedTodoId !== entry.todo.meta.id}
       depth={entry.depth}
       childCount={entry.childCount}
       collapsed={collapsedTodoIds.has(entry.todo.meta.id)}
       onToggleCollapse={toggleCollapse}
+      onDragStart={(todoId) => {
+        setDraggedTodoId(todoId);
+        setDragOverTodoId(null);
+      }}
+      onDragOver={(todoId) => {
+        if (draggedTodoId && draggedTodoId !== todoId) setDragOverTodoId(todoId);
+      }}
+      onDrop={(todoId) => {
+        if (draggedTodoId && draggedTodoId !== todoId) onReorderTodo(draggedTodoId, todoId);
+        setDraggedTodoId(null);
+        setDragOverTodoId(null);
+      }}
+      onDragEnd={() => {
+        setDraggedTodoId(null);
+        setDragOverTodoId(null);
+      }}
       onComplete={onComplete}
       onSelectTodo={onSelectTodo}
     />
@@ -2534,29 +2748,43 @@ function TodoView({
             <h2>Active</h2>
             <p>主动推进、等待回应、战略子任务都在这里。</p>
           </div>
-          <StatusPill tone="success" label={`${todos.length} active`} />
+          <div className="section-title-actions">
+            <StatusPill tone="success" label={`${todos.length} active`} />
+          </div>
         </div>
         {todos.length ? (
           <>
             {ungroupedRoots.map((root) => buildTodoTreeEntries([root], todos, collapsedTodoIds).map(renderEntry))}
             {strategyGroups.map(({ thread, roots }) => (
               <div className="todo-strategy-group" key={thread.meta.id}>
-                <div className="todo-strategy-group-head">
+                <button
+                  className={`todo-strategy-group-head ${collapsedStrategyIds.has(thread.meta.id) ? "collapsed" : ""}`}
+                  onClick={() => toggleStrategyGroup(thread.meta.id)}
+                  aria-label={collapsedStrategyIds.has(thread.meta.id) ? `Expand ${thread.payload.title}` : `Collapse ${thread.payload.title}`}
+                >
+                  <ChevronRight size={13} />
                   <Brain size={14} />
                   <span>{thread.payload.title}</span>
                   <small>{roots.length}</small>
-                </div>
-                {buildTodoTreeEntries(roots, todos, collapsedTodoIds).map(renderEntry)}
+                </button>
+                {!collapsedStrategyIds.has(thread.meta.id) &&
+                  buildTodoTreeEntries(roots, todos, collapsedTodoIds).map(renderEntry)}
               </div>
             ))}
             {orphanGroups.map(({ threadId, roots }) => (
               <div className="todo-strategy-group" key={threadId}>
-                <div className="todo-strategy-group-head">
+                <button
+                  className={`todo-strategy-group-head ${collapsedStrategyIds.has(threadId) ? "collapsed" : ""}`}
+                  onClick={() => toggleStrategyGroup(threadId)}
+                  aria-label={collapsedStrategyIds.has(threadId) ? "Expand Strategy" : "Collapse Strategy"}
+                >
+                  <ChevronRight size={13} />
                   <Brain size={14} />
                   <span>Strategy</span>
                   <small>{roots.length}</small>
-                </div>
-                {buildTodoTreeEntries(roots, todos, collapsedTodoIds).map(renderEntry)}
+                </button>
+                {!collapsedStrategyIds.has(threadId) &&
+                  buildTodoTreeEntries(roots, todos, collapsedTodoIds).map(renderEntry)}
               </div>
             ))}
           </>
@@ -2589,11 +2817,14 @@ function TodoView({
         <TodoDetailPanel
           todo={selectedTodo}
           threads={threads}
+          subtasks={selectedTodoSubtasks}
           calendarEvent={calendarByTodo.get(selectedTodo.meta.id)}
           onClose={onCloseDetail}
           onOpenCalendar={onOpenCalendar}
-          onUpdateMeta={onUpdateTodoMeta}
+          onSave={onSaveTodoDetail}
           onUpdatePayload={onUpdateTodoPayload}
+          onAddSubtask={onAddSubtask}
+          onToggleSubtask={onToggleSubtask}
           onArchive={onArchive}
         />
       )}
@@ -2606,10 +2837,16 @@ function TodoCard({
   threads,
   calendarEvent,
   selected,
+  dragging,
+  dragOver,
   depth = 0,
   childCount = 0,
   collapsed = false,
   onToggleCollapse,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
   onComplete,
   onSelectTodo
 }: {
@@ -2617,10 +2854,16 @@ function TodoCard({
   threads: DecryptedStrategyThread[];
   calendarEvent?: DecryptedCalendarEvent;
   selected?: boolean;
+  dragging?: boolean;
+  dragOver?: boolean;
   depth?: number;
   childCount?: number;
   collapsed?: boolean;
   onToggleCollapse?: (todoId: string) => void;
+  onDragStart?: (todoId: string) => void;
+  onDragOver?: (todoId: string) => void;
+  onDrop?: (todoId: string) => void;
+  onDragEnd?: () => void;
   onComplete: (todo: DecryptedItem) => void;
   onSelectTodo: (todo: DecryptedItem) => void;
 }) {
@@ -2629,10 +2872,26 @@ function TodoCard({
 
   return (
     <article
-      className={`item-card todo-card ${selected ? "selected" : ""} ${depth > 0 ? "child" : ""}`}
+      className={`item-card todo-card ${selected ? "selected" : ""} ${depth > 0 ? "child" : ""} ${dragging ? "dragging" : ""} ${dragOver ? "drag-over" : ""}`}
       style={{ "--todo-depth": depth } as CSSProperties}
       role="button"
       tabIndex={0}
+      draggable
+      onDragStart={(event) => {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", todo.meta.id);
+        onDragStart?.(todo.meta.id);
+      }}
+      onDragOver={(event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        onDragOver?.(todo.meta.id);
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        onDrop?.(todo.meta.id);
+      }}
+      onDragEnd={onDragEnd}
       onClick={() => onSelectTodo(todo)}
       onKeyDown={(event) => {
         if (event.target !== event.currentTarget) return;
@@ -2654,20 +2913,21 @@ function TodoCard({
       </button>
       <div className="item-main">
         <div className="todo-title-row">
-          {childCount > 0 && (
-            <button
-              className={`todo-collapse-button ${collapsed ? "collapsed" : ""}`}
-              aria-label={collapsed ? "Expand subtasks" : "Collapse subtasks"}
-              onClick={(event) => {
-                event.stopPropagation();
-                onToggleCollapse?.(todo.meta.id);
-              }}
-            >
-              <ChevronRight size={13} />
-            </button>
-          )}
           <p>{payload.title}</p>
         </div>
+        {childCount > 0 && (
+          <button
+            className={`subtask-toggle-chip ${collapsed ? "collapsed" : ""}`}
+            aria-label={collapsed ? `Show ${childCount} subtasks` : `Hide ${childCount} subtasks`}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleCollapse?.(todo.meta.id);
+            }}
+          >
+            <ChevronRight size={12} />
+            {collapsed ? "Show" : "Hide"} {childCount} subtasks
+          </button>
+        )}
         {todo.meta.dueAt && (
           <div className="todo-date-pill">
             <CalendarDays size={14} />
@@ -2785,41 +3045,93 @@ function TodoArchiveSection({
 function TodoDetailPanel({
   todo,
   threads,
+  subtasks,
   calendarEvent,
   onClose,
   onOpenCalendar,
-  onUpdateMeta,
+  onSave,
   onUpdatePayload,
+  onAddSubtask,
+  onToggleSubtask,
   onArchive
 }: {
   todo: DecryptedItem;
   threads: DecryptedStrategyThread[];
+  subtasks: DecryptedItem[];
   calendarEvent?: DecryptedCalendarEvent;
   onClose: () => void;
   onOpenCalendar: (todo: DecryptedItem) => void;
-  onUpdateMeta: (itemId: string, patch: Partial<DecryptedItem["meta"]>) => void;
+  onSave: (
+    itemId: string,
+    metaPatch: Partial<DecryptedItem["meta"]>,
+    payloadPatch: Partial<ItemPayload>
+  ) => void;
   onUpdatePayload: (itemId: string, patch: Partial<ItemPayload>) => void;
+  onAddSubtask: (parentTodo: DecryptedItem, title: string) => void;
+  onToggleSubtask: (todo: DecryptedItem) => void;
   onArchive: (todo: DecryptedItem) => void;
 }) {
   const activeTodo = todo;
   const payload = activeTodo.payload as ItemPayload;
   const dueDate = activeTodo.meta.dueAt ? formatDateInput(new Date(activeTodo.meta.dueAt)) : "";
   const dueTime = inputTimeValue(activeTodo.meta.dueAt);
+  const [draft, setDraft] = useState(() => ({
+    title: payload.title,
+    notes: payload.notes ?? "",
+    dueDate,
+    dueTime,
+    strategyThreadId: activeTodo.meta.strategyThreadId ?? ""
+  }));
+  const [subtaskTitle, setSubtaskTitle] = useState("");
 
-  function updateDue(nextDate: string, nextTime = dueTime) {
-    if (!nextDate) {
-      onUpdateMeta(activeTodo.meta.id, { dueAt: undefined });
-      return;
-    }
-    onUpdateMeta(activeTodo.meta.id, {
-      dueAt: new Date(`${nextDate}T${nextTime || "09:00"}:00`).toISOString()
+  useEffect(() => {
+    setDraft({
+      title: payload.title,
+      notes: payload.notes ?? "",
+      dueDate,
+      dueTime,
+      strategyThreadId: activeTodo.meta.strategyThreadId ?? ""
     });
+    setSubtaskTitle("");
+  }, [activeTodo.meta.id, activeTodo.meta.dueAt, activeTodo.meta.strategyThreadId, payload.title, payload.notes, dueDate, dueTime]);
+
+  const draftDueAt = draft.dueDate ? new Date(`${draft.dueDate}T${draft.dueTime || "09:00"}:00`).toISOString() : undefined;
+  const isDirty =
+    draft.title !== payload.title ||
+    draft.notes !== (payload.notes ?? "") ||
+    draftDueAt !== activeTodo.meta.dueAt ||
+    draft.strategyThreadId !== (activeTodo.meta.strategyThreadId ?? "");
+
+  function saveDetail() {
+    const title = draft.title.trim();
+    if (!title) return;
+    onSave(
+      activeTodo.meta.id,
+      {
+        dueAt: draftDueAt,
+        strategyThreadId: draft.strategyThreadId || undefined
+      },
+      {
+        title,
+        notes: draft.notes.trim() || undefined
+      }
+    );
+  }
+
+  function submitSubtask() {
+    const title = subtaskTitle.trim();
+    if (!title) return;
+    onAddSubtask(activeTodo, title);
+    setSubtaskTitle("");
   }
 
   return (
     <aside className="todo-detail-panel">
       <div className="detail-head">
-        <span>Todo Detail</span>
+        <div>
+          <span>Todo Detail</span>
+          {isDirty && <small>Unsaved changes</small>}
+        </div>
         <button className="icon-button" onClick={onClose} aria-label="Close detail">
           <X size={16} />
         </button>
@@ -2827,31 +3139,45 @@ function TodoDetailPanel({
       <label className="detail-field">
         <span>Title</span>
         <input
-          value={payload.title}
-          onChange={(event) => onUpdatePayload(activeTodo.meta.id, { title: event.target.value })}
+          value={draft.title}
+          onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
         />
       </label>
       <label className="detail-field">
         <span>Comment</span>
         <textarea
-          value={payload.notes ?? ""}
-          onChange={(event) => onUpdatePayload(activeTodo.meta.id, { notes: event.target.value })}
+          value={draft.notes}
+          onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value }))}
           placeholder="补充上下文、下一步、判断依据..."
         />
       </label>
       <div className="detail-field">
         <span>Date</span>
         <div className="detail-date-row">
-          <input type="date" value={dueDate} onChange={(event) => updateDue(event.target.value)} />
-          <input type="time" value={dueTime} onChange={(event) => updateDue(dueDate || formatDateInput(new Date()), event.target.value)} />
+          <input
+            type="date"
+            value={draft.dueDate}
+            onChange={(event) => setDraft((current) => ({ ...current, dueDate: event.target.value }))}
+          />
+          <input
+            type="time"
+            value={draft.dueTime}
+            onChange={(event) =>
+              setDraft((current) => ({
+                ...current,
+                dueDate: current.dueDate || formatDateInput(new Date()),
+                dueTime: event.target.value
+              }))
+            }
+          />
         </div>
         {calendarEvent && <small>Linked Feishu: {calendarEvent.meta.status}</small>}
       </div>
       <label className="detail-field">
         <span>Strategy</span>
         <select
-          value={todo.meta.strategyThreadId ?? ""}
-          onChange={(event) => onUpdateMeta(activeTodo.meta.id, { strategyThreadId: event.target.value || undefined })}
+          value={draft.strategyThreadId}
+          onChange={(event) => setDraft((current) => ({ ...current, strategyThreadId: event.target.value }))}
         >
           <option value="">No strategy</option>
           {threads.map((thread) => (
@@ -2861,6 +3187,51 @@ function TodoDetailPanel({
           ))}
         </select>
       </label>
+      <div className="detail-field detail-subtasks-field">
+        <div className="detail-section-label">
+          <span>Subtasks</span>
+          <small>{subtasks.length}</small>
+        </div>
+        <div className="detail-subtask-composer">
+          <input
+            value={subtaskTitle}
+            onChange={(event) => setSubtaskTitle(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                submitSubtask();
+              }
+            }}
+            placeholder="Add subtask..."
+          />
+          <button className="secondary-button" onClick={submitSubtask} disabled={!subtaskTitle.trim()}>
+            <Plus size={14} />
+            Add
+          </button>
+        </div>
+        {subtasks.length ? (
+          <div className="detail-subtask-list">
+            {subtasks.map((subtask) => {
+              const subtaskPayload = subtask.payload as ItemPayload;
+              const done = subtask.meta.status === "done";
+              return (
+                <button
+                  className={`detail-subtask-row ${done ? "done" : ""}`}
+                  key={subtask.meta.id}
+                  onClick={() => onToggleSubtask(subtask)}
+                >
+                  <span className="mini-completion-circle">
+                    {done && <Check size={11} />}
+                  </span>
+                  <span>{subtaskPayload.title}</span>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <small>No subtasks yet</small>
+        )}
+      </div>
       <div className="detail-field">
         <span>Files</span>
         <label className="file-drop">
@@ -2894,6 +3265,10 @@ function TodoDetailPanel({
         )}
       </div>
       <div className="detail-actions">
+        <button className="primary-button" onClick={saveDetail} disabled={!isDirty || !draft.title.trim()}>
+          <Check size={15} />
+          Save
+        </button>
         <button className="secondary-button" onClick={() => onOpenCalendar(activeTodo)}>
           <CalendarDays size={15} />
           Put on calendar
@@ -3253,6 +3628,7 @@ function StrategyView({
   taskText,
   strategyDraft,
   selectedTodo,
+  selectedTodoSubtasks,
   calendarEvents,
   onSelectThread,
   onTaskText,
@@ -3266,7 +3642,10 @@ function StrategyView({
   onArchive,
   onArchiveThread,
   onUpdateTodoMeta,
-  onUpdateTodoPayload
+  onUpdateTodoPayload,
+  onSaveTodoDetail,
+  onAddSubtask,
+  onToggleSubtask
 }: {
   threads: DecryptedStrategyThread[];
   selectedThreadId: string;
@@ -3277,6 +3656,7 @@ function StrategyView({
   taskText: string;
   strategyDraft: StrategyDraft;
   selectedTodo?: DecryptedItem;
+  selectedTodoSubtasks: DecryptedItem[];
   calendarEvents: DecryptedCalendarEvent[];
   onSelectThread: (id: string) => void;
   onTaskText: (text: string) => void;
@@ -3291,8 +3671,16 @@ function StrategyView({
   onArchiveThread: (thread: DecryptedStrategyThread) => void;
   onUpdateTodoMeta: (itemId: string, patch: Partial<DecryptedItem["meta"]>) => void;
   onUpdateTodoPayload: (itemId: string, patch: Partial<ItemPayload>) => void;
+  onSaveTodoDetail: (
+    itemId: string,
+    metaPatch: Partial<DecryptedItem["meta"]>,
+    payloadPatch: Partial<ItemPayload>
+  ) => void;
+  onAddSubtask: (parentTodo: DecryptedItem, title: string) => void;
+  onToggleSubtask: (todo: DecryptedItem) => void;
 }) {
   const [collapsedTodoIds, setCollapsedTodoIds] = useState<Set<string>>(() => new Set());
+  const [showStrategyCompleted, setShowStrategyCompleted] = useState(false);
   const calendarByTodo = new Map(
     calendarEvents
       .filter((event) => event.meta.sourceItemId)
@@ -3406,20 +3794,21 @@ function StrategyView({
                     <div>
                       <StatusPill tone="success" label="Todo" />
                       <div className="strategy-note-title-row">
-                        {childCount > 0 && (
-                          <button
-                            className={`todo-collapse-button ${collapsedTodoIds.has(todo.meta.id) ? "collapsed" : ""}`}
-                            aria-label={collapsedTodoIds.has(todo.meta.id) ? "Expand subtasks" : "Collapse subtasks"}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              toggleStrategyTodoCollapse(todo.meta.id);
-                            }}
-                          >
-                            <ChevronRight size={13} />
-                          </button>
-                        )}
                         <h3>{(todo.payload as ItemPayload).title}</h3>
                       </div>
+                      {childCount > 0 && (
+                        <button
+                          className={`subtask-toggle-chip ${collapsedTodoIds.has(todo.meta.id) ? "collapsed" : ""}`}
+                          aria-label={collapsedTodoIds.has(todo.meta.id) ? `Show ${childCount} subtasks` : `Hide ${childCount} subtasks`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            toggleStrategyTodoCollapse(todo.meta.id);
+                          }}
+                        >
+                          <ChevronRight size={12} />
+                          {collapsedTodoIds.has(todo.meta.id) ? "Show" : "Hide"} {childCount} subtasks
+                        </button>
+                      )}
                       {todo.meta.dueAt && (
                         <p className="strategy-note-date">
                           <CalendarDays size={13} />
@@ -3436,19 +3825,33 @@ function StrategyView({
             </SectionCard>
 
             {strategyCompletedTodos.length > 0 && (
-              <SectionCard icon={<Check size={17} />} title="Completed">
-                {strategyCompletedTodos.map((todo) => (
-                  <article className="mini-row completed" key={todo.meta.id}>
-                    <span className="completion-circle done">
-                      <Check size={12} />
-                    </span>
-                    <div>
-                      <div className="mini-row-title">{(todo.payload as ItemPayload).title}</div>
-                      <span>{relativeAgeLabel(todo.meta.updatedAt)}</span>
-                    </div>
-                  </article>
-                ))}
-              </SectionCard>
+              <section className="strategy-completed-section">
+                <button
+                  className={`collapsed-list-toggle ${showStrategyCompleted ? "open" : ""}`}
+                  onClick={() => setShowStrategyCompleted((value) => !value)}
+                >
+                  <span className="collapse-title">
+                    <ChevronRight className="collapse-chevron" size={14} />
+                    Completed
+                  </span>
+                  <small>{strategyCompletedTodos.length}</small>
+                </button>
+                {showStrategyCompleted && (
+                  <div className="collapsed-list-body">
+                    {strategyCompletedTodos.map((todo) => (
+                      <article className="mini-row completed" key={todo.meta.id}>
+                        <span className="completion-circle completed">
+                          <Check size={12} />
+                        </span>
+                        <div>
+                          <div className="mini-row-title">{(todo.payload as ItemPayload).title}</div>
+                          <span>{relativeAgeLabel(todo.meta.updatedAt)}</span>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </section>
             )}
 
             {strategySignals.length > 0 && (
@@ -3467,11 +3870,14 @@ function StrategyView({
         <TodoDetailPanel
           todo={selectedTodo}
           threads={threads}
+          subtasks={selectedTodoSubtasks}
           calendarEvent={calendarByTodo.get(selectedTodo.meta.id)}
           onClose={onCloseDetail}
           onOpenCalendar={onOpenCalendar}
-          onUpdateMeta={onUpdateTodoMeta}
+          onSave={onSaveTodoDetail}
           onUpdatePayload={onUpdateTodoPayload}
+          onAddSubtask={onAddSubtask}
+          onToggleSubtask={onToggleSubtask}
           onArchive={onArchive}
         />
       )}

@@ -75,6 +75,7 @@ class AppSyncClient(
             JSONObject()
                 .put("title", item.title)
                 .put("notes", item.notes.takeIf { it.isNotBlank() })
+                .put("sortOrder", item.sortOrder)
         )
         return JSONObject()
             .put("user_id", userId)
@@ -157,7 +158,8 @@ class AppSyncClient(
             dueAt = row.optNullableString("due_at")?.let(::instantOrNull),
             strategyThreadId = row.optNullableString("strategy_thread_id"),
             sourceItemId = row.optNullableString("source_item_id"),
-            parentItemId = row.optNullableString("parent_item_id")
+            parentItemId = row.optNullableString("parent_item_id"),
+            sortOrder = payload.optNullableDouble("sortOrder")
         )
     }
 
@@ -324,3 +326,6 @@ private fun instantOrNull(value: String): Instant? =
 
 private fun JSONObject.optNullableString(key: String): String? =
     if (has(key) && !isNull(key)) optString(key).takeIf { it.isNotBlank() } else null
+
+private fun JSONObject.optNullableDouble(key: String): Double? =
+    if (has(key) && !isNull(key)) optDouble(key).takeIf { !it.isNaN() && !it.isInfinite() } else null

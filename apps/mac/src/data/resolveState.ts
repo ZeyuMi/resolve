@@ -95,7 +95,9 @@ export function normalizeState(state: ResolveState): ResolveState {
         payload: {
           title: (item.payload as ItemPayload).title,
           content: (item.payload as ItemPayload).content,
-          notes: (item.payload as ItemPayload).notes
+          notes: (item.payload as ItemPayload).notes,
+          sortOrder: (item.payload as ItemPayload).sortOrder,
+          attachments: (item.payload as ItemPayload).attachments
         }
       } satisfies DecryptedItem;
     })
@@ -106,6 +108,7 @@ export function createTodoItem(input: {
   title: string;
   source?: DecryptedItem["meta"]["source"];
   strategyThreadId?: string;
+  parentItemId?: string;
   dueAt?: string;
   sourceItemId?: string;
 }): DecryptedItem {
@@ -120,6 +123,7 @@ export function createTodoItem(input: {
       updatedAt: timestamp,
       dueAt: input.dueAt,
       strategyThreadId: input.strategyThreadId,
+      parentItemId: input.parentItemId,
       sourceItemId: input.sourceItemId,
       ...emptyEncryptedFields
     },
