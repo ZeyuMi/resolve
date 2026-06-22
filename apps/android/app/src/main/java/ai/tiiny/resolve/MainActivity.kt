@@ -1,9 +1,15 @@
 package ai.tiiny.resolve
 
+import android.Manifest
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.pm.PackageManager
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
@@ -37,6 +43,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -133,26 +140,102 @@ import java.time.format.DateTimeFormatter
 
 class MainActivity : ComponentActivity() {
     private var latestIntent by mutableStateOf<Intent?>(null)
+    private var quickCaptureReloadTick by mutableStateOf(0)
+    private var quickCaptureReceiverRegistered = false
+    private val quickCaptureSavedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == ResolveQuickCaptureNotification.actionSaved) {
+                quickCaptureReloadTick += 1
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         SyncWorker.cancel(this)
+        ensureQuickCaptureNotification()
         val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty()
         latestIntent = intent
         setContent {
             ResolveAndroidApp(
                 initialCapture = sharedText,
                 latestIntent = latestIntent,
+                quickCaptureReloadTick = quickCaptureReloadTick,
                 onIntentHandled = { latestIntent = null }
             )
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (!quickCaptureReceiverRegistered) {
+            val filter = IntentFilter(ResolveQuickCaptureNotification.actionSaved)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(quickCaptureSavedReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("UnspecifiedRegisterReceiverFlag")
+                registerReceiver(quickCaptureSavedReceiver, filter)
+            }
+            quickCaptureReceiverRegistered = true
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        ensureQuickCaptureNotification()
+        quickCaptureReloadTick += 1
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            quickCaptureReloadTick += 1
+        }
+    }
+
+    override fun onStop() {
+        if (quickCaptureReceiverRegistered) {
+            unregisterReceiver(quickCaptureSavedReceiver)
+            quickCaptureReceiverRegistered = false
+        }
+        super.onStop()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         latestIntent = intent
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == quickCaptureNotificationPermissionRequest &&
+            grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED
+        ) {
+            ResolveQuickCaptureNotification.show(this)
+        }
+    }
+
+    private fun ensureQuickCaptureNotification() {
+        if (ResolveQuickCaptureNotification.canPostNotifications(this)) {
+            ResolveQuickCaptureNotification.show(this)
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            requestPermissions(
+                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                quickCaptureNotificationPermissionRequest
+            )
+        }
+    }
+
+    private companion object {
+        const val quickCaptureNotificationPermissionRequest = 4201
     }
 }
 
@@ -177,6 +260,7 @@ private data class TodoTreeEntry(
 private fun ResolveAndroidApp(
     initialCapture: String,
     latestIntent: Intent?,
+    quickCaptureReloadTick: Int,
     onIntentHandled: () -> Unit
 ) {
     val context = LocalContext.current
@@ -184,6 +268,7 @@ private fun ResolveAndroidApp(
     val secureVault = remember { SecureVault(context) }
     val scope = rememberCoroutineScope()
     var state by remember { mutableStateOf(repository.load()) }
+    val quickCaptureEventVersion = ResolveQuickCaptureEvents.version
     var tab by rememberSaveable { mutableStateOf(Tab.Todo) }
     var capture by rememberSaveable { mutableStateOf(initialCapture) }
     var notice by remember { mutableStateOf<String?>(null) }
@@ -212,6 +297,7 @@ private fun ResolveAndroidApp(
     var syncSecretReady by remember { mutableStateOf(secureVault.loadSyncSecret() != null) }
     var applyingRemoteState by remember { mutableStateOf(false) }
     var localSaveJob by remember { mutableStateOf<Job?>(null) }
+    var todoScrollToTopSignal by remember { mutableStateOf(0) }
     val latestStateForDispose by rememberUpdatedState(state)
 
     fun queueLocalSave(next: ResolveState, delayMs: Long = 220L) {
@@ -227,6 +313,29 @@ private fun ResolveAndroidApp(
     fun persist(next: ResolveState) {
         state = next
         queueLocalSave(next)
+    }
+
+    fun applyPendingQuickCaptures() {
+        val hadPendingQuickCaptures = repository.hasPendingQuickCaptures()
+        localSaveJob?.cancel()
+        val loaded = repository.load()
+        val currentById = state.items.associateBy { it.id }
+        val notificationItems = loaded.items
+            .filter { it.source == "android_notification" && it.title.isNotBlank() }
+            .map { currentById[it.id] ?: it }
+            .sortedByDescending { it.createdAt }
+        if (notificationItems.isEmpty()) {
+            if (hadPendingQuickCaptures) {
+                repository.clearPendingQuickCaptures()
+            }
+            return
+        }
+        val currentWithoutNotificationCaptures = state.items.filter { it.source != "android_notification" }
+        val next = state.copy(items = notificationItems + currentWithoutNotificationCaptures)
+        state = next
+        repository.save(next)
+        repository.clearPendingQuickCaptures()
+        todoScrollToTopSignal += 1
     }
 
     DisposableEffect(Unit) {
@@ -499,8 +608,13 @@ private fun ResolveAndroidApp(
     fun saveCapture() {
         val text = capture.trim()
         if (text.isBlank()) return
+        val timestamp = Instant.now()
         val item = ResolveItem(
-            title = text
+            title = text,
+            createdAt = timestamp,
+            updatedAt = timestamp,
+            statusChangedAt = timestamp,
+            sortOrder = -timestamp.toEpochMilli().toDouble()
         )
         persist(state.copy(items = listOf(item) + state.items))
         capture = ""
@@ -953,6 +1067,21 @@ private fun ResolveAndroidApp(
         notice = null
     }
 
+    LaunchedEffect(quickCaptureReloadTick, quickCaptureEventVersion) {
+        if (quickCaptureReloadTick > 0 || quickCaptureEventVersion > 0) {
+            applyPendingQuickCaptures()
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(900)
+            if (repository.hasPendingQuickCaptures()) {
+                applyPendingQuickCaptures()
+            }
+        }
+    }
+
     LaunchedEffect(hasBackendSession) {
         if (hasBackendSession) {
             runCatching {
@@ -982,6 +1111,21 @@ private fun ResolveAndroidApp(
     }
 
     LaunchedEffect(latestIntent) {
+        if (latestIntent?.getBooleanExtra(ResolveQuickCaptureNotification.extraReloadState, false) == true) {
+            applyPendingQuickCaptures()
+            tab = Tab.Todo
+            selectedTodoId = null
+            onIntentHandled()
+            return@LaunchedEffect
+        }
+
+        latestIntent?.getStringExtra(Intent.EXTRA_TEXT)?.takeIf { it.isNotBlank() }?.let { sharedText ->
+            capture = sharedText
+            tab = Tab.Todo
+            onIntentHandled()
+            return@LaunchedEffect
+        }
+
         val uri = latestIntent?.data
         if (uri?.scheme == "resolve" && uri.host == "oauth" && uri.path == "/feishu") {
             tab = Tab.Calendar
@@ -1229,6 +1373,7 @@ private fun ResolveAndroidApp(
                                     state = state,
                                     showCompleted = showCompleted,
                                     showArchived = showArchived,
+                                    scrollToTopSignal = todoScrollToTopSignal,
                                     onToggleDone = { item ->
                                         updateItem(item.copy(status = if (item.status == ItemStatus.Done) ItemStatus.Active else ItemStatus.Done))
                                     },
@@ -1723,6 +1868,7 @@ private fun TodoScreen(
     state: ResolveState,
     showCompleted: Boolean,
     showArchived: Boolean,
+    scrollToTopSignal: Int,
     onToggleDone: (ResolveItem) -> Unit,
     onRestore: (ResolveItem) -> Unit,
     onArchive: (ResolveItem) -> Unit,
@@ -1765,6 +1911,13 @@ private fun TodoScreen(
     val orphanStrategyGroups = rootsByStrategy
         .filterKeys { it.isNotBlank() && state.threads.none { thread -> thread.id == it } }
         .map { (threadId, roots) -> StrategyThread(id = threadId, title = "Strategy") to roots }
+    val listState = rememberLazyListState()
+
+    LaunchedEffect(scrollToTopSignal) {
+        if (scrollToTopSignal > 0) {
+            listState.scrollToItem(0)
+        }
+    }
 
     fun moveTodo(item: ResolveItem, direction: Int) {
         val siblings = activePool.filter {
@@ -1796,7 +1949,7 @@ private fun TodoScreen(
         )
     }
 
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+    LazyColumn(state = listState, verticalArrangement = Arrangement.spacedBy(3.dp)) {
         if (ungroupedRoots.isNotEmpty()) {
             items(flattenTodoTree(ungroupedRoots, activePool, collapsedTodoIds), key = { it.item.id }) { entry ->
                 RenderTodoEntry(entry)

@@ -8,23 +8,81 @@ import java.time.Instant
 
 class ResolveRepository(context: Context) {
     private val prefs = context.getSharedPreferences("resolve_state", Context.MODE_PRIVATE)
+    private val stateJsonKey = "state_json"
     private val appSyncCursorKey = "last_app_sync_cursor_v2"
+    private val pendingQuickCapturesKey = "pending_quick_captures"
     private val appSyncCursorLookback = Duration.ofDays(30)
 
     fun load(): ResolveState {
-        val raw = prefs.getString("state_json", null) ?: return sampleResolveState().also { save(it) }
-        return runCatching {
-            decodeState(JSONObject(raw)).let { state ->
+        return synchronized(prefsLock) {
+            drainPendingQuickCaptures(loadStoredState())
+        }
+    }
+
+    private fun loadStoredState(): ResolveState {
+        val raw = prefs.getString(stateJsonKey, null)
+        val state = if (raw == null) {
+            sampleResolveState().also { save(it) }
+        } else {
+            runCatching {
+                decodeState(JSONObject(raw))
+            }.getOrElse {
+                sampleResolveState().also { save(it) }
+            }
+        }
+
+        val normalized = runCatching {
+            state.let {
                 val normalized = scrubSampleData(state).copy(calendarEvents = normalizeCalendarEvents(state.calendarEvents))
                 if (normalized != state) save(normalized)
                 normalized
             }
         }.getOrElse { sampleResolveState().also { save(it) } }
+
+        return normalized
     }
 
     fun save(state: ResolveState) {
-        val normalized = scrubSampleData(state).copy(calendarEvents = normalizeCalendarEvents(state.calendarEvents))
-        prefs.edit().putString("state_json", encodeState(normalized).toString()).apply()
+        synchronized(prefsLock) {
+            val normalized = scrubSampleData(mergeProtectedQuickCaptures(state))
+                .copy(calendarEvents = normalizeCalendarEvents(state.calendarEvents))
+            prefs.edit().putString(stateJsonKey, encodeState(normalized).toString()).commit()
+        }
+    }
+
+    fun addQuickCapture(title: String) {
+        synchronized(prefsLock) {
+            val text = title.trim()
+            if (text.isBlank()) return
+            val timestamp = Instant.now()
+            val item = ResolveItem(
+                title = text,
+                source = "android_notification",
+                createdAt = timestamp,
+                updatedAt = timestamp,
+                statusChangedAt = timestamp,
+                sortOrder = -timestamp.toEpochMilli().toDouble()
+            )
+            val existing = prefs.getString(pendingQuickCapturesKey, null)
+                ?.let { runCatching { JSONArray(it) }.getOrNull() }
+                ?: JSONArray()
+            existing.put(encodeItem(item))
+            prefs.edit().putString(pendingQuickCapturesKey, existing.toString()).commit()
+
+            val current = loadStoredState()
+            if (current.items.none { it.id == item.id }) {
+                save(current.copy(items = listOf(item) + current.items))
+            }
+        }
+    }
+
+    fun hasPendingQuickCaptures(): Boolean =
+        !prefs.getString(pendingQuickCapturesKey, null).isNullOrBlank()
+
+    fun clearPendingQuickCaptures() {
+        synchronized(prefsLock) {
+            prefs.edit().remove(pendingQuickCapturesKey).commit()
+        }
     }
 
     fun loadAppSyncCursor(): Instant? =
@@ -50,6 +108,60 @@ class ResolveRepository(context: Context) {
         feishuSettings = decodeFeishuSettings(json.optJSONObject("feishuSettings") ?: JSONObject()),
         backendSettings = decodeBackendSettings(json.optJSONObject("backendSettings") ?: JSONObject())
     )
+
+    private fun drainPendingQuickCaptures(state: ResolveState): ResolveState {
+        val pendingRaw = prefs.getString(pendingQuickCapturesKey, null) ?: return state
+        val pendingItems = runCatching {
+            JSONArray(pendingRaw).mapJson(::decodeItem)
+        }.getOrDefault(emptyList())
+        if (pendingItems.isEmpty()) return state
+
+        val existingIds = state.items.map { it.id }.toSet()
+        val freshCaptures = pendingItems
+            .filter { it.id !in existingIds && it.title.isNotBlank() }
+            .sortedByDescending { it.createdAt }
+        if (freshCaptures.isEmpty()) return state
+
+        val merged = state.copy(items = freshCaptures + state.items)
+        save(merged)
+        return merged
+    }
+
+    private fun mergePendingQuickCaptures(state: ResolveState): ResolveState {
+        val pendingRaw = prefs.getString(pendingQuickCapturesKey, null) ?: return state
+        val pendingItems = runCatching {
+            JSONArray(pendingRaw).mapJson(::decodeItem)
+        }.getOrDefault(emptyList())
+        if (pendingItems.isEmpty()) return state
+
+        val existingIds = state.items.map { it.id }.toSet()
+        val freshCaptures = pendingItems
+            .filter { it.id !in existingIds && it.title.isNotBlank() }
+            .sortedByDescending { it.createdAt }
+        return if (freshCaptures.isEmpty()) state else state.copy(items = freshCaptures + state.items)
+    }
+
+    private fun mergeProtectedQuickCaptures(state: ResolveState): ResolveState {
+        val withPending = mergePendingQuickCaptures(state)
+        val existing = prefs.getString(stateJsonKey, null)
+            ?.let { raw -> runCatching { decodeState(JSONObject(raw)) }.getOrNull() }
+            ?: return withPending
+        val existingIds = withPending.items.map { it.id }.toSet()
+        val recentCutoff = Instant.now().minus(Duration.ofMinutes(15))
+        val recentNotificationItems = existing.items
+            .filter {
+                it.source == "android_notification" &&
+                    it.status == ItemStatus.Active &&
+                    it.id !in existingIds &&
+                    it.createdAt.isAfter(recentCutoff)
+            }
+            .sortedByDescending { it.createdAt }
+        return if (recentNotificationItems.isEmpty()) {
+            withPending
+        } else {
+            withPending.copy(items = recentNotificationItems + withPending.items)
+        }
+    }
 
     private fun encodeItem(item: ResolveItem) = JSONObject()
         .put("id", item.id)
@@ -204,6 +316,8 @@ class ResolveRepository(context: Context) {
     }
 
     companion object {
+        private val prefsLock = Any()
+
         private val sampleItemTitles = setOf(
             "和 Alex 聊完，感觉融资叙事应该强调速度优势",
             "明天问 Sarah 候选人推进到哪一步了",
