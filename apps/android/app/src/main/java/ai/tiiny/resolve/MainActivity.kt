@@ -229,26 +229,65 @@ private fun ResolveAndroidApp(
         }
     }
 
-    suspend fun syncAppStateWithCloud(pushAfterPull: Boolean = true, includeCalendarEvents: Boolean = true) {
-        val session = secureVault.loadBackendSession() ?: return
-        val syncSecret = secureVault.loadSyncSecret() ?: return
-        if (state.backendSettings.email.isBlank()) return
-        val localSnapshot = state
-        val client = AppSyncClient(localSnapshot.backendSettings, session, syncSecret)
-        val changedSince = repository.loadAppSyncCursor()
-        val cursorAfterSync = Instant.now()
-        val remote = withContext(Dispatchers.IO) {
-            client.pullState(includeCalendarEvents = includeCalendarEvents, changedSince = changedSince)
+    suspend fun backendSession(forceRefresh: Boolean = false): BackendSession {
+        val settings = state.backendSettings
+        var session = secureVault.loadBackendSession() ?: error("Sign in to Resolve backend first.")
+        if (forceRefresh || session.shouldRefresh()) {
+            val client = BackendClient(settings, session)
+            session = withContext(Dispatchers.IO) { client.refreshSession() }
+            secureVault.saveBackendSession(session.accessToken, session.refreshToken, session.expiresAtEpochMillis)
+            hasBackendSession = true
         }
-        val merged = mergeEncryptedRemoteState(localSnapshot, remote)
-        applyingRemoteState = true
-        persist(merged)
-        applyingRemoteState = false
-        if (pushAfterPull) {
-            withContext(Dispatchers.IO) {
-                client.pushState(merged, changedSince = changedSince)
-                repository.saveAppSyncCursor(cursorAfterSync)
+        return session
+    }
+
+    suspend fun connectedBackendClient(forceRefresh: Boolean = false): BackendClient {
+        val settings = state.backendSettings
+        val session = backendSession(forceRefresh)
+        val client = BackendClient(settings, session)
+        return client
+    }
+
+    suspend fun <T> withBackendClient(operation: suspend (BackendClient) -> T): T {
+        return try {
+            operation(connectedBackendClient())
+        } catch (error: Throwable) {
+            if (!error.isBackendJwtExpired()) throw error
+            operation(connectedBackendClient(forceRefresh = true))
+        }
+    }
+
+    suspend fun syncAppStateWithCloud(pushAfterPull: Boolean = true, includeCalendarEvents: Boolean = true) {
+        suspend fun runSync(forceRefresh: Boolean) {
+            if (secureVault.loadBackendSession() == null) return
+            val syncSecret = secureVault.loadSyncSecret() ?: return
+            if (state.backendSettings.email.isBlank()) return
+            val localSnapshot = state
+            val session = backendSession(forceRefresh)
+            val client = AppSyncClient(localSnapshot.backendSettings, session, syncSecret)
+            val changedSince = repository.loadAppSyncCursor()
+            val cursorAfterSync = Instant.now()
+            val remote = withContext(Dispatchers.IO) {
+                client.pullState(includeCalendarEvents = includeCalendarEvents, changedSince = changedSince)
             }
+            val merged = mergeEncryptedRemoteState(localSnapshot, remote)
+            applyingRemoteState = true
+            persist(merged)
+            applyingRemoteState = false
+            if (pushAfterPull) {
+                withContext(Dispatchers.IO) {
+                    client.pushState(merged, changedSince = changedSince)
+                    repository.saveAppSyncCursor(cursorAfterSync)
+                }
+            }
+        }
+
+        try {
+            runSync(forceRefresh = false)
+        } catch (error: Throwable) {
+            applyingRemoteState = false
+            if (!error.isBackendJwtExpired()) throw error
+            runSync(forceRefresh = true)
         }
     }
 
@@ -263,13 +302,21 @@ private fun ResolveAndroidApp(
     }
 
     fun deleteRemoteItems(itemIds: Collection<String>) {
-        val session = secureVault.loadBackendSession()
-        val syncSecret = secureVault.loadSyncSecret()
-        if (session == null || syncSecret == null || state.backendSettings.email.isBlank()) return
+        if (secureVault.loadBackendSession() == null || secureVault.loadSyncSecret() == null || state.backendSettings.email.isBlank()) return
         scope.launch {
             runCatching {
-                withContext(Dispatchers.IO) {
-                    AppSyncClient(state.backendSettings, session, syncSecret).deleteRemoteItems(itemIds)
+                suspend fun runDelete(forceRefresh: Boolean) {
+                    val syncSecret = secureVault.loadSyncSecret() ?: return
+                    val session = backendSession(forceRefresh)
+                    withContext(Dispatchers.IO) {
+                        AppSyncClient(state.backendSettings, session, syncSecret).deleteRemoteItems(itemIds)
+                    }
+                }
+                try {
+                    runDelete(forceRefresh = false)
+                } catch (error: Throwable) {
+                    if (!error.isBackendJwtExpired()) throw error
+                    runDelete(forceRefresh = true)
                 }
             }
         }
@@ -424,39 +471,35 @@ private fun ResolveAndroidApp(
         notice = null
     }
 
-    suspend fun connectedBackendClient(): BackendClient {
-        val settings = state.backendSettings
-        var session = secureVault.loadBackendSession() ?: error("Sign in to Resolve backend first.")
-        var client = BackendClient(settings, session)
-        if (session.shouldRefresh()) {
-            session = withContext(Dispatchers.IO) { client.refreshSession() }
-            secureVault.saveBackendSession(session.accessToken, session.refreshToken, session.expiresAtEpochMillis)
-            client = BackendClient(settings, session)
-            hasBackendSession = true
-        }
-        return client
-    }
-
     suspend fun syncBackendCalendar() {
-        val client = connectedBackendClient()
-        val syncedAt = withContext(Dispatchers.IO) { client.syncFeishuNow() }
-        val remoteEvents = withContext(Dispatchers.IO) { client.listEvents(state.feishuSettings) }
-        persist(
-            state.copy(
-                calendarEvents = mergeBackendCalendarEvents(state.calendarEvents, remoteEvents),
-                backendSettings = state.backendSettings.copy(
-                    status = BackendStatus.Connected,
-                    feishuConnected = true,
-                    lastSyncedAt = syncedAt,
-                    lastError = null
-                ),
-                feishuSettings = state.feishuSettings.copy(
-                    status = FeishuStatus.Connected,
-                    lastSyncedAt = syncedAt,
-                    lastError = null
+        suspend fun runCalendarSync(forceRefresh: Boolean) {
+            val client = connectedBackendClient(forceRefresh)
+            val syncedAt = withContext(Dispatchers.IO) { client.syncFeishuNow() }
+            val remoteEvents = withContext(Dispatchers.IO) { client.listEvents(state.feishuSettings) }
+            persist(
+                state.copy(
+                    calendarEvents = mergeBackendCalendarEvents(state.calendarEvents, remoteEvents),
+                    backendSettings = state.backendSettings.copy(
+                        status = BackendStatus.Connected,
+                        feishuConnected = true,
+                        lastSyncedAt = syncedAt,
+                        lastError = null
+                    ),
+                    feishuSettings = state.feishuSettings.copy(
+                        status = FeishuStatus.Connected,
+                        lastSyncedAt = syncedAt,
+                        lastError = null
+                    )
                 )
             )
-        )
+        }
+
+        try {
+            runCalendarSync(forceRefresh = false)
+        } catch (error: Throwable) {
+            if (!error.isBackendJwtExpired()) throw error
+            runCalendarSync(forceRefresh = true)
+        }
     }
 
     fun syncFeishu() {
@@ -543,8 +586,9 @@ private fun ResolveAndroidApp(
         if (hasBackendSession && state.backendSettings.feishuConnected) {
             scope.launch {
                 try {
-                    val client = connectedBackendClient()
-                    val remote = withContext(Dispatchers.IO) { client.createEvent(enrichedDraft) }
+                    val remote = withBackendClient { client ->
+                        withContext(Dispatchers.IO) { client.createEvent(enrichedDraft) }
+                    }
                     persist(
                         state.copy(
                             calendarEvents = state.calendarEvents
@@ -619,8 +663,9 @@ private fun ResolveAndroidApp(
         if (hasBackendSession && state.backendSettings.feishuConnected) {
             scope.launch {
                 try {
-                    val client = connectedBackendClient()
-                    val remote = withContext(Dispatchers.IO) { client.updateEvent(event, draft) }
+                    val remote = withBackendClient { client ->
+                        withContext(Dispatchers.IO) { client.updateEvent(event, draft) }
+                    }
                     persist(
                         state.copy(
                             calendarEvents = replaceCalendarEvent(state.calendarEvents, event, remote),
@@ -693,8 +738,9 @@ private fun ResolveAndroidApp(
 
         scope.launch {
             try {
-                val client = connectedBackendClient()
-                val syncedAt = withContext(Dispatchers.IO) { client.deleteEvent(event) }
+                val syncedAt = withBackendClient { client ->
+                    withContext(Dispatchers.IO) { client.deleteEvent(event) }
+                }
                 persist(
                     state.copy(
                         calendarEvents = replaceCalendarEvent(state.calendarEvents, hiddenEvent, hiddenEvent.copy(status = "remote_deleted")),
@@ -751,8 +797,9 @@ private fun ResolveAndroidApp(
         isConnecting = true
         scope.launch {
             try {
-                val client = connectedBackendClient()
-                val oauth = withContext(Dispatchers.IO) { client.startFeishuOAuth() }
+                val oauth = withBackendClient { client ->
+                    withContext(Dispatchers.IO) { client.startFeishuOAuth() }
+                }
                 context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(oauth.authorizeUrl)))
                 patchBackend(state.backendSettings.copy(status = BackendStatus.Connected, feishuConnected = false, lastError = null))
                 patchFeishu(state.feishuSettings.copy(status = FeishuStatus.NotConnected, lastError = null))
@@ -760,7 +807,9 @@ private fun ResolveAndroidApp(
 
                 repeat(30) {
                     delay(3_000)
-                    val status = runCatching { withContext(Dispatchers.IO) { client.status() } }.getOrNull()
+                    val status = runCatching {
+                        withBackendClient { client -> withContext(Dispatchers.IO) { client.status() } }
+                    }.getOrNull()
                     if (status?.connected == true) {
                         persist(
                             state.copy(
@@ -847,8 +896,7 @@ private fun ResolveAndroidApp(
     LaunchedEffect(hasBackendSession) {
         if (hasBackendSession) {
             runCatching {
-                val client = connectedBackendClient()
-                val status = withContext(Dispatchers.IO) { client.status() }
+                val status = withBackendClient { client -> withContext(Dispatchers.IO) { client.status() } }
                 val calendarNeedsAuth = status.needsAuthorization || status.status == "needs_auth"
                 persist(
                     state.copy(
@@ -882,8 +930,7 @@ private fun ResolveAndroidApp(
             if (hasBackendSession) {
                 scope.launch {
                     try {
-                        val client = connectedBackendClient()
-                        val status = withContext(Dispatchers.IO) { client.status() }
+                        val status = withBackendClient { client -> withContext(Dispatchers.IO) { client.status() } }
                         val calendarNeedsAuth = status.needsAuthorization || status.status == "needs_auth"
                         persist(
                             state.copy(

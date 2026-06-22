@@ -69,6 +69,7 @@ import {
 } from "./data/feishuLocalStore";
 import {
   clearBackendSession,
+  isBackendJwtExpired,
   loadBackendSession,
   loadBackendSettings,
   needsCalendarAuthorization,
@@ -898,12 +899,9 @@ export function App() {
     let disposed = false;
 
     async function connectAppSync() {
-      const session = loadBackendSession();
-      const syncSecret = await loadSecureSyncSecret();
-      if (!session || !syncSecret || !backendSettingsRef.current.email) return;
-
       try {
-        const sync = await ResolveAppEncryptedSync.create(backendSettingsRef.current, session, syncSecret);
+        const sync = await createAppSyncClient();
+        if (!sync) return;
         if (disposed) {
           await sync.dispose();
           return;
@@ -930,8 +928,7 @@ export function App() {
 
     async function hydrateBackendStatus() {
       try {
-        const client = await connectedBackendClient();
-        const status = await client.status();
+        const status = await withBackendClient((client) => client.status());
         if (cancelled) return;
         handleSaveBackend({
           ...backendSettingsRef.current,
@@ -1024,19 +1021,19 @@ export function App() {
     reason: "initial" | "remote" | "manual",
     options: { includeCalendarEvents?: boolean; changedSince?: string } = {}
   ) {
-    const sync = appSyncRef.current;
-    if (!sync) return;
     try {
-      const remote = await sync.pull({
-        includeCalendarEvents: options.includeCalendarEvents ?? true,
-        changedSince: options.changedSince
+      await withFreshAppSync(async (sync) => {
+        const remote = await sync.pull({
+          includeCalendarEvents: options.includeCalendarEvents ?? true,
+          changedSince: options.changedSince
+        });
+        const merged = normalizeState(mergeEncryptedRemoteState(stateRef.current, remote));
+        applyingRemoteStateRef.current = true;
+        stateRef.current = merged;
+        setState(merged);
+        queueLocalStateSave(merged, 80);
+        applyingRemoteStateRef.current = false;
       });
-      const merged = normalizeState(mergeEncryptedRemoteState(stateRef.current, remote));
-      applyingRemoteStateRef.current = true;
-      stateRef.current = merged;
-      setState(merged);
-      queueLocalStateSave(merged, 80);
-      applyingRemoteStateRef.current = false;
       if (reason === "manual") showToast("Synced app data");
     } catch (error) {
       applyingRemoteStateRef.current = false;
@@ -1068,15 +1065,21 @@ export function App() {
     if (manualSyncing) return;
     setManualSyncing(true);
     try {
-      const sync = appSyncRef.current;
-      if (sync) {
+      await withFreshAppSync(async (sync) => {
         const localCursor = loadAppSyncCursor();
         const changedSince = appSyncCursorWithLookback(localCursor);
         const cursorAfterSync = nowIso();
-        await pullAppStateFromCloud("manual", { includeCalendarEvents: false, changedSince });
+        const remote = await sync.pull({ includeCalendarEvents: false, changedSince });
+        const merged = normalizeState(mergeEncryptedRemoteState(stateRef.current, remote));
+        applyingRemoteStateRef.current = true;
+        stateRef.current = merged;
+        setState(merged);
+        queueLocalStateSave(merged, 80);
+        applyingRemoteStateRef.current = false;
         await sync.push(normalizeState(stateRef.current), { changedSince });
         saveAppSyncCursor(cursorAfterSync);
-      }
+        showToast("Synced app data");
+      });
       if (loadBackendSession()) {
         await syncBackendCalendar();
       } else {
@@ -1282,7 +1285,7 @@ export function App() {
   function deleteRemoteTodoIds(itemIds: Iterable<string>) {
     const ids = Array.from(new Set(itemIds)).filter(Boolean);
     if (!ids.length) return;
-    void appSyncRef.current?.deleteItems(ids).catch((error) => {
+    void withFreshAppSync((sync) => sync.deleteItems(ids)).catch((error) => {
       console.warn("Could not delete archived todos remotely", error);
     });
   }
@@ -1380,13 +1383,12 @@ export function App() {
 
     if (backendSettingsRef.current.feishuConnected && loadBackendSession()) {
       try {
-        const client = await connectedBackendClient();
-        const remote = await client.createEvent({
+        const remote = await withBackendClient((client) => client.createEvent({
           title: draft.title.trim(),
           startsAt,
           endsAt,
           description: draftDescription || undefined
-        });
+        }));
         const syncedEvent = {
           ...remote,
           meta: {
@@ -1525,8 +1527,7 @@ export function App() {
 
     if (loadBackendSession()) {
       try {
-        const client = await connectedBackendClient();
-        await client.deleteEvent(event.meta.externalCalendarId!, event.meta.externalEventId!);
+        await withBackendClient((client) => client.deleteEvent(event.meta.externalCalendarId!, event.meta.externalEventId!));
         showToast("Deleted from Feishu");
       } catch (error) {
         const message = feishuErrorMessage(error);
@@ -1654,15 +1655,14 @@ export function App() {
 
     if (canSyncRemote && loadBackendSession()) {
       try {
-        const client = await connectedBackendClient();
-        const { event: remote } = await client.updateEvent({
+        const { event: remote } = await withBackendClient((client) => client.updateEvent({
           calendarId: event.meta.externalCalendarId!,
           eventId: event.meta.externalEventId!,
           title,
           startsAt,
           endsAt,
           description: draft.description.trim() || undefined
-        });
+        }));
         const syncedEvent = {
           ...remote,
           meta: {
@@ -1927,17 +1927,59 @@ export function App() {
     saveBackendSettings(normalized);
   }
 
-  async function connectedBackendClient() {
+  async function ensureBackendSession(forceRefresh = false) {
     const settings = backendSettingsRef.current;
     let session = loadBackendSession();
     if (!session) throw new Error("Sign in first.");
-    let client = new ResolveBackendClient(settings, session);
-    if (shouldRefreshBackendSession(session)) {
+    if (forceRefresh || shouldRefreshBackendSession(session)) {
+      const client = new ResolveBackendClient(settings, session);
       session = await client.refreshSession();
       saveBackendSession(session);
-      client = new ResolveBackendClient(settings, session);
     }
-    return client;
+    return session;
+  }
+
+  async function connectedBackendClient(forceRefresh = false) {
+    const session = await ensureBackendSession(forceRefresh);
+    return new ResolveBackendClient(backendSettingsRef.current, session);
+  }
+
+  async function withBackendClient<T>(operation: (client: ResolveBackendClient) => Promise<T>) {
+    try {
+      return await operation(await connectedBackendClient());
+    } catch (error) {
+      if (!isBackendJwtExpired(error)) throw error;
+      return operation(await connectedBackendClient(true));
+    }
+  }
+
+  async function createAppSyncClient(forceRefresh = false) {
+    const syncSecret = await loadSecureSyncSecret();
+    if (!syncSecret || !backendSettingsRef.current.email) return null;
+    const session = await ensureBackendSession(forceRefresh);
+    return ResolveAppEncryptedSync.create(backendSettingsRef.current, session, syncSecret);
+  }
+
+  async function withFreshAppSync<T>(operation: (sync: ResolveAppEncryptedSync) => Promise<T>) {
+    let sync: ResolveAppEncryptedSync | null = await createAppSyncClient();
+    if (!sync) return undefined;
+    try {
+      return await operation(sync);
+    } catch (error) {
+      const shouldRetry = isBackendJwtExpired(error);
+      await sync.dispose().catch((disposeError) => {
+        console.warn("Could not dispose expired sync client", disposeError);
+      });
+      sync = null;
+      if (!shouldRetry) throw error;
+      sync = await createAppSyncClient(true);
+      if (!sync) return undefined;
+      return await operation(sync);
+    } finally {
+      await sync?.dispose().catch((error) => {
+        console.warn("Could not dispose sync client", error);
+      });
+    }
   }
 
   async function handleBackendSignIn(password: string) {
@@ -1989,25 +2031,40 @@ export function App() {
     }
     syncInFlightRef.current = true;
     try {
-      const client = await connectedBackendClient();
       const settings = feishuSettingsRef.current;
-      const now = new Date();
-      const startsAt = addDaysToIso(now, -settings.pastDays);
-      const endsAt = addDaysToIso(now, settings.futureDays);
-      let syncError: unknown;
-      let timestamp = nowIso();
 
-      try {
-        const syncResult = await client.syncNow();
-        timestamp = syncResult.syncedAt ?? timestamp;
-      } catch (error) {
-        if (needsCalendarAuthorization(error)) throw error;
-        syncError = error;
+      async function fetchBackendCalendar(forceRefresh = false) {
+        const client = await connectedBackendClient(forceRefresh);
+        const now = new Date();
+        const startsAt = addDaysToIso(now, -settings.pastDays);
+        const endsAt = addDaysToIso(now, settings.futureDays);
+        let syncError: unknown;
+        let timestamp = nowIso();
+
+        try {
+          const syncResult = await client.syncNow();
+          timestamp = syncResult.syncedAt ?? timestamp;
+        } catch (error) {
+          if (needsCalendarAuthorization(error) || isBackendJwtExpired(error)) throw error;
+          syncError = error;
+        }
+
+        const remoteEvents = await client.listEvents(startsAt, endsAt).catch((error) => {
+          if (isBackendJwtExpired(error)) throw error;
+          throw syncError ?? error;
+        });
+        return { remoteEvents, syncError, timestamp };
       }
 
-      const remoteEvents = await client.listEvents(startsAt, endsAt).catch((error) => {
-        throw syncError ?? error;
-      });
+      let result: Awaited<ReturnType<typeof fetchBackendCalendar>>;
+      try {
+        result = await fetchBackendCalendar();
+      } catch (error) {
+        if (!isBackendJwtExpired(error)) throw error;
+        result = await fetchBackendCalendar(true);
+      }
+
+      const { remoteEvents, syncError, timestamp } = result;
       const currentState = stateRef.current;
       persist({
         ...currentState,
@@ -2067,15 +2124,14 @@ export function App() {
   async function handleBackendFeishuConnect() {
     setFeishuConnecting(true);
     try {
-      const client = await connectedBackendClient();
-      const oauth = await client.startFeishuOAuth();
+      const oauth = await withBackendClient((client) => client.startFeishuOAuth());
       if (!oauth.authorizeUrl) throw new Error("Feishu authorization failed to start.");
       await openExternalUrl(oauth.authorizeUrl);
       showToast("Authorize Calendar");
 
       for (let index = 0; index < 24; index += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 5000));
-        const status = await client.status().catch(() => undefined);
+        const status = await withBackendClient((client) => client.status()).catch(() => undefined);
         if (status?.connected) {
           handleSaveBackend({
             ...backendSettingsRef.current,

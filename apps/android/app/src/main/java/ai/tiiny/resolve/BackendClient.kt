@@ -37,6 +37,16 @@ fun Throwable.needsCalendarAuthorization(): Boolean {
         text.contains("missing feishu token set")
 }
 
+fun Throwable.isBackendJwtExpired(): Boolean {
+    val text = message.orEmpty().lowercase()
+    val errorCode = (this as? BackendApiException)?.code.orEmpty().lowercase()
+    return (this is BackendApiException && httpStatus == 401 && (text.contains("jwt") || text.contains("expired") || errorCode.contains("jwt"))) ||
+        text.contains("jwt expired") ||
+        text.contains("token is expired") ||
+        text.contains("invalid jwt") ||
+        text.contains("expired jwt")
+}
+
 fun Throwable.isTransientBackendError(): Boolean {
     if (this is IOException) return true
     if (this is BackendApiException) {

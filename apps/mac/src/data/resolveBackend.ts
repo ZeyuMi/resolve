@@ -62,6 +62,16 @@ export function needsCalendarAuthorization(error: unknown) {
     message.includes("missing feishu token set");
 }
 
+export function isBackendJwtExpired(error: unknown) {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  const code = error instanceof ResolveBackendError ? error.code?.toLowerCase() ?? "" : "";
+  return (error instanceof ResolveBackendError && error.status === 401 && (message.includes("jwt") || message.includes("expired") || code.includes("jwt"))) ||
+    message.includes("jwt expired") ||
+    message.includes("token is expired") ||
+    message.includes("invalid jwt") ||
+    message.includes("expired jwt");
+}
+
 const backendSettingsKey = "resolve:backend-settings:v1";
 const backendSessionKey = "resolve:backend-session:v1";
 
