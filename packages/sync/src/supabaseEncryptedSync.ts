@@ -61,40 +61,43 @@ export class SupabaseEncryptedSync {
     private readonly vaultKey: CryptoKey
   ) {}
 
-  async pushState(state: ResolveState) {
+  async pushState(state: ResolveState, options: { changedSince?: string } = {}) {
+    const changedSince = options.changedSince?.trim();
+    const changedAfter = <T extends { meta: { updatedAt: string } }>(items: T[]) =>
+      changedSince ? items.filter((item) => item.meta.updatedAt > changedSince) : items;
+
     await Promise.all([
-      this.pushItems(state.items),
-      this.pushStrategyThreads(state.strategyThreads),
-      this.pushCalendarEvents(state.calendarEvents)
+      this.pushItems(changedAfter(state.items)),
+      this.pushStrategyThreads(changedAfter(state.strategyThreads)),
+      this.pushCalendarEvents(changedAfter(state.calendarEvents))
     ]);
   }
 
-  async pullState(options: { includeCalendarEvents?: boolean } = {}): Promise<ResolveState> {
+  async pullState(options: { includeCalendarEvents?: boolean; changedSince?: string } = {}): Promise<ResolveState> {
     const includeCalendarEvents = options.includeCalendarEvents ?? true;
+    const changedSince = options.changedSince?.trim();
+    let itemQuery = this.client
+      .from("resolve_items")
+      .select("*")
+      .eq("user_id", this.userId);
+    if (changedSince) itemQuery = itemQuery.gt("updated_at", changedSince);
+    let threadQuery = this.client
+      .from("resolve_strategy_threads")
+      .select("*")
+      .eq("user_id", this.userId);
+    if (changedSince) threadQuery = threadQuery.gt("updated_at", changedSince);
+    let eventQuery = this.client
+      .from("resolve_calendar_events")
+      .select("*")
+      .eq("user_id", this.userId)
+      .eq("encryption_scheme", "vault_v1");
+    if (changedSince) eventQuery = eventQuery.gt("updated_at", changedSince);
+
     const [itemRows, threadRows, eventRows] = await Promise.all([
-      throwIfSupabaseError(
-        this.client
-          .from("resolve_items")
-          .select("*")
-          .eq("user_id", this.userId)
-          .order("updated_at", { ascending: false })
-      ) as Promise<SupabaseEncryptedItemRow[]>,
-      throwIfSupabaseError(
-        this.client
-          .from("resolve_strategy_threads")
-          .select("*")
-          .eq("user_id", this.userId)
-          .order("updated_at", { ascending: false })
-      ) as Promise<SupabaseEncryptedStrategyThreadRow[]>,
+      throwIfSupabaseError(itemQuery.order("updated_at", { ascending: false })) as Promise<SupabaseEncryptedItemRow[]>,
+      throwIfSupabaseError(threadQuery.order("updated_at", { ascending: false })) as Promise<SupabaseEncryptedStrategyThreadRow[]>,
       includeCalendarEvents
-        ? (throwIfSupabaseError(
-            this.client
-              .from("resolve_calendar_events")
-              .select("*")
-              .eq("user_id", this.userId)
-              .eq("encryption_scheme", "vault_v1")
-              .order("starts_at", { ascending: true })
-          ) as Promise<SupabaseEncryptedCalendarEventRow[]>)
+        ? (throwIfSupabaseError(eventQuery.order("updated_at", { ascending: false })) as Promise<SupabaseEncryptedCalendarEventRow[]>)
         : Promise.resolve([] as SupabaseEncryptedCalendarEventRow[])
     ]);
 
@@ -114,6 +117,18 @@ export class SupabaseEncryptedSync {
         .delete()
         .eq("user_id", this.userId)
         .eq("id", itemId)
+    );
+  }
+
+  async deleteRemoteItems(itemIds: string[]) {
+    const ids = Array.from(new Set(itemIds)).filter(Boolean);
+    if (!ids.length) return;
+    await throwIfSupabaseError(
+      this.client
+        .from("resolve_items")
+        .delete()
+        .eq("user_id", this.userId)
+        .in("id", ids)
     );
   }
 

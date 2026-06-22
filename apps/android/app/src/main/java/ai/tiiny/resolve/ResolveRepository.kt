@@ -24,6 +24,13 @@ class ResolveRepository(context: Context) {
         prefs.edit().putString("state_json", encodeState(normalized).toString()).apply()
     }
 
+    fun loadAppSyncCursor(): Instant? =
+        prefs.getString("last_app_sync_cursor", null)?.let(::instantOrNull)
+
+    fun saveAppSyncCursor(cursor: Instant) {
+        prefs.edit().putString("last_app_sync_cursor", cursor.toString()).apply()
+    }
+
     private fun encodeState(state: ResolveState) = JSONObject()
         .put("items", JSONArray(state.items.map(::encodeItem)))
         .put("threads", JSONArray(state.threads.map(::encodeThread)))

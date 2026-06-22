@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   Archive,
   Brain,
@@ -34,7 +34,7 @@ import {
   type ItemPayload,
   type StrategyNotePayload
 } from "@resolve/core";
-import { type ResolveRemoteChangeKind, type ResolveState } from "@resolve/sync";
+import { type ResolveState } from "@resolve/sync";
 import {
   feishuCalendarScopes,
   FeishuOpenApiClient,
@@ -91,11 +91,18 @@ import {
   saveSecureSyncSecret
 } from "./platform/nativeIntegrations";
 
-const feishuSyncIntervalMs = 30 * 1000;
-const feishuCalendarActiveSyncIntervalMs = 8 * 1000;
 const feishuOAuthScopes = feishuCalendarScopes
   .map((scope) => scope.key)
   .filter((scope) => scope !== "contact:user.email:readonly");
+const appSyncCursorKey = "resolve:app-sync-cursor:v1";
+
+function loadAppSyncCursor() {
+  return localStorage.getItem(appSyncCursorKey) ?? undefined;
+}
+
+function saveAppSyncCursor(cursor: string) {
+  localStorage.setItem(appSyncCursorKey, cursor);
+}
 
 async function openExternalUrl(url: string) {
   if (isTauriRuntime()) {
@@ -422,7 +429,7 @@ function dateKey(iso: string) {
 function monthDays(monthCursor: Date) {
   const first = new Date(monthCursor.getFullYear(), monthCursor.getMonth(), 1);
   const start = new Date(first);
-  start.setDate(first.getDate() - first.getDay());
+  start.setDate(first.getDate() - ((first.getDay() + 6) % 7));
   return Array.from({ length: 42 }, (_, index) => {
     const day = new Date(start);
     day.setDate(start.getDate() + index);
@@ -433,7 +440,7 @@ function monthDays(monthCursor: Date) {
 function weekDays(selectedDate: string) {
   const date = new Date(`${selectedDate}T00:00:00`);
   const start = new Date(date);
-  start.setDate(date.getDate() - date.getDay());
+  start.setDate(date.getDate() - ((date.getDay() + 6) % 7));
   return Array.from({ length: 7 }, (_, index) => {
     const day = new Date(start);
     day.setDate(start.getDate() + index);
@@ -638,6 +645,7 @@ export function App() {
   const [feishuSettings, setFeishuSettings] = useState(loadFeishuSettings);
   const [backendSettings, setBackendSettings] = useState(loadBackendSettings);
   const [feishuConnecting, setFeishuConnecting] = useState(false);
+  const [manualSyncing, setManualSyncing] = useState(false);
   const [selectedThreadId, setSelectedThreadId] = useState(() => state.strategyThreads[0]?.meta.id ?? "");
   const [strategyTaskText, setStrategyTaskText] = useState("");
   const [strategyDraft, setStrategyDraft] = useState<StrategyDraft>({ title: "", currentHypothesis: "" });
@@ -657,9 +665,6 @@ export function App() {
   const syncQueuedRef = useRef(false);
   const backendStatusHydratedRef = useRef(false);
   const appSyncRef = useRef<ResolveAppEncryptedSync | null>(null);
-  const appSyncPushTimerRef = useRef<number | null>(null);
-  const appSyncPullTimerRef = useRef<number | null>(null);
-  const appSyncPullNeedsCalendarRef = useRef(false);
   const localSaveTimerRef = useRef<number | null>(null);
   const applyingRemoteStateRef = useRef(false);
   const [syncSecretReady, setSyncSecretReady] = useState(false);
@@ -700,6 +705,7 @@ export function App() {
   );
   const selectedThread = strategyThreads.find((thread) => thread.meta.id === selectedThreadId);
   const strategyTodos = todoItems.filter((item) => item.meta.strategyThreadId === selectedThreadId);
+  const strategyCompletedTodos = completedTodos.filter((item) => item.meta.strategyThreadId === selectedThreadId);
   const selectedTodo = taskItems.find((item) => item.meta.id === selectedTodoId);
   const selectedStrategyTodo = taskItems.find(
     (item) => item.meta.id === selectedStrategyTodoId && item.meta.strategyThreadId === selectedThreadId
@@ -725,14 +731,6 @@ export function App() {
         window.clearTimeout(localSaveTimerRef.current);
         localSaveTimerRef.current = null;
         repository.current.save(stateRef.current);
-      }
-      if (appSyncPullTimerRef.current) {
-        window.clearTimeout(appSyncPullTimerRef.current);
-        appSyncPullTimerRef.current = null;
-      }
-      if (appSyncPushTimerRef.current) {
-        window.clearTimeout(appSyncPushTimerRef.current);
-        appSyncPushTimerRef.current = null;
       }
     };
   }, []);
@@ -814,57 +812,6 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (loadBackendSession()) return;
-    if (!feishuSettings.appId || !feishuSettings.appSecret || !loadFeishuToken()) return;
-    const syncQuietly = () => void syncFeishuCalendar(feishuSettingsRef.current, loadFeishuToken(), { silent: true });
-    syncQuietly();
-    const interval = window.setInterval(syncQuietly, feishuSyncIntervalMs);
-    const onFocus = () => syncQuietly();
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") syncQuietly();
-    };
-    const onOnline = () => syncQuietly();
-    const onPageShow = () => syncQuietly();
-    window.addEventListener("focus", onFocus);
-    window.addEventListener("online", onOnline);
-    window.addEventListener("pageshow", onPageShow);
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => {
-      window.clearInterval(interval);
-      window.removeEventListener("focus", onFocus);
-      window.removeEventListener("online", onOnline);
-      window.removeEventListener("pageshow", onPageShow);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, [feishuSettings.status, feishuSettings.appId, feishuSettings.appSecret]);
-
-  useEffect(() => {
-    if (loadBackendSession()) return;
-    if (tab !== "calendar" || !feishuSettings.appId || !feishuSettings.appSecret || !loadFeishuToken()) return;
-    const syncQuietly = () => void syncFeishuCalendar(feishuSettingsRef.current, loadFeishuToken(), { silent: true });
-    const interval = window.setInterval(syncQuietly, feishuCalendarActiveSyncIntervalMs);
-    return () => window.clearInterval(interval);
-  }, [tab, feishuSettings.status, feishuSettings.appId, feishuSettings.appSecret]);
-
-  useEffect(() => {
-    if (!backendSettings.feishuConnected || !loadBackendSession()) return;
-    const syncQuietly = () => void syncBackendCalendar({ silent: true });
-    syncQuietly();
-    const interval = window.setInterval(syncQuietly, feishuSyncIntervalMs);
-    const onFocus = () => syncQuietly();
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") syncQuietly();
-    };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => {
-      window.clearInterval(interval);
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, [backendSettings.feishuConnected, backendSettings.status]);
-
-  useEffect(() => {
     let cancelled = false;
     void loadSecureSyncSecret().then((secret) => {
       if (!cancelled) setSyncSecretReady(Boolean(secret));
@@ -876,7 +823,6 @@ export function App() {
 
   useEffect(() => {
     let disposed = false;
-    let unsubscribe: (() => void) | undefined;
 
     async function connectAppSync() {
       const session = loadBackendSession();
@@ -890,11 +836,6 @@ export function App() {
           return;
         }
         appSyncRef.current = sync;
-        await pullAppStateFromCloud("initial");
-        await sync.push(normalizeState(stateRef.current));
-        unsubscribe = sync.subscribe((kind) => {
-          queueRemoteStatePull(kind);
-        });
       } catch (error) {
         console.warn("App data sync is not ready", error);
       }
@@ -903,13 +844,8 @@ export function App() {
     void connectAppSync();
     return () => {
       disposed = true;
-      unsubscribe?.();
       const sync = appSyncRef.current;
       appSyncRef.current = null;
-      if (appSyncPushTimerRef.current) {
-        window.clearTimeout(appSyncPushTimerRef.current);
-        appSyncPushTimerRef.current = null;
-      }
       void sync?.dispose();
     };
   }, [backendSettings.status, backendSettings.email, syncSecretReady]);
@@ -931,9 +867,6 @@ export function App() {
           lastSyncedAt: status.lastServerSyncAt ?? backendSettingsRef.current.lastSyncedAt,
           lastError: status.needsAuthorization ? "Calendar needs attention" : undefined
         });
-        if (status.connected) {
-          await syncBackendCalendar({ silent: true });
-        }
       } catch (error) {
         if (cancelled) return;
         handleSaveBackend({
@@ -996,7 +929,7 @@ export function App() {
         setFeishuSettings(next);
         saveFeishuSettings(next);
         setTab("calendar");
-        await syncFeishuCalendar(next, tokenSet);
+        showToast("Calendar connected");
       } catch (error) {
         const next = {
           ...feishuSettings,
@@ -1016,12 +949,15 @@ export function App() {
 
   async function pullAppStateFromCloud(
     reason: "initial" | "remote" | "manual",
-    options: { includeCalendarEvents?: boolean } = {}
+    options: { includeCalendarEvents?: boolean; changedSince?: string } = {}
   ) {
     const sync = appSyncRef.current;
     if (!sync) return;
     try {
-      const remote = await sync.pull({ includeCalendarEvents: options.includeCalendarEvents ?? true });
+      const remote = await sync.pull({
+        includeCalendarEvents: options.includeCalendarEvents ?? true,
+        changedSince: options.changedSince
+      });
       const merged = normalizeState(mergeEncryptedRemoteState(stateRef.current, remote));
       applyingRemoteStateRef.current = true;
       stateRef.current = merged;
@@ -1033,32 +969,6 @@ export function App() {
       applyingRemoteStateRef.current = false;
       console.warn("Could not pull app data", error);
     }
-  }
-
-  function queueAppStatePush(next: ResolveState) {
-    if (applyingRemoteStateRef.current) return;
-    const sync = appSyncRef.current;
-    if (!sync) return;
-    if (appSyncPushTimerRef.current) window.clearTimeout(appSyncPushTimerRef.current);
-    appSyncPushTimerRef.current = window.setTimeout(() => {
-      appSyncPushTimerRef.current = null;
-      void sync.push(normalizeState(stateRef.current)).catch((error) => {
-        console.warn("Could not push app data", error);
-      });
-    }, 900);
-  }
-
-  function queueRemoteStatePull(kind: ResolveRemoteChangeKind) {
-    if (kind === "calendarEvents" || kind === "syncStates" || kind === "deviceMessages") {
-      appSyncPullNeedsCalendarRef.current = true;
-    }
-    if (appSyncPullTimerRef.current) window.clearTimeout(appSyncPullTimerRef.current);
-    appSyncPullTimerRef.current = window.setTimeout(() => {
-      const includeCalendarEvents = appSyncPullNeedsCalendarRef.current;
-      appSyncPullTimerRef.current = null;
-      appSyncPullNeedsCalendarRef.current = false;
-      void pullAppStateFromCloud("remote", { includeCalendarEvents });
-    }, 700);
   }
 
   function queueLocalStateSave(next: ResolveState, delay = 250) {
@@ -1074,12 +984,33 @@ export function App() {
     stateRef.current = normalized;
     setState(normalized);
     queueLocalStateSave(normalized);
-    queueAppStatePush(normalized);
   }
 
   function showToast(message: string) {
     setToast(message);
     window.setTimeout(() => setToast(null), 2200);
+  }
+
+  async function manualSyncNow() {
+    if (manualSyncing) return;
+    setManualSyncing(true);
+    try {
+      const sync = appSyncRef.current;
+      if (sync) {
+        const changedSince = loadAppSyncCursor();
+        const cursorAfterSync = nowIso();
+        await pullAppStateFromCloud("manual", { includeCalendarEvents: false, changedSince });
+        await sync.push(normalizeState(stateRef.current), { changedSince });
+        saveAppSyncCursor(cursorAfterSync);
+      }
+      if (loadBackendSession()) {
+        await syncBackendCalendar();
+      } else {
+        await syncFeishuCalendar();
+      }
+    } finally {
+      setManualSyncing(false);
+    }
   }
 
   function handleMacTrayAction(action: MacTrayAction) {
@@ -1100,8 +1031,7 @@ export function App() {
       return;
     }
     if (action === "sync_feishu") {
-      if (loadBackendSession()) void syncBackendCalendar();
-      else void syncFeishuCalendar();
+      void manualSyncNow();
       return;
     }
     setTab("todo");
@@ -1248,6 +1178,40 @@ export function App() {
     showToast("Restored to Todo");
   }
 
+  function deleteRemoteTodoIds(itemIds: Iterable<string>) {
+    const ids = Array.from(new Set(itemIds)).filter(Boolean);
+    if (!ids.length) return;
+    void appSyncRef.current?.deleteItems(ids).catch((error) => {
+      console.warn("Could not delete archived todos remotely", error);
+    });
+  }
+
+  function deleteTodosPermanently(rootIds: Iterable<string>) {
+    const deletedIds = new Set<string>();
+    Array.from(rootIds).forEach((id) => {
+      deletedIds.add(id);
+      collectTodoDescendantIds(stateRef.current.items, [id]).forEach((childId) => deletedIds.add(childId));
+    });
+    if (!deletedIds.size) return;
+    const latest = stateRef.current;
+    persist({
+      ...latest,
+      items: latest.items.filter((item) => !deletedIds.has(item.meta.id))
+    });
+    deleteRemoteTodoIds(deletedIds);
+    if (selectedTodoId && deletedIds.has(selectedTodoId)) setSelectedTodoId(null);
+    if (selectedStrategyTodoId && deletedIds.has(selectedStrategyTodoId)) setSelectedStrategyTodoId(null);
+  }
+
+  function clearArchivedTodos() {
+    const archivedIds = stateRef.current.items
+      .filter((item) => item.meta.type === "task" && item.meta.status === "archived")
+      .map((item) => item.meta.id);
+    deleteTodosPermanently(archivedIds);
+    setShowArchived(false);
+    showToast("Archive cleared");
+  }
+
   function openCalendarDraft(todo?: DecryptedItem, date = selectedDate) {
     setCalendarDraft({
       todoId: todo?.meta.id,
@@ -1328,7 +1292,6 @@ export function App() {
           )
         });
         showToast("Created in Feishu");
-        void syncBackendCalendar({ silent: true });
       } catch (error) {
         if (needsCalendarAuthorization(error)) {
           handleSaveBackend({
@@ -1394,7 +1357,6 @@ export function App() {
           )
         });
         showToast("Created in Feishu");
-        void syncFeishuCalendar(settings, loadFeishuToken(), { silent: true });
       } catch (error) {
         const latestState = stateRef.current;
         const failedEvent = {
@@ -1455,7 +1417,6 @@ export function App() {
         const client = await connectedBackendClient();
         await client.deleteEvent(event.meta.externalCalendarId!, event.meta.externalEventId!);
         showToast("Deleted from Feishu");
-        void syncBackendCalendar({ silent: true });
       } catch (error) {
         const message = feishuErrorMessage(error);
         const latestState = stateRef.current;
@@ -1510,7 +1471,6 @@ export function App() {
       const client = await resolveFeishuClient(settings, tokenSet);
       await client.deleteEvent(event.meta.externalCalendarId!, event.meta.externalEventId!);
       showToast("Deleted from Feishu");
-      void syncFeishuCalendar(settings, loadFeishuToken(), { silent: true });
     } catch (error) {
       const message = feishuErrorMessage(error);
       const latestState = stateRef.current;
@@ -1609,7 +1569,6 @@ export function App() {
         });
         setSelectedCalendarEventKey(displayCalendarEventKey(syncedEvent));
         showToast("Updated in Feishu");
-        void syncBackendCalendar({ silent: true });
       } catch (error) {
         const latestState = stateRef.current;
         persist({
@@ -1659,7 +1618,6 @@ export function App() {
       });
       setSelectedCalendarEventKey(displayCalendarEventKey(syncedEvent));
       showToast("Updated in Feishu");
-      void syncFeishuCalendar(settings, loadFeishuToken(), { silent: true });
     } catch (error) {
       const latestState = stateRef.current;
       persist({
@@ -1783,9 +1741,6 @@ export function App() {
         saveFeishuSettings(nextFeishuSettings);
       }
       showToast("Signed in");
-      if (calendarConnected) {
-        await syncBackendCalendar({ silent: true });
-      }
     } catch (error) {
       handleSaveBackend({
         ...backendSettingsRef.current,
@@ -1898,9 +1853,8 @@ export function App() {
             status: "connected",
             feishuConnected: true,
             lastSyncedAt: status.lastServerSyncAt,
-            lastError: undefined
-          });
-          await syncBackendCalendar({ silent: true });
+          lastError: undefined
+        });
           showToast("Calendar authorized");
           return;
         }
@@ -2072,7 +2026,7 @@ export function App() {
         </div>
 
         <div className="sidebar-scroll">
-          {tab === "todo" && <CaptureBox value={captureText} onChange={setCaptureText} onSave={handleCapture} />}
+          <CaptureBox value={captureText} onChange={setCaptureText} onSave={handleCapture} disabled={tab !== "todo"} />
           <SidebarNav
             active={tab}
             todoCount={todoItems.length}
@@ -2089,6 +2043,8 @@ export function App() {
           tab={tab}
           feishuSettings={feishuSettings}
           backendSettings={backendSettings}
+          syncing={manualSyncing || syncInFlightRef.current}
+          onSync={() => void manualSyncNow()}
         />
 
         <section className="workspace">
@@ -2097,7 +2053,7 @@ export function App() {
               todos={todoItems}
               completedTodos={completedTodos}
               archivedTodos={archivedTodos}
-              threads={state.strategyThreads}
+              threads={strategyThreads}
               calendarEvents={state.calendarEvents}
               selectedTodo={selectedTodo}
               showCompleted={showCompleted}
@@ -2119,6 +2075,8 @@ export function App() {
               onUpdateTodoPayload={updateTodoPayload}
               onToggleCompleted={() => setShowCompleted((value) => !value)}
               onToggleArchived={() => setShowArchived((value) => !value)}
+              onDeleteArchived={(todo) => deleteTodosPermanently([todo.meta.id])}
+              onClearArchived={clearArchivedTodos}
             />
           )}
           {tab === "calendar" && (
@@ -2152,6 +2110,7 @@ export function App() {
               selectedThreadId={selectedThreadId}
               selectedThread={selectedThread}
               strategyTodos={strategyTodos}
+              strategyCompletedTodos={strategyCompletedTodos}
               strategySignals={strategySignals}
               taskText={strategyTaskText}
               strategyDraft={strategyDraft}
@@ -2219,11 +2178,15 @@ export function App() {
 function TopBar({
   tab,
   feishuSettings,
-  backendSettings
+  backendSettings,
+  syncing,
+  onSync
 }: {
   tab: Tab;
   feishuSettings: FeishuSettingsState;
   backendSettings: BackendSettingsState;
+  syncing: boolean;
+  onSync: () => void;
 }) {
   const title = {
     todo: "Todo",
@@ -2240,6 +2203,10 @@ function TopBar({
       </div>
       <div className="top-actions">
         <SyncStatusBadge feishuSettings={feishuSettings} backendSettings={backendSettings} />
+        <button className="secondary-button top-sync-button" onClick={onSync} disabled={syncing}>
+          <RefreshCw size={14} />
+          {syncing ? "Syncing" : "Sync"}
+        </button>
       </div>
     </header>
   );
@@ -2266,14 +2233,16 @@ function ResolveMark() {
 function CaptureBox({
   value,
   onChange,
-  onSave
+  onSave,
+  disabled = false
 }: {
   value: string;
   onChange: (value: string) => void;
   onSave: () => void;
+  disabled?: boolean;
 }) {
   return (
-    <section className="capture-box">
+    <section className={`capture-box ${disabled ? "disabled" : ""}`}>
       <div className="capture-title">
         <Search size={18} />
         <span>快速记录</span>
@@ -2281,8 +2250,10 @@ function CaptureBox({
       <textarea
         data-command-input
         value={value}
+        disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={(event) => {
+          if (disabled) return;
           if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault();
             onSave();
@@ -2292,7 +2263,7 @@ function CaptureBox({
         placeholder="记一下..."
       />
       <div className="capture-actions">
-        <button className="primary-button" onClick={onSave}>
+        <button className="primary-button" onClick={onSave} disabled={disabled}>
           <Send size={16} />
           Save
         </button>
@@ -2423,6 +2394,40 @@ function SyncPanel({
   );
 }
 
+interface TodoTreeEntry {
+  todo: DecryptedItem;
+  depth: number;
+  childCount: number;
+}
+
+function buildTodoTreeEntries(roots: DecryptedItem[], pool: DecryptedItem[], collapsedIds: Set<string>) {
+  const childrenByParent = new Map<string, DecryptedItem[]>();
+  pool.forEach((todo) => {
+    const parentId = todo.meta.parentItemId;
+    if (!parentId) return;
+    childrenByParent.set(parentId, [...(childrenByParent.get(parentId) ?? []), todo]);
+  });
+  childrenByParent.forEach((children, parentId) => {
+    childrenByParent.set(
+      parentId,
+      [...children].sort((a, b) => {
+        if (a.meta.status !== b.meta.status) return a.meta.status === "done" ? 1 : -1;
+        return b.meta.createdAt.localeCompare(a.meta.createdAt);
+      })
+    );
+  });
+
+  const entries: TodoTreeEntry[] = [];
+  const visit = (todo: DecryptedItem, depth: number) => {
+    const children = childrenByParent.get(todo.meta.id) ?? [];
+    entries.push({ todo, depth, childCount: children.length });
+    if (collapsedIds.has(todo.meta.id)) return;
+    children.forEach((child) => visit(child, depth + 1));
+  };
+  roots.forEach((root) => visit(root, 0));
+  return entries;
+}
+
 function TodoView({
   todos,
   completedTodos,
@@ -2442,7 +2447,9 @@ function TodoView({
   onUpdateTodoMeta,
   onUpdateTodoPayload,
   onToggleCompleted,
-  onToggleArchived
+  onToggleArchived,
+  onDeleteArchived,
+  onClearArchived
 }: {
   todos: DecryptedItem[];
   completedTodos: DecryptedItem[];
@@ -2463,11 +2470,51 @@ function TodoView({
   onUpdateTodoPayload: (itemId: string, patch: Partial<ItemPayload>) => void;
   onToggleCompleted: () => void;
   onToggleArchived: () => void;
+  onDeleteArchived: (todo: DecryptedItem) => void;
+  onClearArchived: () => void;
 }) {
+  const [collapsedTodoIds, setCollapsedTodoIds] = useState<Set<string>>(() => new Set());
   const calendarByTodo = new Map(
     calendarEvents
       .filter((event) => event.meta.sourceItemId)
       .map((event) => [event.meta.sourceItemId, event] as const)
+  );
+  const activeIds = new Set(todos.map((todo) => todo.meta.id));
+  const rootTodos = todos.filter((todo) => !todo.meta.parentItemId || !activeIds.has(todo.meta.parentItemId));
+  const rootsByStrategy = new Map<string, DecryptedItem[]>();
+  rootTodos.forEach((todo) => {
+    const key = todo.meta.strategyThreadId ?? "";
+    rootsByStrategy.set(key, [...(rootsByStrategy.get(key) ?? []), todo]);
+  });
+  const ungroupedRoots = rootsByStrategy.get("") ?? [];
+  const strategyGroups = threads
+    .map((thread) => ({ thread, roots: rootsByStrategy.get(thread.meta.id) ?? [] }))
+    .filter((group) => group.roots.length > 0);
+  const orphanGroups = Array.from(rootsByStrategy.entries())
+    .filter(([threadId]) => threadId && !threads.some((thread) => thread.meta.id === threadId))
+    .map(([threadId, roots]) => ({ threadId, roots }));
+  const toggleCollapse = (todoId: string) => {
+    setCollapsedTodoIds((current) => {
+      const next = new Set(current);
+      if (next.has(todoId)) next.delete(todoId);
+      else next.add(todoId);
+      return next;
+    });
+  };
+  const renderEntry = (entry: TodoTreeEntry) => (
+    <TodoCard
+      key={entry.todo.meta.id}
+      todo={entry.todo}
+      threads={threads}
+      calendarEvent={calendarByTodo.get(entry.todo.meta.id)}
+      selected={selectedTodo?.meta.id === entry.todo.meta.id}
+      depth={entry.depth}
+      childCount={entry.childCount}
+      collapsed={collapsedTodoIds.has(entry.todo.meta.id)}
+      onToggleCollapse={toggleCollapse}
+      onComplete={onComplete}
+      onSelectTodo={onSelectTodo}
+    />
   );
 
   return (
@@ -2481,17 +2528,29 @@ function TodoView({
           <StatusPill tone="success" label={`${todos.length} active`} />
         </div>
         {todos.length ? (
-          todos.map((todo) => (
-            <TodoCard
-              key={todo.meta.id}
-              todo={todo}
-              threads={threads}
-              calendarEvent={calendarByTodo.get(todo.meta.id)}
-              selected={selectedTodo?.meta.id === todo.meta.id}
-              onComplete={onComplete}
-              onSelectTodo={onSelectTodo}
-            />
-          ))
+          <>
+            {ungroupedRoots.map((root) => buildTodoTreeEntries([root], todos, collapsedTodoIds).map(renderEntry))}
+            {strategyGroups.map(({ thread, roots }) => (
+              <div className="todo-strategy-group" key={thread.meta.id}>
+                <div className="todo-strategy-group-head">
+                  <Brain size={14} />
+                  <span>{thread.payload.title}</span>
+                  <small>{roots.length}</small>
+                </div>
+                {buildTodoTreeEntries(roots, todos, collapsedTodoIds).map(renderEntry)}
+              </div>
+            ))}
+            {orphanGroups.map(({ threadId, roots }) => (
+              <div className="todo-strategy-group" key={threadId}>
+                <div className="todo-strategy-group-head">
+                  <Brain size={14} />
+                  <span>Strategy</span>
+                  <small>{roots.length}</small>
+                </div>
+                {buildTodoTreeEntries(roots, todos, collapsedTodoIds).map(renderEntry)}
+              </div>
+            ))}
+          </>
         ) : (
           <EmptyState label="Todo 是空的" />
         )}
@@ -2513,6 +2572,8 @@ function TodoView({
           emptyLabel="还没有归档项"
           onToggle={onToggleArchived}
           onRestore={onRestore}
+          onDelete={onDeleteArchived}
+          onClear={onClearArchived}
         />
       </div>
       {selectedTodo && (
@@ -2536,6 +2597,10 @@ function TodoCard({
   threads,
   calendarEvent,
   selected,
+  depth = 0,
+  childCount = 0,
+  collapsed = false,
+  onToggleCollapse,
   onComplete,
   onSelectTodo
 }: {
@@ -2543,6 +2608,10 @@ function TodoCard({
   threads: DecryptedStrategyThread[];
   calendarEvent?: DecryptedCalendarEvent;
   selected?: boolean;
+  depth?: number;
+  childCount?: number;
+  collapsed?: boolean;
+  onToggleCollapse?: (todoId: string) => void;
   onComplete: (todo: DecryptedItem) => void;
   onSelectTodo: (todo: DecryptedItem) => void;
 }) {
@@ -2551,7 +2620,8 @@ function TodoCard({
 
   return (
     <article
-      className={`item-card todo-card ${selected ? "selected" : ""}`}
+      className={`item-card todo-card ${selected ? "selected" : ""} ${depth > 0 ? "child" : ""}`}
+      style={{ "--todo-depth": depth } as CSSProperties}
       role="button"
       tabIndex={0}
       onClick={() => onSelectTodo(todo)}
@@ -2574,7 +2644,21 @@ function TodoCard({
         <Check size={13} />
       </button>
       <div className="item-main">
-        <p>{payload.title}</p>
+        <div className="todo-title-row">
+          {childCount > 0 && (
+            <button
+              className={`todo-collapse-button ${collapsed ? "collapsed" : ""}`}
+              aria-label={collapsed ? "Expand subtasks" : "Collapse subtasks"}
+              onClick={(event) => {
+                event.stopPropagation();
+                onToggleCollapse?.(todo.meta.id);
+              }}
+            >
+              <ChevronRight size={13} />
+            </button>
+          )}
+          <p>{payload.title}</p>
+        </div>
         {todo.meta.dueAt && (
           <div className="todo-date-pill">
             <CalendarDays size={14} />
@@ -2599,7 +2683,9 @@ function TodoArchiveSection({
   open,
   emptyLabel,
   onToggle,
-  onRestore
+  onRestore,
+  onDelete,
+  onClear
 }: {
   kind: "completed" | "archived";
   title: string;
@@ -2608,6 +2694,8 @@ function TodoArchiveSection({
   emptyLabel: string;
   onToggle: () => void;
   onRestore: (todoId: string) => void;
+  onDelete?: (todo: DecryptedItem) => void;
+  onClear?: () => void;
 }) {
   const isCompleted = kind === "completed";
 
@@ -2622,6 +2710,14 @@ function TodoArchiveSection({
       </button>
       {open && (
         <div className="collapsed-list-body">
+          {!isCompleted && items.length > 0 && onClear && (
+            <div className="archive-tools">
+              <button className="ghost-button danger-text" onClick={onClear}>
+                <Trash2 size={13} />
+                Clear archive
+              </button>
+            </div>
+          )}
           {items.length ? (
             items.map((item) => {
               const payload = item.payload as ItemPayload;
@@ -2646,14 +2742,24 @@ function TodoArchiveSection({
                     {item.meta.dueAt && <small>{todoDateLabel(item.meta.dueAt)}</small>}
                   </div>
                   {!isCompleted && (
-                    <button
-                      className="archive-restore-button"
-                      aria-label={`Restore ${payload.title}`}
-                      title="Restore"
-                      onClick={() => onRestore(item.meta.id)}
-                    >
-                      <RefreshCw size={13} />
-                    </button>
+                    <div className="mini-row-actions">
+                      <button
+                        className="archive-restore-button"
+                        aria-label={`Restore ${payload.title}`}
+                        title="Restore"
+                        onClick={() => onRestore(item.meta.id)}
+                      >
+                        <RefreshCw size={13} />
+                      </button>
+                      <button
+                        className="archive-restore-button danger-text"
+                        aria-label={`Delete ${payload.title}`}
+                        title="Delete forever"
+                        onClick={() => onDelete?.(item)}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
                   )}
                 </article>
               );
@@ -2995,7 +3101,7 @@ function CalendarView({
         ) : (
           <>
             <div className="weekday-row">
-              {["日", "一", "二", "三", "四", "五", "六"].map((day) => (
+              {["一", "二", "三", "四", "五", "六", "日"].map((day) => (
                 <span key={day}>{day}</span>
               ))}
             </div>
@@ -3005,7 +3111,7 @@ function CalendarView({
 	                const dayEvents = eventsByDate.get(key) ?? [];
 	                const eventSlots = visibleEventsPerCell;
 	                const hasMoreEvents = dayEvents.length > eventSlots;
-	                const visibleInlineEvents = hasMoreEvents ? Math.max(0, eventSlots - 1) : eventSlots;
+	                const visibleInlineEvents = hasMoreEvents ? Math.max(1, eventSlots - 1) : eventSlots;
 	                const hiddenEventCount = dayEvents.length - visibleInlineEvents;
 	                const isCurrentMonth = day.getMonth() === monthCursor.getMonth();
 	                const isSelected = key === selectedDate;
@@ -3025,7 +3131,9 @@ function CalendarView({
                       }
                     }}
 	                  >
-	                    <span>{viewMode === "week" ? day.toLocaleDateString("zh-CN", { month: "short", day: "numeric" }) : day.getDate()}</span>
+	                    <span className="calendar-date-number">
+                        {viewMode === "week" ? day.toLocaleDateString("zh-CN", { month: "short", day: "numeric" }) : day.getDate()}
+                      </span>
 		                    <div className="calendar-cell-events">
 		                      {dayEvents.slice(0, visibleInlineEvents).map((event) => (
 		                        <button
@@ -3037,7 +3145,9 @@ function CalendarView({
                           }}
                           type="button"
                         >
-		                          {(event.payload as CalendarEventPayload).title}
+		                          <span className="calendar-event-dot" />
+                              <span className="calendar-event-time">{eventTimeLabel(event.meta.startsAt)}</span>
+                              <span className="calendar-event-title">{(event.payload as CalendarEventPayload).title}</span>
 		                        </button>
 			                      ))}
 		                    </div>
@@ -3105,6 +3215,7 @@ function StrategyView({
   selectedThreadId,
   selectedThread,
   strategyTodos,
+  strategyCompletedTodos,
   strategySignals,
   taskText,
   strategyDraft,
@@ -3128,6 +3239,7 @@ function StrategyView({
   selectedThreadId: string;
   selectedThread?: DecryptedStrategyThread;
   strategyTodos: DecryptedItem[];
+  strategyCompletedTodos: DecryptedItem[];
   strategySignals: DecryptedItem[];
   taskText: string;
   strategyDraft: StrategyDraft;
@@ -3147,11 +3259,24 @@ function StrategyView({
   onUpdateTodoMeta: (itemId: string, patch: Partial<DecryptedItem["meta"]>) => void;
   onUpdateTodoPayload: (itemId: string, patch: Partial<ItemPayload>) => void;
 }) {
+  const [collapsedTodoIds, setCollapsedTodoIds] = useState<Set<string>>(() => new Set());
   const calendarByTodo = new Map(
     calendarEvents
       .filter((event) => event.meta.sourceItemId)
       .map((event) => [event.meta.sourceItemId, event] as const)
   );
+  const strategyTodoIds = new Set(strategyTodos.map((todo) => todo.meta.id));
+  const strategyTodoRoots = strategyTodos.filter(
+    (todo) => !todo.meta.parentItemId || !strategyTodoIds.has(todo.meta.parentItemId)
+  );
+  const toggleStrategyTodoCollapse = (todoId: string) => {
+    setCollapsedTodoIds((current) => {
+      const next = new Set(current);
+      if (next.has(todoId)) next.delete(todoId);
+      else next.add(todoId);
+      return next;
+    });
+  };
 
   return (
     <div className={`strategy-layout ${selectedTodo ? "has-task-detail" : ""}`}>
@@ -3219,9 +3344,10 @@ function StrategyView({
 
             <SectionCard icon={<LayoutList size={17} />} title="Subtasks in Todo">
               {strategyTodos.length ? (
-                strategyTodos.map((todo) => (
+                buildTodoTreeEntries(strategyTodoRoots, strategyTodos, collapsedTodoIds).map(({ todo, depth, childCount }) => (
                   <article
-                    className={`strategy-note ${selectedTodo?.meta.id === todo.meta.id ? "selected" : ""}`}
+                    className={`strategy-note ${selectedTodo?.meta.id === todo.meta.id ? "selected" : ""} ${depth > 0 ? "child" : ""}`}
+                    style={{ "--todo-depth": depth } as CSSProperties}
                     key={todo.meta.id}
                     role="button"
                     tabIndex={0}
@@ -3246,7 +3372,21 @@ function StrategyView({
                     </button>
                     <div>
                       <StatusPill tone="success" label="Todo" />
-                      <h3>{(todo.payload as ItemPayload).title}</h3>
+                      <div className="strategy-note-title-row">
+                        {childCount > 0 && (
+                          <button
+                            className={`todo-collapse-button ${collapsedTodoIds.has(todo.meta.id) ? "collapsed" : ""}`}
+                            aria-label={collapsedTodoIds.has(todo.meta.id) ? "Expand subtasks" : "Collapse subtasks"}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              toggleStrategyTodoCollapse(todo.meta.id);
+                            }}
+                          >
+                            <ChevronRight size={13} />
+                          </button>
+                        )}
+                        <h3>{(todo.payload as ItemPayload).title}</h3>
+                      </div>
                       {todo.meta.dueAt && (
                         <p className="strategy-note-date">
                           <CalendarDays size={13} />
@@ -3261,6 +3401,22 @@ function StrategyView({
                 <EmptyState label="这个战略线程还没有子任务" />
               )}
             </SectionCard>
+
+            {strategyCompletedTodos.length > 0 && (
+              <SectionCard icon={<Check size={17} />} title="Completed">
+                {strategyCompletedTodos.map((todo) => (
+                  <article className="mini-row completed" key={todo.meta.id}>
+                    <span className="completion-circle done">
+                      <Check size={12} />
+                    </span>
+                    <div>
+                      <div className="mini-row-title">{(todo.payload as ItemPayload).title}</div>
+                      <span>{relativeAgeLabel(todo.meta.updatedAt)}</span>
+                    </div>
+                  </article>
+                ))}
+              </SectionCard>
+            )}
 
             {strategySignals.length > 0 && (
               <SectionCard icon={<Brain size={17} />} title="Signals">

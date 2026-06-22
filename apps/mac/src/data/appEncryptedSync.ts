@@ -77,15 +77,19 @@ export class ResolveAppEncryptedSync {
     return new ResolveAppEncryptedSync(client, new SupabaseEncryptedSync(client, userId, vaultKey));
   }
 
-  async pull(options: { includeCalendarEvents?: boolean } = {}) {
+  async pull(options: { includeCalendarEvents?: boolean; changedSince?: string } = {}) {
     return this.sync.pullState(options);
   }
 
-  async push(state: ResolveState) {
+  async push(state: ResolveState, options: { changedSince?: string } = {}) {
     await this.sync.pushState({
       ...state,
       calendarEvents: state.calendarEvents.filter(shouldSyncCalendarEvent)
-    });
+    }, options);
+  }
+
+  async deleteItems(itemIds: string[]) {
+    await this.sync.deleteRemoteItems(itemIds);
   }
 
   subscribe(onChange: (kind: ResolveRemoteChangeKind) => void) {

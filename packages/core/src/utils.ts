@@ -36,10 +36,14 @@ export function isOnOrBeforeLocalDay(iso: string, day = new Date()) {
 export function relativeAgeLabel(iso: string, now = new Date()) {
   const diffMs = now.getTime() - new Date(iso).getTime();
   const minutes = Math.max(0, Math.floor(diffMs / 60_000));
-  if (minutes < 1) return "刚刚";
-  if (minutes < 60) return `${minutes} 分钟前`;
+  if (minutes < 10) return "刚刚";
+  if (minutes < 60) {
+    return new Date(iso).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+  }
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} 小时前`;
+  const restMinutes = minutes % 60;
+  if (hours < 24) return restMinutes ? `${hours} 小时 ${restMinutes} 分前` : `${hours} 小时前`;
   const days = Math.floor(hours / 24);
-  return `${days} 天前`;
+  if (days <= 7) return `${days} 天前`;
+  return new Date(iso).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
 }

@@ -23,11 +23,12 @@ class AppSyncClient(
     private val userId = userIdFromAccessToken(session.accessToken)
     private val key = deriveSyncKey(syncSecret, settings.email)
 
-    fun pullState(includeCalendarEvents: Boolean = true): ResolveState {
-        val itemRows = getArray("/rest/v1/resolve_items?select=*&user_id=eq.${encode(userId)}&order=updated_at.desc")
-        val threadRows = getArray("/rest/v1/resolve_strategy_threads?select=*&user_id=eq.${encode(userId)}&order=updated_at.desc")
+    fun pullState(includeCalendarEvents: Boolean = true, changedSince: Instant? = null): ResolveState {
+        val changedFilter = changedSince?.let { "&updated_at=gt.${encode(it.toString())}" }.orEmpty()
+        val itemRows = getArray("/rest/v1/resolve_items?select=*&user_id=eq.${encode(userId)}$changedFilter&order=updated_at.desc")
+        val threadRows = getArray("/rest/v1/resolve_strategy_threads?select=*&user_id=eq.${encode(userId)}$changedFilter&order=updated_at.desc")
         val eventRows = if (includeCalendarEvents) {
-            getArray("/rest/v1/resolve_calendar_events?select=*&user_id=eq.${encode(userId)}&encryption_scheme=eq.vault_v1&order=starts_at.asc")
+            getArray("/rest/v1/resolve_calendar_events?select=*&user_id=eq.${encode(userId)}&encryption_scheme=eq.vault_v1$changedFilter&order=updated_at.desc")
         } else {
             JSONArray()
         }
@@ -39,9 +40,11 @@ class AppSyncClient(
         )
     }
 
-    fun pushState(state: ResolveState) {
-        val items = JSONArray(state.items.map(::itemToRow))
-        val threads = JSONArray(state.threads.map(::threadToRow))
+    fun pushState(state: ResolveState, changedSince: Instant? = null) {
+        val changedItems = changedSince?.let { since -> state.items.filter { it.updatedAt > since } } ?: state.items
+        val changedThreads = changedSince?.let { since -> state.threads.filter { it.updatedAt > since } } ?: state.threads
+        val items = JSONArray(changedItems.map(::itemToRow))
+        val threads = JSONArray(changedThreads.map(::threadToRow))
         val localCalendarRows = state.calendarEvents
             .filter { it.provider != "feishu" || it.externalEventId == null }
             .map(::calendarToRow)
@@ -49,6 +52,22 @@ class AppSyncClient(
         if (items.length() > 0) upsert("resolve_items", items)
         if (threads.length() > 0) upsert("resolve_strategy_threads", threads)
         if (localCalendarRows.isNotEmpty()) upsert("resolve_calendar_events", JSONArray(localCalendarRows))
+    }
+
+    fun deleteRemoteItems(itemIds: Collection<String>) {
+        itemIds
+            .asSequence()
+            .filter { it.isNotBlank() }
+            .distinct()
+            .forEach { itemId ->
+                val connection = open(
+                    "/rest/v1/resolve_items?user_id=eq.${encode(userId)}&id=eq.${encode(itemId)}",
+                    "DELETE"
+                ).apply {
+                    setRequestProperty("prefer", "return=minimal")
+                }
+                connection.readTextOrThrow()
+            }
     }
 
     private fun itemToRow(item: ResolveItem): JSONObject {

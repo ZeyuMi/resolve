@@ -205,6 +205,17 @@ textarea:disabled {
   flex-wrap: wrap;
 }
 
+.top-sync-button {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
 .icon-button,
 .route-button,
 .primary-button,
@@ -1810,6 +1821,16 @@ button:hover {
   box-shadow: 0 0 0 3px rgba(39, 100, 217, 0.13);
 }
 
+.capture-box.disabled {
+  opacity: 0.42;
+  filter: saturate(0.8);
+}
+
+.capture-box.disabled textarea,
+.capture-box.disabled button {
+  cursor: default;
+}
+
 .sidebar-nav {
   gap: 2px;
 }
@@ -1913,6 +1934,7 @@ button:hover {
 
 .todo-card {
   border-radius: 0;
+  margin-left: calc(var(--todo-depth, 0) * 20px);
 }
 
 .todo-card:hover {
@@ -1930,6 +1952,82 @@ button:hover {
   padding-inline: 16px;
   background: var(--accent-soft);
   box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.todo-card.child {
+  min-height: 46px;
+  background: rgba(247, 249, 252, 0.72);
+}
+
+.todo-title-row,
+.strategy-note-title-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.todo-title-row p,
+.strategy-note-title-row h3 {
+  min-width: 0;
+}
+
+.todo-collapse-button {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-3);
+  flex-shrink: 0;
+}
+
+.todo-collapse-button:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.todo-collapse-button svg {
+  transform: rotate(90deg);
+  transition: transform 140ms ease;
+}
+
+.todo-collapse-button.collapsed svg {
+  transform: rotate(0deg);
+}
+
+.todo-strategy-group {
+  display: grid;
+  gap: 0;
+  margin-top: 8px;
+}
+
+.todo-strategy-group-head {
+  min-height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 16px;
+  color: var(--text-3);
+  border-top: 1px solid var(--line-soft);
+  background: rgba(250, 251, 253, 0.84);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.todo-strategy-group-head span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.todo-strategy-group-head small {
+  margin-left: auto;
+  color: var(--text-3);
 }
 
 .completion-circle {
@@ -2080,6 +2178,22 @@ button:hover {
   background: rgba(116, 126, 145, 0.12);
 }
 
+.mini-row-actions,
+.archive-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.archive-tools {
+  justify-content: flex-end;
+  padding: 0 8px 4px;
+}
+
+.danger-text {
+  color: #d94848;
+}
+
 .section-card,
 .thread-detail {
   border-radius: var(--radius-lg);
@@ -2197,16 +2311,25 @@ button:hover {
 .strategy-note {
   grid-template-columns: 24px minmax(0, 1fr) 18px;
   padding: 10px 0;
+  margin-left: calc(var(--todo-depth, 0) * 18px);
   border-width: 0 0 1px;
   border-radius: 0;
   background: transparent;
   border-color: var(--line-soft);
 }
 
+.strategy-note.child {
+  padding-block: 8px;
+}
+
 .strategy-note h3 {
   margin-top: 6px;
   color: var(--text);
   font-size: 13px;
+}
+
+.strategy-note-title-row h3 {
+  margin-top: 0;
 }
 
 .strategy-note:hover,
@@ -5043,6 +5166,233 @@ body {
     background: rgba(72, 122, 211, 0.34);
     color: #f4f7fb;
   }
+}
+
+/* Feishu-like dense month calendar: text rows, no colored event blocks. */
+.app-shell.tab-calendar .calendar-panel {
+  gap: 8px;
+}
+
+.app-shell.tab-calendar .calendar-toolbar {
+  min-height: 44px;
+  margin-bottom: 2px;
+  padding: 6px 4px 4px;
+}
+
+.app-shell.tab-calendar .calendar-title-block h2 {
+  font-size: 19px;
+  line-height: 24px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.app-shell.tab-calendar .calendar-title-block span {
+  font-size: 11px;
+  line-height: 13px;
+}
+
+.app-shell.tab-calendar .weekday-row {
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  min-height: 24px;
+  padding: 0;
+  border-top: 1px solid rgba(25, 34, 48, 0.08);
+  border-bottom: 1px solid rgba(25, 34, 48, 0.08);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.app-shell.tab-calendar .weekday-row span {
+  align-items: center;
+  justify-content: flex-start;
+  padding: 0 10px;
+  color: rgba(34, 43, 58, 0.66);
+  font-size: 11px;
+  line-height: 12px;
+  font-weight: 600;
+}
+
+.app-shell.tab-calendar .calendar-grid,
+.app-shell.tab-calendar .calendar-grid.week-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-auto-rows: minmax(116px, 1fr);
+  gap: 0;
+  overflow: hidden;
+  border-top: 0;
+  border-left: 0;
+  border-radius: 0;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.app-shell.tab-calendar .calendar-grid.week-grid {
+  grid-auto-rows: minmax(420px, 1fr);
+}
+
+.app-shell.tab-calendar .calendar-cell,
+.app-shell.tab-calendar .calendar-cell.past,
+.app-shell.tab-calendar .calendar-cell.muted {
+  min-width: 0;
+  min-height: 0;
+  padding: 9px 10px 8px;
+  border: 0;
+  border-right: 1px solid rgba(25, 34, 48, 0.07);
+  border-bottom: 1px solid rgba(25, 34, 48, 0.07);
+  border-radius: 0;
+  background: transparent;
+  color: rgba(32, 39, 52, 0.96);
+  box-shadow: none;
+}
+
+.app-shell.tab-calendar .calendar-cell:nth-child(7n) {
+  border-right: 0;
+}
+
+.app-shell.tab-calendar .calendar-cell:hover,
+.app-shell.tab-calendar .calendar-cell.selected {
+  background: rgba(242, 246, 252, 0.96);
+  box-shadow: none;
+}
+
+.app-shell.tab-calendar .calendar-cell.today {
+  border-color: rgba(25, 34, 48, 0.07);
+  background: rgba(242, 246, 252, 0.96);
+  box-shadow: inset 0 0 0 1px rgba(48, 101, 222, 0.12);
+}
+
+.app-shell.tab-calendar .calendar-date-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  min-width: 24px;
+  height: 24px;
+  margin: 0 0 5px;
+  color: inherit;
+  font-size: 18px;
+  line-height: 24px;
+  font-weight: 650;
+}
+
+.app-shell.tab-calendar .calendar-cell.today .calendar-date-number {
+  width: 26px;
+  height: 26px;
+  margin-bottom: 3px;
+  border-radius: 999px;
+  background: #2f66dd;
+  color: white;
+}
+
+.app-shell.tab-calendar .calendar-cell-events {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.app-shell.tab-calendar .calendar-event-chip,
+.app-shell.tab-calendar .calendar-more-label,
+.app-shell.tab-calendar .calendar-cell.past .calendar-event-chip,
+.app-shell.tab-calendar .calendar-cell.past .calendar-more-label,
+.app-shell.tab-calendar .calendar-cell.muted .calendar-event-chip,
+.app-shell.tab-calendar .calendar-cell.muted .calendar-more-label {
+  display: grid;
+  grid-template-columns: 7px auto minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  height: 17px;
+  min-height: 17px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: rgba(34, 43, 58, 0.72);
+  box-shadow: none;
+  text-align: left;
+}
+
+.app-shell.tab-calendar .calendar-event-chip::before,
+.app-shell.tab-calendar .calendar-more-label::before {
+  display: none;
+}
+
+.app-shell.tab-calendar .calendar-event-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 2px;
+  background: #8fb0ff;
+}
+
+.app-shell.tab-calendar .calendar-event-time {
+  color: rgba(34, 43, 58, 0.52);
+  font-size: 12px;
+  line-height: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.app-shell.tab-calendar .calendar-event-title {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(34, 43, 58, 0.72);
+  font-size: 12px;
+  line-height: 15px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-shell.tab-calendar .calendar-event-chip:hover,
+.app-shell.tab-calendar .calendar-event-chip.selected,
+.app-shell.tab-calendar .calendar-more-label:hover {
+  background: transparent;
+  color: rgba(20, 28, 42, 0.96);
+  transform: none;
+}
+
+.app-shell.tab-calendar .calendar-event-chip:hover .calendar-event-title,
+.app-shell.tab-calendar .calendar-event-chip.selected .calendar-event-title {
+  color: rgba(20, 28, 42, 0.96);
+}
+
+.app-shell.tab-calendar .calendar-more-label {
+  display: flex !important;
+  grid-template-columns: none;
+  align-items: center;
+  justify-content: flex-start;
+  margin-top: 2px;
+  color: rgba(34, 43, 58, 0.62) !important;
+  font-size: 12px;
+  line-height: 15px;
+  font-weight: 600;
+}
+
+.app-shell.tab-calendar .calendar-more-full {
+  display: inline !important;
+}
+
+.app-shell.tab-calendar .calendar-more-compact,
+.app-shell.tab-calendar .calendar-more-tiny {
+  display: none !important;
+}
+
+.app-shell.tab-calendar .calendar-cell.past .calendar-date-number,
+.app-shell.tab-calendar .calendar-cell.past .calendar-event-time,
+.app-shell.tab-calendar .calendar-cell.past .calendar-event-title,
+.app-shell.tab-calendar .calendar-cell.past .calendar-more-label {
+  color: rgba(34, 43, 58, 0.42) !important;
+}
+
+.app-shell.tab-calendar .calendar-cell.muted .calendar-date-number,
+.app-shell.tab-calendar .calendar-cell.muted .calendar-event-time,
+.app-shell.tab-calendar .calendar-cell.muted .calendar-event-title,
+.app-shell.tab-calendar .calendar-cell.muted .calendar-more-label {
+  color: rgba(34, 43, 58, 0.72) !important;
+}
+
+.mini-row.completed .mini-row-title {
+  color: rgba(113, 126, 148, 0.76);
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
 }
 
 /* Alignment pass: keep headers, list titles, and rows on one visual rail. */
