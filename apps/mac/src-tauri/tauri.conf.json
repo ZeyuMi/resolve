@@ -25,10 +25,6 @@
         "icons/icon.icns"
       ]
     },
-    "systemTray": {
-      "iconPath": "icons/tray-icon.png",
-      "iconAsTemplate": false
-    },
     "windows": [
       {
         "title": "Resolve",

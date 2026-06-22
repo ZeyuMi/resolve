@@ -89,6 +89,7 @@ class ResolveRepository(context: Context) {
         .put("status", thread.status)
         .put("createdAt", thread.createdAt.toString())
         .put("updatedAt", thread.updatedAt.toString())
+        .putOpt("sortOrder", thread.sortOrder)
 
     private fun decodeThread(json: JSONObject): StrategyThread {
         val createdAt = instantOrNull(json.optString("createdAt")) ?: Instant.EPOCH
@@ -98,7 +99,8 @@ class ResolveRepository(context: Context) {
             currentHypothesis = json.optString("currentHypothesis"),
             status = json.optString("status", "active"),
             createdAt = createdAt,
-            updatedAt = instantOrNull(json.optString("updatedAt")) ?: createdAt
+            updatedAt = instantOrNull(json.optString("updatedAt")) ?: createdAt,
+            sortOrder = json.optNullableDouble("sortOrder")
         )
     }
 

@@ -1,4 +1,13 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode
+} from "react";
 import {
   Archive,
   Brain,
@@ -657,6 +666,35 @@ function compareTodoItems(a: DecryptedItem, b: DecryptedItem) {
   return aDate.localeCompare(bDate);
 }
 
+function strategySortOrder(thread: DecryptedStrategyThread) {
+  const value = thread.payload.sortOrder;
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function compareStrategyThreads(a: DecryptedStrategyThread, b: DecryptedStrategyThread) {
+  const aOrder = strategySortOrder(a);
+  const bOrder = strategySortOrder(b);
+  if (aOrder != null && bOrder != null && aOrder !== bOrder) return aOrder - bOrder;
+  if (aOrder != null && bOrder == null) return -1;
+  if (aOrder == null && bOrder != null) return 1;
+  return a.meta.createdAt.localeCompare(b.meta.createdAt);
+}
+
+function isImeComposing(event: ReactKeyboardEvent<HTMLElement>) {
+  return event.nativeEvent.isComposing || event.key === "Process" || event.keyCode === 229;
+}
+
+type ReorderPlacement = "before" | "after";
+
+function reorderPlacementFromPoint(element: Element, clientY: number): ReorderPlacement {
+  const rect = element.getBoundingClientRect();
+  return clientY > rect.top + rect.height / 2 ? "after" : "before";
+}
+
+function isInteractiveDragTarget(target: EventTarget | null) {
+  return target instanceof Element && Boolean(target.closest("button, input, textarea, select, a, [contenteditable='true']"));
+}
+
 function calendarDescriptionWithStrategy(description: string, strategyTitle?: string) {
   const cleanDescription = description.trim();
   const cleanStrategy = strategyTitle?.trim();
@@ -727,7 +765,7 @@ export function App() {
     [taskItems]
   );
   const strategyThreads = useMemo(
-    () => state.strategyThreads.filter((thread) => thread.meta.status !== "archived"),
+    () => state.strategyThreads.filter((thread) => thread.meta.status !== "archived").sort(compareStrategyThreads),
     [state.strategyThreads]
   );
   const selectedThread = strategyThreads.find((thread) => thread.meta.id === selectedThreadId);
@@ -1761,7 +1799,7 @@ export function App() {
     showToast("Subtask added");
   }
 
-  function reorderTodo(sourceId: string, targetId: string) {
+  function reorderTodo(sourceId: string, targetId: string, placement: ReorderPlacement = "before") {
     if (sourceId === targetId) return;
     const latest = stateRef.current;
     const source = latest.items.find((item) => item.meta.id === sourceId);
@@ -1788,7 +1826,8 @@ export function App() {
     const withoutSource = siblings.filter((item) => item.meta.id !== sourceId);
     const targetIndex = withoutSource.findIndex((item) => item.meta.id === targetId);
     if (targetIndex < 0) return;
-    const reordered = [...withoutSource.slice(0, targetIndex), sourceItem, ...withoutSource.slice(targetIndex)];
+    const insertIndex = placement === "after" ? targetIndex + 1 : targetIndex;
+    const reordered = [...withoutSource.slice(0, insertIndex), sourceItem, ...withoutSource.slice(insertIndex)];
     const nextOrder = new Map(reordered.map((item, index) => [item.meta.id, index + 1]));
     const timestamp = nowIso();
     persist({
@@ -1804,6 +1843,44 @@ export function App() {
           },
           payload: {
             ...(item.payload as ItemPayload),
+            sortOrder
+          }
+        };
+      })
+    });
+  }
+
+  function reorderStrategyThread(sourceId: string, targetId: string, placement: ReorderPlacement = "before") {
+    if (sourceId === targetId) return;
+    const latest = stateRef.current;
+    const source = latest.strategyThreads.find((thread) => thread.meta.id === sourceId);
+    const target = latest.strategyThreads.find((thread) => thread.meta.id === targetId);
+    if (!source || !target || source.meta.status === "archived" || target.meta.status === "archived") return;
+    const activeThreads = latest.strategyThreads
+      .filter((thread) => thread.meta.status !== "archived")
+      .sort(compareStrategyThreads);
+    const sourceThread = activeThreads.find((thread) => thread.meta.id === sourceId);
+    if (!sourceThread) return;
+    const withoutSource = activeThreads.filter((thread) => thread.meta.id !== sourceId);
+    const targetIndex = withoutSource.findIndex((thread) => thread.meta.id === targetId);
+    if (targetIndex < 0) return;
+    const insertIndex = placement === "after" ? targetIndex + 1 : targetIndex;
+    const reordered = [...withoutSource.slice(0, insertIndex), sourceThread, ...withoutSource.slice(insertIndex)];
+    const nextOrder = new Map(reordered.map((thread, index) => [thread.meta.id, index + 1]));
+    const timestamp = nowIso();
+    persist({
+      ...latest,
+      strategyThreads: latest.strategyThreads.map((thread) => {
+        const sortOrder = nextOrder.get(thread.meta.id);
+        if (sortOrder == null) return thread;
+        return {
+          ...thread,
+          meta: {
+            ...thread.meta,
+            updatedAt: timestamp
+          },
+          payload: {
+            ...thread.payload,
             sortOrder
           }
         };
@@ -2230,6 +2307,7 @@ export function App() {
               onAddSubtask={addTodoSubtask}
               onToggleSubtask={(todo) => updateTodo(todo.meta.id, { status: todo.meta.status === "done" ? "active" : "done" })}
               onReorderTodo={reorderTodo}
+              onReorderStrategyThread={reorderStrategyThread}
               onToggleCompleted={() => setShowCompleted((value) => !value)}
               onToggleArchived={() => setShowArchived((value) => !value)}
               onDeleteArchived={(todo) => deleteTodosPermanently([todo.meta.id])}
@@ -2415,6 +2493,7 @@ function CaptureBox({
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={(event) => {
           if (disabled) return;
+          if (isImeComposing(event)) return;
           if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault();
             onSave();
@@ -2457,6 +2536,7 @@ function MobileCaptureBar({
         rows={1}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={(event) => {
+          if (isImeComposing(event)) return;
           if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault();
             onSave();
@@ -2509,6 +2589,7 @@ function QuickCaptureOverlay({
           value={value}
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={(event) => {
+            if (isImeComposing(event)) return;
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
               onSave();
@@ -2631,6 +2712,7 @@ function TodoView({
   onAddSubtask,
   onToggleSubtask,
   onReorderTodo,
+  onReorderStrategyThread,
   onToggleCompleted,
   onToggleArchived,
   onDeleteArchived,
@@ -2661,7 +2743,8 @@ function TodoView({
   ) => void;
   onAddSubtask: (parentTodo: DecryptedItem, title: string) => void;
   onToggleSubtask: (todo: DecryptedItem) => void;
-  onReorderTodo: (sourceId: string, targetId: string) => void;
+  onReorderTodo: (sourceId: string, targetId: string, placement?: ReorderPlacement) => void;
+  onReorderStrategyThread: (sourceId: string, targetId: string, placement?: ReorderPlacement) => void;
   onToggleCompleted: () => void;
   onToggleArchived: () => void;
   onDeleteArchived: (todo: DecryptedItem) => void;
@@ -2669,8 +2752,13 @@ function TodoView({
 }) {
   const [collapsedTodoIds, setCollapsedTodoIds] = useState<Set<string>>(() => new Set());
   const [collapsedStrategyIds, setCollapsedStrategyIds] = useState<Set<string>>(() => new Set());
-  const [draggedTodoId, setDraggedTodoId] = useState<string | null>(null);
-  const [dragOverTodoId, setDragOverTodoId] = useState<string | null>(null);
+  const [pointerDrag, setPointerDrag] = useState<{
+    kind: "todo" | "strategy";
+    sourceId: string;
+    targetId?: string;
+    placement?: ReorderPlacement;
+  } | null>(null);
+  const suppressNextClickRef = useRef(false);
   const calendarByTodo = new Map(
     calendarEvents
       .filter((event) => event.meta.sourceItemId)
@@ -2706,6 +2794,67 @@ function TodoView({
       return next;
     });
   };
+
+  const beginPointerReorder = (
+    kind: "todo" | "strategy",
+    sourceId: string,
+    event: ReactPointerEvent<HTMLElement>
+  ) => {
+    if (event.button !== 0 || (kind === "todo" && isInteractiveDragTarget(event.target))) return;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    let active = false;
+    let latestTargetId: string | undefined;
+    let latestPlacement: ReorderPlacement | undefined;
+    const selector = kind === "todo" ? "[data-todo-id]" : "[data-strategy-id]";
+    const datasetKey = kind === "todo" ? "todoId" : "strategyId";
+
+    const updateTarget = (clientX: number, clientY: number) => {
+      const targetElement = document.elementFromPoint(clientX, clientY)?.closest(selector) as HTMLElement | null;
+      const targetId = targetElement?.dataset[datasetKey];
+      latestTargetId = targetId && targetId !== sourceId ? targetId : undefined;
+      latestPlacement = latestTargetId && targetElement ? reorderPlacementFromPoint(targetElement, clientY) : undefined;
+      setPointerDrag({ kind, sourceId, targetId: latestTargetId, placement: latestPlacement });
+    };
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const distance = Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY);
+      if (!active && distance < 7) return;
+      active = true;
+      moveEvent.preventDefault();
+      updateTarget(moveEvent.clientX, moveEvent.clientY);
+    };
+
+    const finish = (upEvent: PointerEvent) => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", cancel);
+      if (active) {
+        suppressNextClickRef.current = true;
+        updateTarget(upEvent.clientX, upEvent.clientY);
+        if (latestTargetId) {
+          if (kind === "todo") onReorderTodo(sourceId, latestTargetId, latestPlacement);
+          else onReorderStrategyThread(sourceId, latestTargetId, latestPlacement);
+        }
+        window.setTimeout(() => {
+          suppressNextClickRef.current = false;
+        }, 0);
+      }
+      setPointerDrag(null);
+    };
+
+    const cancel = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", cancel);
+      setPointerDrag(null);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove, { passive: false });
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", cancel);
+  };
+
   const renderEntry = (entry: TodoTreeEntry) => (
     <TodoCard
       key={entry.todo.meta.id}
@@ -2713,30 +2862,18 @@ function TodoView({
       threads={threads}
       calendarEvent={calendarByTodo.get(entry.todo.meta.id)}
       selected={selectedTodo?.meta.id === entry.todo.meta.id}
-      dragging={draggedTodoId === entry.todo.meta.id}
-      dragOver={dragOverTodoId === entry.todo.meta.id && draggedTodoId !== entry.todo.meta.id}
+      dragging={pointerDrag?.kind === "todo" && pointerDrag.sourceId === entry.todo.meta.id}
+      dragOver={pointerDrag?.kind === "todo" && pointerDrag.targetId === entry.todo.meta.id}
+      dragPlacement={pointerDrag?.kind === "todo" && pointerDrag.targetId === entry.todo.meta.id ? pointerDrag.placement : undefined}
       depth={entry.depth}
       childCount={entry.childCount}
       collapsed={collapsedTodoIds.has(entry.todo.meta.id)}
       onToggleCollapse={toggleCollapse}
-      onDragStart={(todoId) => {
-        setDraggedTodoId(todoId);
-        setDragOverTodoId(null);
-      }}
-      onDragOver={(todoId) => {
-        if (draggedTodoId && draggedTodoId !== todoId) setDragOverTodoId(todoId);
-      }}
-      onDrop={(todoId) => {
-        if (draggedTodoId && draggedTodoId !== todoId) onReorderTodo(draggedTodoId, todoId);
-        setDraggedTodoId(null);
-        setDragOverTodoId(null);
-      }}
-      onDragEnd={() => {
-        setDraggedTodoId(null);
-        setDragOverTodoId(null);
-      }}
+      onPointerReorderStart={(event) => beginPointerReorder("todo", entry.todo.meta.id, event)}
       onComplete={onComplete}
-      onSelectTodo={onSelectTodo}
+      onSelectTodo={(todo) => {
+        if (!suppressNextClickRef.current) onSelectTodo(todo);
+      }}
     />
   );
 
@@ -2756,10 +2893,23 @@ function TodoView({
           <>
             {ungroupedRoots.map((root) => buildTodoTreeEntries([root], todos, collapsedTodoIds).map(renderEntry))}
             {strategyGroups.map(({ thread, roots }) => (
-              <div className="todo-strategy-group" key={thread.meta.id}>
+              <div
+                className={`todo-strategy-group ${pointerDrag?.kind === "strategy" && pointerDrag.sourceId === thread.meta.id ? "dragging" : ""} ${
+                  pointerDrag?.kind === "strategy" && pointerDrag.targetId === thread.meta.id ? "drag-over" : ""
+                } ${
+                  pointerDrag?.kind === "strategy" && pointerDrag.targetId === thread.meta.id && pointerDrag.placement
+                    ? `drop-${pointerDrag.placement}`
+                    : ""
+                }`}
+                key={thread.meta.id}
+                data-strategy-id={thread.meta.id}
+              >
                 <button
                   className={`todo-strategy-group-head ${collapsedStrategyIds.has(thread.meta.id) ? "collapsed" : ""}`}
-                  onClick={() => toggleStrategyGroup(thread.meta.id)}
+                  onPointerDown={(event) => beginPointerReorder("strategy", thread.meta.id, event)}
+                  onClick={() => {
+                    if (!suppressNextClickRef.current) toggleStrategyGroup(thread.meta.id);
+                  }}
                   aria-label={collapsedStrategyIds.has(thread.meta.id) ? `Expand ${thread.payload.title}` : `Collapse ${thread.payload.title}`}
                 >
                   <ChevronRight size={13} />
@@ -2839,14 +2989,12 @@ function TodoCard({
   selected,
   dragging,
   dragOver,
+  dragPlacement,
   depth = 0,
   childCount = 0,
   collapsed = false,
   onToggleCollapse,
-  onDragStart,
-  onDragOver,
-  onDrop,
-  onDragEnd,
+  onPointerReorderStart,
   onComplete,
   onSelectTodo
 }: {
@@ -2856,14 +3004,12 @@ function TodoCard({
   selected?: boolean;
   dragging?: boolean;
   dragOver?: boolean;
+  dragPlacement?: ReorderPlacement;
   depth?: number;
   childCount?: number;
   collapsed?: boolean;
   onToggleCollapse?: (todoId: string) => void;
-  onDragStart?: (todoId: string) => void;
-  onDragOver?: (todoId: string) => void;
-  onDrop?: (todoId: string) => void;
-  onDragEnd?: () => void;
+  onPointerReorderStart?: (event: ReactPointerEvent<HTMLElement>) => void;
   onComplete: (todo: DecryptedItem) => void;
   onSelectTodo: (todo: DecryptedItem) => void;
 }) {
@@ -2872,26 +3018,14 @@ function TodoCard({
 
   return (
     <article
-      className={`item-card todo-card ${selected ? "selected" : ""} ${depth > 0 ? "child" : ""} ${dragging ? "dragging" : ""} ${dragOver ? "drag-over" : ""}`}
+      className={`item-card todo-card ${selected ? "selected" : ""} ${depth > 0 ? "child" : ""} ${dragging ? "dragging" : ""} ${
+        dragOver ? "drag-over" : ""
+      } ${dragOver && dragPlacement ? `drop-${dragPlacement}` : ""}`}
       style={{ "--todo-depth": depth } as CSSProperties}
       role="button"
       tabIndex={0}
-      draggable
-      onDragStart={(event) => {
-        event.dataTransfer.effectAllowed = "move";
-        event.dataTransfer.setData("text/plain", todo.meta.id);
-        onDragStart?.(todo.meta.id);
-      }}
-      onDragOver={(event) => {
-        event.preventDefault();
-        event.dataTransfer.dropEffect = "move";
-        onDragOver?.(todo.meta.id);
-      }}
-      onDrop={(event) => {
-        event.preventDefault();
-        onDrop?.(todo.meta.id);
-      }}
-      onDragEnd={onDragEnd}
+      data-todo-id={todo.meta.id}
+      onPointerDown={onPointerReorderStart}
       onClick={() => onSelectTodo(todo)}
       onKeyDown={(event) => {
         if (event.target !== event.currentTarget) return;
@@ -3197,6 +3331,7 @@ function TodoDetailPanel({
             value={subtaskTitle}
             onChange={(event) => setSubtaskTitle(event.target.value)}
             onKeyDown={(event) => {
+              if (isImeComposing(event)) return;
               if (event.key === "Enter") {
                 event.preventDefault();
                 submitSubtask();
@@ -3753,6 +3888,7 @@ function StrategyView({
                 value={taskText}
                 onChange={(event) => onTaskText(event.target.value)}
                 onKeyDown={(event) => {
+                  if (isImeComposing(event)) return;
                   if (event.key === "Enter") onAddTask();
                 }}
                 placeholder="添加战略子任务，会同步出现在 Todo"
@@ -4162,7 +4298,16 @@ function CalendarDraftDetailPanel({
 }) {
   return (
     <SectionCard icon={<Clock3 size={17} />} title={title}>
-      <div className="event-detail-panel">
+      <div
+        className="event-detail-panel"
+        onKeyDown={(event) => {
+          const target = event.target as HTMLElement | null;
+          if (isImeComposing(event)) return;
+          if (event.key === "Enter" && target?.closest("input, select")) {
+            event.preventDefault();
+          }
+        }}
+      >
         <div className="detail-head">
           <StatusPill tone="calendar" label="New Feishu event" />
           <button className="icon-button" onClick={onClose} aria-label="Close new event">

@@ -5944,3 +5944,119 @@ body {
   opacity: 0.42;
   cursor: default;
 }
+
+/* Detail density pass: keep editing readable without oversized fields or sticky actions. */
+.todo-detail-panel {
+  align-content: start !important;
+  gap: 8px !important;
+  padding: 14px !important;
+  overflow: auto;
+}
+
+.todo-detail-panel .detail-head {
+  min-height: 28px !important;
+  margin-bottom: 0 !important;
+  font-size: 13px !important;
+}
+
+.todo-detail-panel .detail-field {
+  gap: 4px !important;
+  font-size: 13.5px !important;
+  line-height: 17px !important;
+}
+
+.todo-detail-panel .detail-field > span,
+.detail-section-label > span {
+  font-size: 12.5px !important;
+}
+
+.todo-detail-panel .detail-field input,
+.todo-detail-panel .detail-field textarea,
+.todo-detail-panel .detail-field select {
+  min-height: 32px !important;
+  padding: 6px 8px !important;
+  border-radius: 9px !important;
+  font-size: 14px !important;
+  line-height: 18px !important;
+}
+
+.todo-detail-panel .detail-field textarea {
+  min-height: 62px !important;
+}
+
+.detail-subtasks-field {
+  gap: 6px !important;
+}
+
+.detail-subtask-composer {
+  gap: 6px !important;
+}
+
+.detail-subtask-composer .secondary-button {
+  min-height: 32px !important;
+  padding: 0 10px !important;
+}
+
+.detail-subtask-list {
+  gap: 4px !important;
+}
+
+.detail-subtask-row {
+  min-height: 30px !important;
+  gap: 7px !important;
+  padding: 4px 8px !important;
+  border-radius: 9px !important;
+  font-size: 14px !important;
+}
+
+.todo-detail-panel .detail-actions {
+  position: static !important;
+  z-index: auto !important;
+  margin: 2px 0 0 !important;
+  padding: 8px 0 0 !important;
+  border-top: 1px solid rgba(121, 136, 160, 0.12);
+  background: transparent !important;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.todo-detail-panel .detail-actions button {
+  min-height: 32px;
+  padding: 0 10px;
+}
+
+.todo-card {
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.todo-card.dragging,
+.todo-strategy-group.dragging {
+  opacity: 0.58;
+}
+
+.todo-card.drag-over,
+.todo-strategy-group.drag-over .todo-strategy-group-head {
+  outline: 2px solid rgba(47, 107, 255, 0.28);
+  outline-offset: 2px;
+}
+
+.todo-card.drag-over.drop-before,
+.todo-strategy-group.drag-over.drop-before .todo-strategy-group-head {
+  border-top-color: rgba(47, 107, 255, 0.72) !important;
+  box-shadow: inset 0 2px 0 rgba(47, 107, 255, 0.68);
+}
+
+.todo-card.drag-over.drop-after,
+.todo-strategy-group.drag-over.drop-after .todo-strategy-group-head {
+  border-bottom-color: rgba(47, 107, 255, 0.72) !important;
+  box-shadow: inset 0 -2px 0 rgba(47, 107, 255, 0.68);
+}
+
+.todo-strategy-group-head {
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}

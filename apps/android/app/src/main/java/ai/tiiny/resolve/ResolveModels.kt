@@ -37,7 +37,8 @@ data class StrategyThread(
     val currentHypothesis: String = "",
     val status: String = "active",
     val createdAt: Instant = Instant.now(),
-    val updatedAt: Instant = Instant.now()
+    val updatedAt: Instant = Instant.now(),
+    val sortOrder: Double? = null
 )
 
 data class CalendarEvent(

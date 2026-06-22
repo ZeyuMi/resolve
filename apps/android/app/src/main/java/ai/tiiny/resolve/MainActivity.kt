@@ -89,6 +89,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -176,23 +177,23 @@ private fun ResolveAndroidApp(
     val secureVault = remember { SecureVault(context) }
     val scope = rememberCoroutineScope()
     var state by remember { mutableStateOf(repository.load()) }
-    var tab by remember { mutableStateOf(Tab.Todo) }
-    var capture by remember { mutableStateOf(initialCapture) }
+    var tab by rememberSaveable { mutableStateOf(Tab.Todo) }
+    var capture by rememberSaveable { mutableStateOf(initialCapture) }
     var notice by remember { mutableStateOf<String?>(null) }
-    var selectedTodoId by remember { mutableStateOf<String?>(null) }
-    var selectedThreadId by remember { mutableStateOf(state.threads.firstOrNull()?.id.orEmpty()) }
+    var selectedTodoId by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedThreadId by rememberSaveable { mutableStateOf(state.threads.firstOrNull()?.id.orEmpty()) }
     var calendarDraft by remember { mutableStateOf(CalendarDraft()) }
     var selectedDate by remember { mutableStateOf(LocalDate.now()) }
-    var calendarViewMode by remember { mutableStateOf(CalendarViewMode.Month) }
+    var calendarViewMode by rememberSaveable { mutableStateOf(CalendarViewMode.Month) }
     var selectedCalendarEvent by remember { mutableStateOf<CalendarEvent?>(null) }
     var editingCalendarEvent by remember { mutableStateOf<CalendarEvent?>(null) }
     var expandedCalendarDate by remember { mutableStateOf<LocalDate?>(null) }
-    var showCalendarDraft by remember { mutableStateOf(false) }
-    var showCompleted by remember { mutableStateOf(false) }
-    var showArchived by remember { mutableStateOf(false) }
-    var openedStrategyThreadId by remember { mutableStateOf<String?>(null) }
-    var showStrategyDraft by remember { mutableStateOf(false) }
-    var todoReturnStrategyThreadId by remember { mutableStateOf<String?>(null) }
+    var showCalendarDraft by rememberSaveable { mutableStateOf(false) }
+    var showCompleted by rememberSaveable { mutableStateOf(false) }
+    var showArchived by rememberSaveable { mutableStateOf(false) }
+    var openedStrategyThreadId by rememberSaveable { mutableStateOf<String?>(null) }
+    var showStrategyDraft by rememberSaveable { mutableStateOf(false) }
+    var todoReturnStrategyThreadId by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingTodoArchive by remember { mutableStateOf<ResolveItem?>(null) }
     var pendingTodoDelete by remember { mutableStateOf<ResolveItem?>(null) }
     var pendingTodoArchiveClear by remember { mutableStateOf(false) }
@@ -1615,6 +1616,7 @@ private fun TodoScreen(
     val ungroupedRoots = rootsByStrategy[""].orEmpty()
     val strategyGroups = state.threads
         .filter { !it.status.equals("archived", ignoreCase = true) }
+        .sortedWith(strategyThreadComparator)
         .mapNotNull { thread ->
             rootsByStrategy[thread.id]?.takeIf { it.isNotEmpty() }?.let { thread to it }
         }
@@ -2982,7 +2984,9 @@ private fun StrategyScreen(
     var task by remember { mutableStateOf("") }
     var collapsedTodoIds by remember { mutableStateOf(setOf<String>()) }
     var showCompletedSubtasks by remember(openedThreadId) { mutableStateOf(false) }
-    val activeThreads = state.threads.filter { !it.status.equals("archived", ignoreCase = true) }
+    val activeThreads = state.threads
+        .filter { !it.status.equals("archived", ignoreCase = true) }
+        .sortedWith(strategyThreadComparator)
     val opened = activeThreads.find { it.id == openedThreadId }
     val allTasks = state.items.filter { it.type == ItemType.Task }
 
@@ -3939,6 +3943,24 @@ private fun compareTodoItems(first: ResolveItem, second: ResolveItem): Int {
 
 private val todoComparator = Comparator<ResolveItem> { first, second ->
     compareTodoItems(first, second)
+}
+
+private fun strategyThreadSortOrder(thread: StrategyThread): Double? =
+    thread.sortOrder?.takeIf { !it.isNaN() && !it.isInfinite() }
+
+private fun compareStrategyThreads(first: StrategyThread, second: StrategyThread): Int {
+    val firstOrder = strategyThreadSortOrder(first)
+    val secondOrder = strategyThreadSortOrder(second)
+    if (firstOrder != null && secondOrder != null && firstOrder != secondOrder) {
+        return firstOrder.compareTo(secondOrder)
+    }
+    if (firstOrder != null && secondOrder == null) return -1
+    if (firstOrder == null && secondOrder != null) return 1
+    return first.createdAt.compareTo(second.createdAt)
+}
+
+private val strategyThreadComparator = Comparator<StrategyThread> { first, second ->
+    compareStrategyThreads(first, second)
 }
 
 private fun calendarDescriptionWithStrategy(description: String, strategyTitle: String?): String {

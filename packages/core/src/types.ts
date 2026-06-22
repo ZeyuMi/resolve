@@ -95,6 +95,7 @@ export interface StrategyThreadPayload {
   title: string;
   description?: string;
   currentHypothesis?: string;
+  sortOrder?: number;
 }
 
 export type StrategyNoteKind =

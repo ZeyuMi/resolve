@@ -102,6 +102,7 @@ class AppSyncClient(
             JSONObject()
                 .put("title", thread.title)
                 .put("currentHypothesis", thread.currentHypothesis.takeIf { it.isNotBlank() })
+                .put("sortOrder", thread.sortOrder)
         )
         return JSONObject()
             .put("user_id", userId)
@@ -171,7 +172,8 @@ class AppSyncClient(
             currentHypothesis = payload.optString("currentHypothesis"),
             status = row.optString("status", "active"),
             createdAt = instantOrNow(row.optString("created_at")),
-            updatedAt = instantOrNow(row.optString("updated_at"))
+            updatedAt = instantOrNow(row.optString("updated_at")),
+            sortOrder = payload.optNullableDouble("sortOrder")
         )
     }
 
