@@ -76,6 +76,7 @@ class AppSyncClient(
                 .put("title", item.title)
                 .put("notes", item.notes.takeIf { it.isNotBlank() })
                 .put("sortOrder", item.sortOrder)
+                .put("statusChangedAt", item.statusChangedAt.toString())
         )
         return JSONObject()
             .put("user_id", userId)
@@ -147,15 +148,20 @@ class AppSyncClient(
 
     private fun itemFromRow(row: JSONObject): ResolveItem {
         val payload = decryptJson(row)
+        val status = itemStatusFromRemote(row.optString("status"))
+        val createdAt = instantOrNow(row.optString("created_at"))
+        val updatedAt = instantOrNow(row.optString("updated_at"))
         return ResolveItem(
             id = row.optString("id"),
             type = if (row.optString("type") == "strategy_note") ItemType.StrategyNote else ItemType.Task,
-            status = itemStatusFromRemote(row.optString("status")),
+            status = status,
             title = payload.optString("title").ifBlank { "Untitled" },
             notes = payload.optString("notes"),
             source = row.optString("source", "sync"),
-            createdAt = instantOrNow(row.optString("created_at")),
-            updatedAt = instantOrNow(row.optString("updated_at")),
+            createdAt = createdAt,
+            updatedAt = updatedAt,
+            statusChangedAt = payload.optNullableString("statusChangedAt")?.let(::instantOrNull)
+                ?: fallbackStatusChangedAt(status, createdAt, updatedAt),
             dueAt = row.optNullableString("due_at")?.let(::instantOrNull),
             strategyThreadId = row.optNullableString("strategy_thread_id"),
             sourceItemId = row.optNullableString("source_item_id"),
@@ -244,7 +250,7 @@ fun mergeEncryptedRemoteState(local: ResolveState, remote: ResolveState): Resolv
     val items = linkedMapOf<String, ResolveItem>()
     (local.items + remote.items).forEach { item ->
         val existing = items[item.id]
-        if (existing == null || item.updatedAt >= existing.updatedAt) items[item.id] = item
+        items[item.id] = mergeResolveItem(existing, item)
     }
 
     val threads = linkedMapOf<String, StrategyThread>()
@@ -260,6 +266,16 @@ fun mergeEncryptedRemoteState(local: ResolveState, remote: ResolveState): Resolv
         items = items.values.toList(),
         threads = threads.values.toList(),
         calendarEvents = normalizeCalendarEvents(localServerCalendars + newestCalendarById(localCalendars + remoteLocalCalendars))
+    )
+}
+
+private fun mergeResolveItem(existing: ResolveItem?, candidate: ResolveItem): ResolveItem {
+    if (existing == null) return candidate
+    val newest = if (candidate.updatedAt >= existing.updatedAt) candidate else existing
+    val statusWinner = if (candidate.statusChangedAt >= existing.statusChangedAt) candidate else existing
+    return newest.copy(
+        status = statusWinner.status,
+        statusChangedAt = statusWinner.statusChangedAt
     )
 }
 

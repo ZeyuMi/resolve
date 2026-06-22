@@ -323,7 +323,21 @@ private fun ResolveAndroidApp(
     }
 
     fun updateItem(item: ResolveItem) {
-        persist(state.copy(items = state.items.map { if (it.id == item.id) item.copy(updatedAt = Instant.now()) else it }))
+        val timestamp = Instant.now()
+        persist(
+            state.copy(
+                items = state.items.map { existing ->
+                    if (existing.id != item.id) {
+                        existing
+                    } else {
+                        item.copy(
+                            updatedAt = timestamp,
+                            statusChangedAt = if (item.status != existing.status) timestamp else item.statusChangedAt
+                        )
+                    }
+                }
+            )
+        )
     }
 
     fun archiveItem(item: ResolveItem) {
@@ -333,7 +347,15 @@ private fun ResolveAndroidApp(
         persist(
             state.copy(
                 items = state.items.map { candidate ->
-                    if (candidate.id in archivedIds) candidate.copy(status = ItemStatus.Archived, updatedAt = timestamp) else candidate
+                    if (candidate.id in archivedIds) {
+                        candidate.copy(
+                            status = ItemStatus.Archived,
+                            updatedAt = timestamp,
+                            statusChangedAt = timestamp
+                        )
+                    } else {
+                        candidate
+                    }
                 }
             )
         )
@@ -356,7 +378,15 @@ private fun ResolveAndroidApp(
                     if (candidate.id == thread.id) candidate.copy(status = "archived", updatedAt = timestamp) else candidate
                 },
                 items = state.items.map { item ->
-                    if (item.id in archivedIds) item.copy(status = ItemStatus.Archived, updatedAt = timestamp) else item
+                    if (item.id in archivedIds) {
+                        item.copy(
+                            status = ItemStatus.Archived,
+                            updatedAt = timestamp,
+                            statusChangedAt = timestamp
+                        )
+                    } else {
+                        item
+                    }
                 }
             )
         )
@@ -506,15 +536,38 @@ private fun ResolveAndroidApp(
         if (isSyncing) return
         isSyncing = true
         scope.launch {
+            var appSyncBlocker: String? = null
             try {
-                if (hasBackendSession && syncSecretReady && state.backendSettings.email.isNotBlank()) {
+                if (!syncSecretReady && secureVault.loadSyncSecret() != null) {
+                    syncSecretReady = true
+                }
+                val shouldSyncAppState = hasBackendSession && state.backendSettings.email.isNotBlank()
+                appSyncBlocker = if (shouldSyncAppState && !syncSecretReady) "Sign in again to unlock Todo sync" else null
+                if (shouldSyncAppState && syncSecretReady) {
                     syncAppStateWithCloud(pushAfterPull = true, includeCalendarEvents = false)
+                } else if (appSyncBlocker != null) {
+                    patchBackend(
+                        state.backendSettings.copy(
+                            status = BackendStatus.Connected,
+                            lastError = appSyncBlocker
+                        )
+                    )
+                    notice = appSyncBlocker
                 }
                 if (hasBackendSession && state.backendSettings.supabaseUrl.isNotBlank() && state.backendSettings.feishuConnected) {
                     syncBackendCalendar()
                     notice = null
                 } else {
                     notice = null
+                }
+                if (appSyncBlocker != null) {
+                    patchBackend(
+                        state.backendSettings.copy(
+                            status = BackendStatus.Connected,
+                            lastError = appSyncBlocker
+                        )
+                    )
+                    notice = appSyncBlocker
                 }
             } catch (error: Throwable) {
                 if (error.needsCalendarAuthorization()) {
@@ -1485,7 +1538,7 @@ private fun TopHeader(
                 shadowElevation = 1.dp,
                 modifier = Modifier
                     .border(1.dp, ResolveColors.GlassStroke, RoundedCornerShape(999.dp))
-                    .clickable(enabled = !isSyncing && !todoSyncLocked) { onSync() }
+                    .clickable(enabled = !isSyncing) { onSync() }
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = if (compact) 8.dp else 10.dp, vertical = 6.dp),

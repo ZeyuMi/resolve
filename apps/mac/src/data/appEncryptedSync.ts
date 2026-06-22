@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import type { DecryptedItem, ItemPayload } from "@resolve/core";
 import { deriveVaultKeyFromPhrase } from "@resolve/crypto";
 import { SupabaseEncryptedSync, type ResolveState, type ResolveRemoteChangeKind } from "@resolve/sync";
 import type { BackendSettingsState, BackendSession } from "./resolveBackend";
@@ -36,9 +37,40 @@ function newestByUpdatedAt<T extends { meta: { id: string; updatedAt: string } }
   return Array.from(map.values());
 }
 
+function statusChangedAt(item: DecryptedItem) {
+  const payload = item.payload as ItemPayload;
+  return payload.statusChangedAt ?? (item.meta.status === "active" ? item.meta.createdAt : item.meta.updatedAt);
+}
+
+function mergeItem(existing: DecryptedItem | undefined, candidate: DecryptedItem) {
+  if (!existing) return candidate;
+  const newest = candidate.meta.updatedAt.localeCompare(existing.meta.updatedAt) >= 0 ? candidate : existing;
+  const statusWinner = statusChangedAt(candidate).localeCompare(statusChangedAt(existing)) >= 0 ? candidate : existing;
+  const statusTimestamp = statusChangedAt(statusWinner);
+  return {
+    ...newest,
+    meta: {
+      ...newest.meta,
+      status: statusWinner.meta.status
+    },
+    payload: {
+      ...(newest.payload as ItemPayload),
+      statusChangedAt: statusTimestamp
+    }
+  } satisfies DecryptedItem;
+}
+
+function newestItemsByUpdatedAt(left: DecryptedItem[], right: DecryptedItem[]) {
+  const map = new Map<string, DecryptedItem>();
+  [...left, ...right].forEach((item) => {
+    map.set(item.meta.id, mergeItem(map.get(item.meta.id), item));
+  });
+  return Array.from(map.values());
+}
+
 export function mergeEncryptedRemoteState(local: ResolveState, remote: ResolveState): ResolveState {
   return {
-    items: newestByUpdatedAt(local.items, remote.items).filter((item) => !item.meta.deletedAt),
+    items: newestItemsByUpdatedAt(local.items, remote.items).filter((item) => !item.meta.deletedAt),
     strategyThreads: newestByUpdatedAt(local.strategyThreads, remote.strategyThreads),
     calendarEvents: [
       ...local.calendarEvents.filter((event) => event.meta.provider === "feishu" && event.meta.externalEventId),

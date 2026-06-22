@@ -24,12 +24,16 @@ data class ResolveItem(
     val source: String = "android",
     val createdAt: Instant = Instant.now(),
     val updatedAt: Instant = Instant.now(),
+    val statusChangedAt: Instant = if (status == ItemStatus.Active) createdAt else updatedAt,
     val dueAt: Instant? = null,
     val strategyThreadId: String? = null,
     val sourceItemId: String? = null,
     val parentItemId: String? = null,
     val sortOrder: Double? = null
 )
+
+fun fallbackStatusChangedAt(status: ItemStatus, createdAt: Instant, updatedAt: Instant): Instant =
+    if (status == ItemStatus.Active) createdAt else updatedAt
 
 data class StrategyThread(
     val id: String = "thread_${UUID.randomUUID()}",

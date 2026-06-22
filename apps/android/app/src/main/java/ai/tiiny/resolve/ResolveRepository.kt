@@ -60,27 +60,35 @@ class ResolveRepository(context: Context) {
         .put("source", item.source)
         .put("createdAt", item.createdAt.toString())
         .put("updatedAt", item.updatedAt.toString())
+        .put("statusChangedAt", item.statusChangedAt.toString())
         .putOpt("dueAt", item.dueAt?.toString())
         .putOpt("strategyThreadId", item.strategyThreadId)
         .putOpt("sourceItemId", item.sourceItemId)
         .putOpt("parentItemId", item.parentItemId)
         .putOpt("sortOrder", item.sortOrder)
 
-    private fun decodeItem(json: JSONObject) = ResolveItem(
-        id = json.optString("id"),
-        type = enumValueOrDefault(json.optString("type"), ItemType.Task),
-        status = enumValueOrDefault(json.optString("status"), ItemStatus.Active),
-        title = json.optString("title"),
-        notes = json.optString("notes"),
-        source = json.optString("source", "android"),
-        createdAt = instantOrNow(json.optString("createdAt")),
-        updatedAt = instantOrNow(json.optString("updatedAt")),
-        dueAt = json.optNullableString("dueAt")?.let(::instantOrNull),
-        strategyThreadId = json.optNullableString("strategyThreadId"),
-        sourceItemId = json.optNullableString("sourceItemId"),
-        parentItemId = json.optNullableString("parentItemId"),
-        sortOrder = json.optNullableDouble("sortOrder")
-    )
+    private fun decodeItem(json: JSONObject): ResolveItem {
+        val status = enumValueOrDefault(json.optString("status"), ItemStatus.Active)
+        val createdAt = instantOrNow(json.optString("createdAt"))
+        val updatedAt = instantOrNow(json.optString("updatedAt"))
+        return ResolveItem(
+            id = json.optString("id"),
+            type = enumValueOrDefault(json.optString("type"), ItemType.Task),
+            status = status,
+            title = json.optString("title"),
+            notes = json.optString("notes"),
+            source = json.optString("source", "android"),
+            createdAt = createdAt,
+            updatedAt = updatedAt,
+            statusChangedAt = json.optNullableString("statusChangedAt")?.let(::instantOrNull)
+                ?: fallbackStatusChangedAt(status, createdAt, updatedAt),
+            dueAt = json.optNullableString("dueAt")?.let(::instantOrNull),
+            strategyThreadId = json.optNullableString("strategyThreadId"),
+            sourceItemId = json.optNullableString("sourceItemId"),
+            parentItemId = json.optNullableString("parentItemId"),
+            sortOrder = json.optNullableDouble("sortOrder")
+        )
+    }
 
     private fun encodeThread(thread: StrategyThread) = JSONObject()
         .put("id", thread.id)

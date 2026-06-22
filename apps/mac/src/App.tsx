@@ -1064,26 +1064,44 @@ export function App() {
   async function manualSyncNow() {
     if (manualSyncing) return;
     setManualSyncing(true);
+    let appSyncBlocker: string | undefined;
     try {
-      await withFreshAppSync(async (sync) => {
-        const localCursor = loadAppSyncCursor();
-        const changedSince = appSyncCursorWithLookback(localCursor);
-        const cursorAfterSync = nowIso();
-        const remote = await sync.pull({ includeCalendarEvents: false, changedSince });
-        const merged = normalizeState(mergeEncryptedRemoteState(stateRef.current, remote));
-        applyingRemoteStateRef.current = true;
-        stateRef.current = merged;
-        setState(merged);
-        queueLocalStateSave(merged, 80);
-        applyingRemoteStateRef.current = false;
-        await sync.push(normalizeState(stateRef.current), { changedSince });
-        saveAppSyncCursor(cursorAfterSync);
-        showToast("Synced app data");
-      });
+      appSyncBlocker = await appSyncBlockedMessage();
+      if (appSyncBlocker) {
+        handleSaveBackend({
+          ...backendSettingsRef.current,
+          status: "connected",
+          lastError: appSyncBlocker
+        });
+        showToast(appSyncBlocker);
+      } else {
+        await withFreshAppSync(async (sync) => {
+          const localCursor = loadAppSyncCursor();
+          const changedSince = appSyncCursorWithLookback(localCursor);
+          const cursorAfterSync = nowIso();
+          const remote = await sync.pull({ includeCalendarEvents: false, changedSince });
+          const merged = normalizeState(mergeEncryptedRemoteState(stateRef.current, remote));
+          applyingRemoteStateRef.current = true;
+          stateRef.current = merged;
+          setState(merged);
+          queueLocalStateSave(merged, 80);
+          applyingRemoteStateRef.current = false;
+          await sync.push(normalizeState(stateRef.current), { changedSince });
+          saveAppSyncCursor(cursorAfterSync);
+          showToast("Synced app data");
+        });
+      }
       if (loadBackendSession()) {
         await syncBackendCalendar();
       } else {
         await syncFeishuCalendar();
+      }
+      if (appSyncBlocker) {
+        handleSaveBackend({
+          ...backendSettingsRef.current,
+          status: "connected",
+          lastError: appSyncBlocker
+        });
       }
     } finally {
       setManualSyncing(false);
@@ -1129,19 +1147,26 @@ export function App() {
   }
 
   function updateTodo(itemId: string, patch: Partial<DecryptedItem["meta"]>) {
+    const timestamp = nowIso();
     persist({
       ...state,
       items: state.items.map((item) =>
-        item.meta.id === itemId
-          ? {
-              ...item,
-              meta: {
-                ...item.meta,
-                ...patch,
-                updatedAt: nowIso()
-              }
+        {
+          if (item.meta.id !== itemId) return item;
+          const statusChanged = patch.status && patch.status !== item.meta.status;
+          return {
+            ...item,
+            meta: {
+              ...item.meta,
+              ...patch,
+              updatedAt: timestamp
+            },
+            payload: {
+              ...(item.payload as ItemPayload),
+              ...(statusChanged ? { statusChangedAt: timestamp } : {})
             }
-          : item
+          };
+        }
       )
     });
   }
@@ -1182,6 +1207,10 @@ export function App() {
                 ...item.meta,
                 status: "archived",
                 updatedAt: timestamp
+              },
+              payload: {
+                ...(item.payload as ItemPayload),
+                statusChangedAt: timestamp
               }
             }
           : item
@@ -1220,6 +1249,10 @@ export function App() {
                 ...item.meta,
                 status: "archived",
                 updatedAt: timestamp
+              },
+              payload: {
+                ...(item.payload as ItemPayload),
+                statusChangedAt: timestamp
               }
             }
           : item
@@ -1256,6 +1289,7 @@ export function App() {
     payloadPatch: Partial<ItemPayload>
   ) {
     const latest = stateRef.current;
+    const timestamp = nowIso();
     persist({
       ...latest,
       items: latest.items.map((item) =>
@@ -1265,11 +1299,12 @@ export function App() {
               meta: {
                 ...item.meta,
                 ...metaPatch,
-                updatedAt: nowIso()
+                updatedAt: timestamp
               },
               payload: {
                 ...(item.payload as ItemPayload),
-                ...payloadPatch
+                ...payloadPatch,
+                ...(metaPatch.status && metaPatch.status !== item.meta.status ? { statusChangedAt: timestamp } : {})
               }
             }
           : item
@@ -1942,6 +1977,12 @@ export function App() {
   async function connectedBackendClient(forceRefresh = false) {
     const session = await ensureBackendSession(forceRefresh);
     return new ResolveBackendClient(backendSettingsRef.current, session);
+  }
+
+  async function appSyncBlockedMessage() {
+    if (!loadBackendSession() || !backendSettingsRef.current.email) return undefined;
+    const syncSecret = await loadSecureSyncSecret();
+    return syncSecret ? undefined : "Sign in again to unlock Todo sync";
   }
 
   async function withBackendClient<T>(operation: (client: ResolveBackendClient) => Promise<T>) {

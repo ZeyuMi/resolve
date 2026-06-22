@@ -55,6 +55,7 @@ export interface ItemPayload {
   content?: string;
   notes?: string;
   sortOrder?: number;
+  statusChangedAt?: string;
   attachments?: Array<{
     id: string;
     name: string;
