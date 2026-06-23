@@ -6087,15 +6087,20 @@ body {
 html,
 body,
 #root {
+  width: 100%;
+  height: 100%;
   min-height: 100%;
   background: var(--native-bg) !important;
+  overflow: hidden;
 }
 
 .app-shell {
+  height: 100vh !important;
   min-height: 100vh !important;
   grid-template-columns: var(--native-sidebar-width) minmax(0, 1fr) !important;
   background: var(--native-bg) !important;
   color: var(--native-text) !important;
+  overflow: hidden !important;
 }
 
 .focus-sidebar {
@@ -6228,6 +6233,7 @@ body,
 }
 
 .app-main {
+  height: 100vh !important;
   min-height: 100vh !important;
   padding: 0 !important;
   display: grid !important;
@@ -6286,6 +6292,7 @@ body,
 }
 
 .workspace {
+  height: 100% !important;
   min-height: 0 !important;
   padding: 0 !important;
   overflow: hidden !important;
@@ -6327,6 +6334,7 @@ body,
 /* Todo: Things-like list rows. */
 .todo-workspace {
   height: 100% !important;
+  min-height: 0 !important;
   display: grid !important;
   grid-template-columns: minmax(360px, 1fr) 0 !important;
   overflow: hidden !important;
@@ -6338,7 +6346,12 @@ body,
 
 .todo-list-pane {
   min-width: 0 !important;
-  overflow: auto !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  overscroll-behavior: contain !important;
+  -webkit-overflow-scrolling: touch !important;
   background: var(--native-bg) !important;
 }
 
