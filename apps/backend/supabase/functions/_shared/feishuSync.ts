@@ -90,15 +90,7 @@ const fullSyncPastDays = 3650 * 2;
 const fullSyncFutureDays = 3650;
 
 export async function syncFeishuForUser(userId: string): Promise<SyncResult> {
-  try {
-    return await syncFeishuForUserUnchecked(userId);
-  } catch (error) {
-    if (isFeishuAuthorizationRequiredError(error)) {
-      await markFeishuConnectionNeedsAuth(userId);
-      throw new FeishuAuthorizationRequiredError();
-    }
-    throw error;
-  }
+  return withFeishuAuthRecovery(userId, () => syncFeishuForUserUnchecked(userId));
 }
 
 async function syncFeishuForUserUnchecked(userId: string): Promise<SyncResult> {
@@ -455,15 +447,7 @@ export async function createFeishuEventForUser(
   userId: string,
   input: CreateFeishuServerEventInput & { calendarId?: string }
 ) {
-  try {
-    return await createFeishuEventForUserUnchecked(userId, input);
-  } catch (error) {
-    if (isFeishuAuthorizationRequiredError(error)) {
-      await markFeishuConnectionNeedsAuth(userId);
-      throw new FeishuAuthorizationRequiredError();
-    }
-    throw error;
-  }
+  return withFeishuAuthRecovery(userId, () => createFeishuEventForUserUnchecked(userId, input));
 }
 
 async function createFeishuEventForUserUnchecked(
@@ -508,15 +492,7 @@ export async function updateFeishuEventForUser(
   userId: string,
   input: UpdateFeishuServerEventInput & { calendarId: string; eventId: string }
 ) {
-  try {
-    return await updateFeishuEventForUserUnchecked(userId, input);
-  } catch (error) {
-    if (isFeishuAuthorizationRequiredError(error)) {
-      await markFeishuConnectionNeedsAuth(userId);
-      throw new FeishuAuthorizationRequiredError();
-    }
-    throw error;
-  }
+  return withFeishuAuthRecovery(userId, () => updateFeishuEventForUserUnchecked(userId, input));
 }
 
 async function updateFeishuEventForUserUnchecked(
@@ -559,15 +535,7 @@ export async function deleteFeishuEventForUser(
   userId: string,
   input: { calendarId: string; eventId: string }
 ) {
-  try {
-    return await deleteFeishuEventForUserUnchecked(userId, input);
-  } catch (error) {
-    if (isFeishuAuthorizationRequiredError(error)) {
-      await markFeishuConnectionNeedsAuth(userId);
-      throw new FeishuAuthorizationRequiredError();
-    }
-    throw error;
-  }
+  return withFeishuAuthRecovery(userId, () => deleteFeishuEventForUserUnchecked(userId, input));
 }
 
 async function deleteFeishuEventForUserUnchecked(
@@ -715,6 +683,49 @@ async function refreshTokenForUser(userId: string, client: FeishuServerClient, s
       throw new FeishuAuthorizationRequiredError();
     }
     throw error;
+  }
+}
+
+async function withFeishuAuthRecovery<T>(userId: string, operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (!isFeishuAuthorizationRequiredError(error)) {
+      throw error;
+    }
+    await refreshStoredTokenForUser(userId);
+    try {
+      return await operation();
+    } catch (retryError) {
+      if (isFeishuAuthorizationRequiredError(retryError)) {
+        await markFeishuConnectionNeedsAuth(userId);
+        throw new FeishuAuthorizationRequiredError();
+      }
+      throw retryError;
+    }
+  }
+}
+
+async function refreshStoredTokenForUser(userId: string) {
+  try {
+    const connection = await loadConnection(userId);
+    const config = await decryptConfig(connection);
+    const tokenSet = await decryptToken(connection);
+    const client = new FeishuServerClient(config, tokenSet);
+    const refreshed = await refreshTokenForUser(userId, client, tokenSet);
+    await saveToken(userId, refreshed);
+    await restPatch(
+      "resolve_feishu_connections",
+      `user_id=eq.${encodeFilter(userId)}`,
+      {
+        status: "connected",
+        updated_at: new Date().toISOString()
+      }
+    );
+    return refreshed;
+  } catch (refreshError) {
+    await markFeishuConnectionNeedsAuth(userId);
+    throw new FeishuAuthorizationRequiredError();
   }
 }
 
