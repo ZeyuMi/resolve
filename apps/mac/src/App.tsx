@@ -4794,7 +4794,7 @@ function calendarConnectionSummary(feishuSettings: FeishuSettingsState, backendS
   const lastSyncedAt = backendSettings.lastSyncedAt ?? feishuSettings.lastSyncedAt;
   const rawError = signedIn ? backendSettings.lastError ?? feishuSettings.lastError : undefined;
   const friendlyError = friendlyCalendarError(rawError);
-  const needsAuthorization = Boolean(rawError && /attention|authorization|auth|token|permission/i.test(rawError));
+  const needsAuthorization = isCalendarReauthorizationError(rawError);
   const hasSyncWarning = connected && Boolean(rawError && !needsAuthorization);
 
   if (connected) {
@@ -4835,10 +4835,15 @@ function friendlyCalendarError(error?: string) {
   if (/503|service unavailable|temporarily unavailable/i.test(error)) {
     return "Calendar sync is temporarily unavailable.";
   }
-  if (/attention|authorization|auth|token|permission/i.test(error)) {
+  if (isCalendarReauthorizationError(error)) {
     return calendarReauthorizationMessage;
   }
   return error;
+}
+
+function isCalendarReauthorizationError(error?: string) {
+  if (!error) return false;
+  return /calendar needs authorization|connect calendar again|needs reauthorization|reauthorization|authorization expired|missing feishu refresh token|missing feishu token set|calendar needs attention/i.test(error);
 }
 
 function SyncStatusBadge({

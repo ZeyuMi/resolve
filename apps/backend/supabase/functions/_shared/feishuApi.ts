@@ -127,7 +127,7 @@ export class FeishuServerClient {
         refresh_token: this.refreshToken
       })
     });
-    const tokenSet = await parseTokenResponse(response);
+    const tokenSet = await parseTokenResponse(response, { refreshTokenGrant: true });
     const nextTokenSet = {
       ...tokenSet,
       refreshToken: tokenSet.refreshToken ?? this.refreshToken
@@ -273,7 +273,7 @@ function isTokenFailure(message: string) {
     (normalized.includes("expired") || normalized.includes("invalid") || normalized.includes("unauthorized"));
 }
 
-async function parseTokenResponse(response: Response) {
+async function parseTokenResponse(response: Response, options: { refreshTokenGrant?: boolean } = {}) {
   const body = await response.json() as
     | {
         code?: number;
@@ -292,7 +292,11 @@ async function parseTokenResponse(response: Response) {
       };
 
   if (!response.ok) {
-    throw new Error(("msg" in body && body.msg) || `Feishu API failed with HTTP ${response.status}`);
+    const message = ("msg" in body && body.msg) || `Feishu API failed with HTTP ${response.status}`;
+    if (options.refreshTokenGrant && isRefreshTokenFailure(message)) {
+      throw new FeishuAuthorizationRequiredError();
+    }
+    throw new Error(message);
   }
 
   if ("access_token" in body && body.access_token) {
@@ -305,7 +309,23 @@ async function parseTokenResponse(response: Response) {
   if ("data" in body && body.data?.access_token) {
     return toTokenSet(body.data);
   }
-  throw new Error(("msg" in body && body.msg) || "Feishu token exchange failed.");
+  const message = ("msg" in body && body.msg) || "Feishu token exchange failed.";
+  if (options.refreshTokenGrant && isRefreshTokenFailure(message)) {
+    throw new FeishuAuthorizationRequiredError();
+  }
+  throw new Error(message);
+}
+
+function isRefreshTokenFailure(message: string) {
+  const normalized = message.toLowerCase();
+  return normalized.includes("refresh_token") ||
+    normalized.includes("refresh token") ||
+    normalized.includes("invalid_grant") ||
+    (normalized.includes("token") && (
+      normalized.includes("expired") ||
+      normalized.includes("invalid") ||
+      normalized.includes("revoked")
+    ));
 }
 
 function toTokenSet(data: { access_token: string; refresh_token?: string; expires_in?: number }) {

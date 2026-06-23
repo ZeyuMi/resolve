@@ -724,7 +724,7 @@ async function refreshStoredTokenForUser(userId: string) {
     );
     return refreshed;
   } catch (refreshError) {
-    if (isFeishuAuthorizationRequiredError(refreshError) || isFeishuTokenError(refreshError)) {
+    if (isFeishuAuthorizationRequiredError(refreshError)) {
       await markFeishuConnectionNeedsAuth(userId);
       throw new FeishuAuthorizationRequiredError();
     }

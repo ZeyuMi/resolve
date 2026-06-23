@@ -142,7 +142,8 @@ function isAuthError(error: unknown) {
     message.includes("invalid supabase session") ||
     message.includes("jwt") ||
     message.includes("invalid claim") ||
-    message.includes("token")
+    message.includes("invalid bearer") ||
+    message.includes("bearer token")
   );
 }
 
