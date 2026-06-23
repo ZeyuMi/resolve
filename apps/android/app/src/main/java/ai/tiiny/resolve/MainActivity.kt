@@ -386,7 +386,10 @@ private fun ResolveAndroidApp(
             val remote = withContext(Dispatchers.IO) {
                 client.pullState(includeCalendarEvents = includeCalendarEvents, changedSince = changedSince)
             }
-            val merged = mergeEncryptedRemoteState(localSnapshot, remote)
+            // A sync request can finish after the user has already added or edited local
+            // tasks. Merge into the latest in-memory state so stale snapshots never hide
+            // fresh local work until the next manual sync.
+            val merged = mergeEncryptedRemoteState(state, remote)
             applyingRemoteState = true
             persist(merged)
             applyingRemoteState = false
