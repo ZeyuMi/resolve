@@ -42,6 +42,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -298,6 +299,7 @@ private fun ResolveAndroidApp(
     var applyingRemoteState by remember { mutableStateOf(false) }
     var localSaveJob by remember { mutableStateOf<Job?>(null) }
     var todoScrollToTopSignal by remember { mutableStateOf(0) }
+    val todoListState = rememberLazyListState()
     val latestStateForDispose by rememberUpdatedState(state)
 
     fun queueLocalSave(next: ResolveState, delayMs: Long = 220L) {
@@ -310,9 +312,25 @@ private fun ResolveAndroidApp(
         }
     }
 
-    fun persist(next: ResolveState) {
+    fun persist(next: ResolveState, delayMs: Long = 220L) {
         state = next
-        queueLocalSave(next)
+        queueLocalSave(next, delayMs)
+    }
+
+    fun persistLatest(delayMs: Long = 220L, transform: (ResolveState) -> ResolveState) {
+        persist(transform(state), delayMs)
+    }
+
+    fun preserveTodoScrollAfterMutation() {
+        val anchorIndex = todoListState.firstVisibleItemIndex
+        val anchorOffset = todoListState.firstVisibleItemScrollOffset
+        scope.launch {
+            delay(80)
+            val total = todoListState.layoutInfo.totalItemsCount
+            if (total > 0) {
+                todoListState.scrollToItem(anchorIndex.coerceAtMost(total - 1), anchorOffset)
+            }
+        }
     }
 
     fun applyPendingQuickCaptures() {
@@ -523,18 +541,47 @@ private fun ResolveAndroidApp(
     fun deleteItemPermanently(item: ResolveItem) {
         val deletedIds = descendantsOf(state.items, item.id).map { it.id }.toMutableSet()
         deletedIds += item.id
-        persist(state.copy(items = state.items.filterNot { it.id in deletedIds }))
+        val timestamp = Instant.now()
+        persist(
+            state.copy(
+                items = state.items.map { candidate ->
+                    if (candidate.id in deletedIds) {
+                        candidate.copy(deletedAt = timestamp, updatedAt = timestamp)
+                    } else {
+                        candidate
+                    }
+                }
+            ),
+            delayMs = 0L
+        )
+        preserveTodoScrollAfterMutation()
         deleteRemoteItems(deletedIds)
         if (selectedTodoId == item.id) selectedTodoId = null
         notice = null
     }
 
     fun clearArchivedItems() {
-        val archivedIds = state.items.filter { it.status == ItemStatus.Archived }.map { it.id }.toMutableSet()
+        val archivedIds = state.items
+            .filter { it.status == ItemStatus.Archived && it.deletedAt == null }
+            .map { it.id }
+            .toMutableSet()
         archivedIds.toList().forEach { rootId ->
             descendantsOf(state.items, rootId).forEach { archivedIds += it.id }
         }
-        persist(state.copy(items = state.items.filterNot { it.id in archivedIds }))
+        val timestamp = Instant.now()
+        persist(
+            state.copy(
+                items = state.items.map { candidate ->
+                    if (candidate.id in archivedIds) {
+                        candidate.copy(deletedAt = timestamp, updatedAt = timestamp)
+                    } else {
+                        candidate
+                    }
+                }
+            ),
+            delayMs = 0L
+        )
+        preserveTodoScrollAfterMutation()
         deleteRemoteItems(archivedIds)
         notice = null
     }
@@ -563,8 +610,8 @@ private fun ResolveAndroidApp(
 
     fun reorderTodo(sourceId: String, targetId: String) {
         if (sourceId == targetId) return
-        val source = state.items.find { it.id == sourceId } ?: return
-        val target = state.items.find { it.id == targetId } ?: return
+        val source = state.items.find { it.id == sourceId && it.deletedAt == null } ?: return
+        val target = state.items.find { it.id == targetId && it.deletedAt == null } ?: return
         if (
             source.type != ItemType.Task ||
             target.type != ItemType.Task ||
@@ -578,6 +625,7 @@ private fun ResolveAndroidApp(
         val siblings = state.items
             .filter {
                 it.type == ItemType.Task &&
+                    it.deletedAt == null &&
                     it.status == ItemStatus.Active &&
                     it.parentItemId == source.parentItemId &&
                     it.strategyThreadId == source.strategyThreadId
@@ -630,22 +678,22 @@ private fun ResolveAndroidApp(
             val client = connectedBackendClient(forceRefresh)
             val syncedAt = withContext(Dispatchers.IO) { client.syncFeishuNow() }
             val remoteEvents = withContext(Dispatchers.IO) { client.listEvents(state.feishuSettings) }
-            persist(
-                state.copy(
-                    calendarEvents = mergeBackendCalendarEvents(state.calendarEvents, remoteEvents),
-                    backendSettings = state.backendSettings.copy(
+            persistLatest { current ->
+                current.copy(
+                    calendarEvents = mergeBackendCalendarEvents(current.calendarEvents, remoteEvents),
+                    backendSettings = current.backendSettings.copy(
                         status = BackendStatus.Connected,
                         feishuConnected = true,
                         lastSyncedAt = syncedAt,
                         lastError = null
                     ),
-                    feishuSettings = state.feishuSettings.copy(
+                    feishuSettings = current.feishuSettings.copy(
                         status = FeishuStatus.Connected,
                         lastSyncedAt = syncedAt,
                         lastError = null
                     )
                 )
-            )
+            }
         }
 
         try {
@@ -695,19 +743,19 @@ private fun ResolveAndroidApp(
                 }
             } catch (error: Throwable) {
                 if (error.needsCalendarAuthorization()) {
-                    persist(
-                        state.copy(
-                            backendSettings = state.backendSettings.copy(
+                    persistLatest { current ->
+                        current.copy(
+                            backendSettings = current.backendSettings.copy(
                                 status = BackendStatus.Connected,
                                 feishuConnected = false,
                                 lastError = "Calendar needs attention"
                             ),
-                            feishuSettings = state.feishuSettings.copy(
+                            feishuSettings = current.feishuSettings.copy(
                                 status = FeishuStatus.NotConnected,
                                 lastError = "Calendar needs attention"
                             )
                         )
-                    )
+                    }
                     notice = null
                 } else {
                     if (error.isTransientBackendError()) {
@@ -766,32 +814,33 @@ private fun ResolveAndroidApp(
                     val remote = withBackendClient { client ->
                         withContext(Dispatchers.IO) { client.createEvent(enrichedDraft) }
                     }
-                    persist(
-                        state.copy(
-                            calendarEvents = state.calendarEvents
+                    val syncedAt = Instant.now()
+                    persistLatest { current ->
+                        current.copy(
+                            calendarEvents = current.calendarEvents
                                 .filterNot { it.id == localEvent.id }
                                 .plus(remote)
                                 .sortedBy { it.startsAt },
-                            backendSettings = state.backendSettings.copy(lastSyncedAt = Instant.now(), lastError = null),
-                            feishuSettings = state.feishuSettings.copy(status = FeishuStatus.Connected, lastSyncedAt = Instant.now(), lastError = null)
+                            backendSettings = current.backendSettings.copy(lastSyncedAt = syncedAt, lastError = null),
+                            feishuSettings = current.feishuSettings.copy(status = FeishuStatus.Connected, lastSyncedAt = syncedAt, lastError = null)
                         )
-                    )
+                    }
                     notice = null
                 } catch (error: Throwable) {
                     if (error.needsCalendarAuthorization()) {
-                        persist(
-                            state.copy(
-                                backendSettings = state.backendSettings.copy(
+                        persistLatest { current ->
+                            current.copy(
+                                backendSettings = current.backendSettings.copy(
                                     status = BackendStatus.Connected,
                                     feishuConnected = false,
                                     lastError = "Calendar needs attention"
                                 ),
-                                feishuSettings = state.feishuSettings.copy(
+                                feishuSettings = current.feishuSettings.copy(
                                     status = FeishuStatus.NotConnected,
                                     lastError = "Calendar needs attention"
                                 )
                             )
-                        )
+                        }
                         notice = null
                     } else {
                         if (error.isTransientBackendError()) {
@@ -843,29 +892,30 @@ private fun ResolveAndroidApp(
                     val remote = withBackendClient { client ->
                         withContext(Dispatchers.IO) { client.updateEvent(event, draft) }
                     }
-                    persist(
-                        state.copy(
-                            calendarEvents = replaceCalendarEvent(state.calendarEvents, event, remote),
-                            backendSettings = state.backendSettings.copy(lastSyncedAt = Instant.now(), lastError = null),
-                            feishuSettings = state.feishuSettings.copy(status = FeishuStatus.Connected, lastSyncedAt = Instant.now(), lastError = null)
+                    val syncedAt = Instant.now()
+                    persistLatest { current ->
+                        current.copy(
+                            calendarEvents = replaceCalendarEvent(current.calendarEvents, event, remote),
+                            backendSettings = current.backendSettings.copy(lastSyncedAt = syncedAt, lastError = null),
+                            feishuSettings = current.feishuSettings.copy(status = FeishuStatus.Connected, lastSyncedAt = syncedAt, lastError = null)
                         )
-                    )
+                    }
                     selectedCalendarEvent = remote
                 } catch (error: Throwable) {
                     if (error.needsCalendarAuthorization()) {
-                        persist(
-                            state.copy(
-                                backendSettings = state.backendSettings.copy(
+                        persistLatest { current ->
+                            current.copy(
+                                backendSettings = current.backendSettings.copy(
                                     status = BackendStatus.Connected,
                                     feishuConnected = false,
                                     lastError = "Calendar needs attention"
                                 ),
-                                feishuSettings = state.feishuSettings.copy(
+                                feishuSettings = current.feishuSettings.copy(
                                     status = FeishuStatus.NotConnected,
                                     lastError = "Calendar needs attention"
                                 )
                             )
-                        )
+                        }
                         notice = null
                     } else {
                         if (error.isTransientBackendError()) {
@@ -918,48 +968,48 @@ private fun ResolveAndroidApp(
                 val syncedAt = withBackendClient { client ->
                     withContext(Dispatchers.IO) { client.deleteEvent(event) }
                 }
-                persist(
-                    state.copy(
-                        calendarEvents = replaceCalendarEvent(state.calendarEvents, hiddenEvent, hiddenEvent.copy(status = "remote_deleted")),
-                        backendSettings = state.backendSettings.copy(lastSyncedAt = syncedAt, lastError = null),
-                        feishuSettings = state.feishuSettings.copy(status = FeishuStatus.Connected, lastSyncedAt = syncedAt, lastError = null)
+                persistLatest { current ->
+                    current.copy(
+                        calendarEvents = replaceCalendarEvent(current.calendarEvents, hiddenEvent, hiddenEvent.copy(status = "remote_deleted")),
+                        backendSettings = current.backendSettings.copy(lastSyncedAt = syncedAt, lastError = null),
+                        feishuSettings = current.feishuSettings.copy(status = FeishuStatus.Connected, lastSyncedAt = syncedAt, lastError = null)
                     )
-                )
+                }
             } catch (error: Throwable) {
                 if (error.needsCalendarAuthorization()) {
-                    persist(
-                        state.copy(
-                            backendSettings = state.backendSettings.copy(
+                    persistLatest { current ->
+                        current.copy(
+                            backendSettings = current.backendSettings.copy(
                                 status = BackendStatus.Connected,
                                 feishuConnected = false,
                                 lastError = "Calendar needs attention"
                             ),
-                            feishuSettings = state.feishuSettings.copy(
+                            feishuSettings = current.feishuSettings.copy(
                                 status = FeishuStatus.NotConnected,
                                 lastError = "Calendar needs attention"
                             )
                         )
-                    )
+                    }
                 } else {
                     if (error.isTransientBackendError()) {
-                        persist(
-                            state.copy(
-                                calendarEvents = replaceCalendarEvent(state.calendarEvents, hiddenEvent, hiddenEvent),
-                                backendSettings = state.backendSettings.copy(
+                        persistLatest { current ->
+                            current.copy(
+                                calendarEvents = replaceCalendarEvent(current.calendarEvents, hiddenEvent, hiddenEvent),
+                                backendSettings = current.backendSettings.copy(
                                     status = BackendStatus.Connected,
                                     lastError = "Calendar is retrying in the background"
                                 ),
-                                feishuSettings = state.feishuSettings.copy(lastError = "Calendar is retrying in the background")
+                                feishuSettings = current.feishuSettings.copy(lastError = "Calendar is retrying in the background")
                             )
-                        )
+                        }
                     } else {
-                        persist(
-                            state.copy(
-                                calendarEvents = replaceCalendarEvent(state.calendarEvents, hiddenEvent, event.copy(status = "error")),
-                                backendSettings = state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message),
-                                feishuSettings = state.feishuSettings.copy(lastError = error.message)
+                        persistLatest { current ->
+                            current.copy(
+                                calendarEvents = replaceCalendarEvent(current.calendarEvents, hiddenEvent, event.copy(status = "error")),
+                                backendSettings = current.backendSettings.copy(status = BackendStatus.Error, lastError = error.message),
+                                feishuSettings = current.feishuSettings.copy(lastError = error.message)
                             )
-                        )
+                        }
                     }
                 }
             }
@@ -988,17 +1038,17 @@ private fun ResolveAndroidApp(
                         withBackendClient { client -> withContext(Dispatchers.IO) { client.status() } }
                     }.getOrNull()
                     if (status?.connected == true) {
-                        persist(
-                            state.copy(
-                                backendSettings = state.backendSettings.copy(
+                        persistLatest { current ->
+                            current.copy(
+                                backendSettings = current.backendSettings.copy(
                                     status = BackendStatus.Connected,
                                     feishuConnected = true,
                                     lastSyncedAt = status.lastServerSyncAt,
                                     lastError = null
                                 ),
-                                feishuSettings = state.feishuSettings.copy(status = FeishuStatus.Connected, lastError = null)
+                                feishuSettings = current.feishuSettings.copy(status = FeishuStatus.Connected, lastError = null)
                             )
-                        )
+                        }
                         tab = Tab.Calendar
                         notice = null
                         return@launch
@@ -1032,21 +1082,21 @@ private fun ResolveAndroidApp(
                 }.getOrNull()
                 val calendarConnected = connectorStatus?.connected == true
                 val calendarNeedsAuth = connectorStatus?.needsAuthorization == true || connectorStatus?.status == "needs_auth"
-                persist(
-                    state.copy(
-                        backendSettings = state.backendSettings.copy(
+                persistLatest { current ->
+                    current.copy(
+                        backendSettings = current.backendSettings.copy(
                             status = BackendStatus.Connected,
                             feishuConnected = calendarConnected,
-                            lastSyncedAt = connectorStatus?.lastServerSyncAt ?: state.backendSettings.lastSyncedAt,
+                            lastSyncedAt = connectorStatus?.lastServerSyncAt ?: current.backendSettings.lastSyncedAt,
                             lastError = if (calendarNeedsAuth) "Calendar needs attention" else null
                         ),
-                        feishuSettings = state.feishuSettings.copy(
+                        feishuSettings = current.feishuSettings.copy(
                             status = if (calendarConnected) FeishuStatus.Connected else FeishuStatus.NotConnected,
-                            lastSyncedAt = connectorStatus?.lastServerSyncAt ?: state.feishuSettings.lastSyncedAt,
+                            lastSyncedAt = connectorStatus?.lastServerSyncAt ?: current.feishuSettings.lastSyncedAt,
                             lastError = if (calendarNeedsAuth) "Calendar needs attention" else null
                         )
                     )
-                )
+                }
                 notice = null
             } catch (error: Throwable) {
                 patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
@@ -1090,21 +1140,21 @@ private fun ResolveAndroidApp(
             runCatching {
                 val status = withBackendClient { client -> withContext(Dispatchers.IO) { client.status() } }
                 val calendarNeedsAuth = status.needsAuthorization || status.status == "needs_auth"
-                persist(
-                    state.copy(
-                        backendSettings = state.backendSettings.copy(
+                persistLatest { current ->
+                    current.copy(
+                        backendSettings = current.backendSettings.copy(
                             status = BackendStatus.Connected,
                             feishuConnected = status.connected,
-                            lastSyncedAt = status.lastServerSyncAt ?: state.backendSettings.lastSyncedAt,
+                            lastSyncedAt = status.lastServerSyncAt ?: current.backendSettings.lastSyncedAt,
                             lastError = if (calendarNeedsAuth) "Calendar needs attention" else null
                         ),
-                        feishuSettings = state.feishuSettings.copy(
+                        feishuSettings = current.feishuSettings.copy(
                             status = if (status.connected) FeishuStatus.Connected else FeishuStatus.NotConnected,
-                            lastSyncedAt = status.lastServerSyncAt ?: state.feishuSettings.lastSyncedAt,
+                            lastSyncedAt = status.lastServerSyncAt ?: current.feishuSettings.lastSyncedAt,
                             lastError = if (calendarNeedsAuth) "Calendar needs attention" else null
                         )
                     )
-                )
+                }
             }.onFailure { error ->
                 if (error !is CancellationException) {
                     patchBackend(state.backendSettings.copy(status = BackendStatus.Error, lastError = error.message))
@@ -1139,37 +1189,37 @@ private fun ResolveAndroidApp(
                     try {
                         val status = withBackendClient { client -> withContext(Dispatchers.IO) { client.status() } }
                         val calendarNeedsAuth = status.needsAuthorization || status.status == "needs_auth"
-                        persist(
-                            state.copy(
-                                backendSettings = state.backendSettings.copy(
+                        persistLatest { current ->
+                            current.copy(
+                                backendSettings = current.backendSettings.copy(
                                     status = BackendStatus.Connected,
                                     feishuConnected = status.connected,
-                                    lastSyncedAt = status.lastServerSyncAt ?: state.backendSettings.lastSyncedAt,
+                                    lastSyncedAt = status.lastServerSyncAt ?: current.backendSettings.lastSyncedAt,
                                     lastError = if (calendarNeedsAuth) "Calendar needs attention" else null
                                 ),
-                                feishuSettings = state.feishuSettings.copy(
+                                feishuSettings = current.feishuSettings.copy(
                                     status = if (status.connected) FeishuStatus.Connected else FeishuStatus.NotConnected,
-                                    lastSyncedAt = status.lastServerSyncAt ?: state.feishuSettings.lastSyncedAt,
+                                    lastSyncedAt = status.lastServerSyncAt ?: current.feishuSettings.lastSyncedAt,
                                     lastError = if (calendarNeedsAuth) "Calendar needs attention" else null
                                 )
                             )
-                        )
+                        }
                         notice = null
                     } catch (error: Throwable) {
                         if (error.needsCalendarAuthorization()) {
-                            persist(
-                                state.copy(
-                                    backendSettings = state.backendSettings.copy(
+                            persistLatest { current ->
+                                current.copy(
+                                    backendSettings = current.backendSettings.copy(
                                         status = BackendStatus.Connected,
                                         feishuConnected = false,
                                         lastError = "Calendar needs attention"
                                     ),
-                                    feishuSettings = state.feishuSettings.copy(
+                                    feishuSettings = current.feishuSettings.copy(
                                         status = FeishuStatus.NotConnected,
                                         lastError = "Calendar needs attention"
                                     )
                                 )
-                            )
+                            }
                             notice = null
                         } else {
                             if (error.isTransientBackendError()) {
@@ -1342,12 +1392,12 @@ private fun ResolveAndroidApp(
                     Crossfade(targetState = pageKey, animationSpec = tween(180), label = "resolve-page") {
                     when (tab) {
                         Tab.Todo -> {
-                            val selectedTodo = state.items.find { it.id == selectedTodoId }
+                            val selectedTodo = state.items.find { it.id == selectedTodoId && it.deletedAt == null }
                             if (selectedTodo != null) {
                                 TodoDetailPage(
                                     item = selectedTodo,
                                     threads = state.threads,
-                                    subtasks = descendantsOf(state.items, selectedTodo.id),
+                                    subtasks = descendantsOf(state.items, selectedTodo.id).filter { it.deletedAt == null },
                                     onClose = { closeTodoDetail() },
                                     onUpdate = { updateItem(it) },
                                     onToggleSubtask = { item ->
@@ -1374,6 +1424,7 @@ private fun ResolveAndroidApp(
                             } else {
                                 TodoScreen(
                                     state = state,
+                                    listState = todoListState,
                                     showCompleted = showCompleted,
                                     showArchived = showArchived,
                                     scrollToTopSignal = todoScrollToTopSignal,
@@ -1868,6 +1919,7 @@ private fun CompactInputField(
 @Composable
 private fun TodoScreen(
     state: ResolveState,
+    listState: LazyListState,
     showCompleted: Boolean,
     showArchived: Boolean,
     scrollToTopSignal: Int,
@@ -1881,7 +1933,7 @@ private fun TodoScreen(
     onClearArchived: () -> Unit,
     onReorder: (String, String) -> Unit
 ) {
-    val tasks = state.items.filter { it.type == ItemType.Task }
+    val tasks = state.items.filter { it.type == ItemType.Task && it.deletedAt == null }
     val activeIds = tasks.filter { it.status == ItemStatus.Active }.map { it.id }.toSet()
     val completedIds = tasks.filter { it.status == ItemStatus.Done }.map { it.id }.toSet()
     val archivedIds = tasks.filter { it.status == ItemStatus.Archived }.map { it.id }.toSet()
@@ -1913,8 +1965,6 @@ private fun TodoScreen(
     val orphanStrategyGroups = rootsByStrategy
         .filterKeys { it.isNotBlank() && state.threads.none { thread -> thread.id == it } }
         .map { (threadId, roots) -> StrategyThread(id = threadId, title = "Strategy") to roots }
-    val listState = rememberLazyListState()
-
     LaunchedEffect(scrollToTopSignal) {
         if (scrollToTopSignal > 0) {
             listState.scrollToItem(0)
@@ -3285,7 +3335,7 @@ private fun StrategyScreen(
         .filter { !it.status.equals("archived", ignoreCase = true) }
         .sortedWith(strategyThreadComparator)
     val opened = activeThreads.find { it.id == openedThreadId }
-    val allTasks = state.items.filter { it.type == ItemType.Task }
+    val allTasks = state.items.filter { it.type == ItemType.Task && it.deletedAt == null }
 
     if (showNewThread) {
         NewStrategyDirectionPage(
@@ -3315,7 +3365,7 @@ private fun StrategyScreen(
     }
 
     val strategyTasks = state.items
-        .filter { it.strategyThreadId == opened.id && it.type == ItemType.Task && it.status != ItemStatus.Archived }
+        .filter { it.strategyThreadId == opened.id && it.type == ItemType.Task && it.deletedAt == null && it.status != ItemStatus.Archived }
         .sortedWith(
             Comparator { first, second ->
                 val statusOrder = compareValues(first.status == ItemStatus.Done, second.status == ItemStatus.Done)
@@ -3868,13 +3918,14 @@ private fun ArchiveDisclosureRow(count: Int, open: Boolean, onClick: () -> Unit)
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .height(52.dp)
+            .clickable(onClick = onClick)
             .padding(top = 2.dp),
         horizontalArrangement = Arrangement.End
     ) {
         Surface(
             color = if (open) ResolveColors.GlassControl else Color.Transparent,
-            shape = RoundedCornerShape(999.dp),
-            modifier = Modifier.clickable(onClick = onClick)
+            shape = RoundedCornerShape(999.dp)
         ) {
             Row(
                 modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),

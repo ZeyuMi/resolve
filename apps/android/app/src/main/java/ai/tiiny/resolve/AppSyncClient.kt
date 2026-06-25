@@ -275,7 +275,7 @@ fun mergeEncryptedRemoteState(local: ResolveState, remote: ResolveState): Resolv
     val localServerCalendars = local.calendarEvents.filter { it.provider == "feishu" && it.externalEventId != null }
     val localCalendars = local.calendarEvents.filter { it.provider != "feishu" || it.externalEventId == null }
     return local.copy(
-        items = items.values.filter { it.deletedAt == null }.toList(),
+        items = items.values.toList(),
         threads = threads.values.toList(),
         calendarEvents = normalizeCalendarEvents(localServerCalendars + newestCalendarById(localCalendars + remoteLocalCalendars))
     )
