@@ -715,6 +715,7 @@ export function App() {
   });
   const [tab, setTab] = useState<Tab>("todo");
   const [captureText, setCaptureText] = useState("");
+  const [captureStrategyId, setCaptureStrategyId] = useState("");
   const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [feishuSettings, setFeishuSettings] = useState(loadFeishuSettings);
@@ -1136,7 +1137,7 @@ export function App() {
   function handleCapture() {
     const title = captureText.trim();
     if (!title) return;
-    const todo = createTodoItem({ title });
+    const todo = createTodoItem({ title, strategyThreadId: captureStrategyId || undefined });
     persist({
       ...state,
       items: [todo, ...state.items]
@@ -2384,9 +2385,11 @@ export function App() {
               selectedTodo={selectedTodo}
               selectedTodoSubtasks={selectedTodoSubtasks}
               captureValue={captureText}
+              captureStrategyId={captureStrategyId}
               showCompleted={showCompleted}
               showArchived={showArchived}
               onCaptureChange={setCaptureText}
+              onCaptureStrategy={setCaptureStrategyId}
               onCaptureSave={handleCapture}
               onOpenCalendar={openCalendarDraft}
               onAttachStrategy={attachTodoToStrategy}
@@ -2502,10 +2505,22 @@ export function App() {
           )}
         </section>
       </main>
-      {tab === "todo" && <MobileCaptureBar value={captureText} onChange={setCaptureText} onSave={handleCapture} />}
+      {tab === "todo" && (
+        <MobileCaptureBar
+          value={captureText}
+          threads={strategyThreads}
+          selectedThreadId={captureStrategyId}
+          onThread={setCaptureStrategyId}
+          onChange={setCaptureText}
+          onSave={handleCapture}
+        />
+      )}
       <QuickCaptureOverlay
         open={quickCaptureOpen}
         value={captureText}
+        threads={strategyThreads}
+        selectedThreadId={captureStrategyId}
+        onThread={setCaptureStrategyId}
         onChange={setCaptureText}
         onSave={handleCapture}
         onClose={() => setQuickCaptureOpen(false)}
@@ -2572,13 +2587,19 @@ function ResolveMark() {
 
 function CaptureBox({
   value,
+  threads,
+  selectedThreadId,
   onChange,
+  onThread,
   onSave,
   disabled = false,
   variant = "panel"
 }: {
   value: string;
+  threads: DecryptedStrategyThread[];
+  selectedThreadId: string;
   onChange: (value: string) => void;
+  onThread: (threadId: string) => void;
   onSave: () => void;
   disabled?: boolean;
   variant?: "panel" | "todo-row";
@@ -2607,6 +2628,12 @@ function CaptureBox({
         rows={1}
       />
       <div className="capture-actions">
+        <StrategyCaptureSelect
+          threads={threads}
+          selectedThreadId={selectedThreadId}
+          onThread={onThread}
+          disabled={disabled}
+        />
         <button className="primary-button" onClick={onSave} disabled={disabled}>
           <Send size={16} />
           Save
@@ -2618,10 +2645,16 @@ function CaptureBox({
 
 function MobileCaptureBar({
   value,
+  threads,
+  selectedThreadId,
+  onThread,
   onChange,
   onSave
 }: {
   value: string;
+  threads: DecryptedStrategyThread[];
+  selectedThreadId: string;
+  onThread: (threadId: string) => void;
   onChange: (value: string) => void;
   onSave: () => void;
 }) {
@@ -2649,6 +2682,7 @@ function MobileCaptureBar({
         }}
         placeholder="记一下..."
       />
+      <StrategyCaptureSelect threads={threads} selectedThreadId={selectedThreadId} onThread={onThread} compact />
       <button className="primary-button" aria-label="Save capture" type="submit">
         <Send size={16} />
       </button>
@@ -2659,12 +2693,18 @@ function MobileCaptureBar({
 function QuickCaptureOverlay({
   open,
   value,
+  threads,
+  selectedThreadId,
+  onThread,
   onChange,
   onSave,
   onClose
 }: {
   open: boolean;
   value: string;
+  threads: DecryptedStrategyThread[];
+  selectedThreadId: string;
+  onThread: (threadId: string) => void;
   onChange: (value: string) => void;
   onSave: () => void;
   onClose: () => void;
@@ -2703,6 +2743,7 @@ function QuickCaptureOverlay({
           placeholder="记一下..."
         />
         <div className="quick-capture-actions">
+          <StrategyCaptureSelect threads={threads} selectedThreadId={selectedThreadId} onThread={onThread} />
           <button className="icon-button" onClick={onClose} aria-label="Close quick capture">
             <X size={16} />
           </button>
@@ -2712,6 +2753,39 @@ function QuickCaptureOverlay({
         </div>
       </section>
     </div>
+  );
+}
+
+function StrategyCaptureSelect({
+  threads,
+  selectedThreadId,
+  onThread,
+  disabled = false,
+  compact = false
+}: {
+  threads: DecryptedStrategyThread[];
+  selectedThreadId: string;
+  onThread: (threadId: string) => void;
+  disabled?: boolean;
+  compact?: boolean;
+}) {
+  const activeThreads = threads.filter((thread) => thread.meta.status !== "archived");
+
+  return (
+    <select
+      className={`capture-strategy-select ${compact ? "compact" : ""}`}
+      value={selectedThreadId}
+      disabled={disabled}
+      aria-label="选择所属战略"
+      onChange={(event) => onThread(event.target.value)}
+    >
+      <option value="">No strategy</option>
+      {activeThreads.map((thread) => (
+        <option key={thread.meta.id} value={thread.meta.id}>
+          {thread.payload.title}
+        </option>
+      ))}
+    </select>
   );
 }
 
@@ -2802,9 +2876,11 @@ function TodoView({
   selectedTodo,
   selectedTodoSubtasks,
   captureValue,
+  captureStrategyId,
   showCompleted,
   showArchived,
   onCaptureChange,
+  onCaptureStrategy,
   onCaptureSave,
   onOpenCalendar,
   onAttachStrategy,
@@ -2833,9 +2909,11 @@ function TodoView({
   selectedTodo?: DecryptedItem;
   selectedTodoSubtasks: DecryptedItem[];
   captureValue: string;
+  captureStrategyId: string;
   showCompleted: boolean;
   showArchived: boolean;
   onCaptureChange: (value: string) => void;
+  onCaptureStrategy: (threadId: string) => void;
   onCaptureSave: () => void;
   onOpenCalendar: (todo: DecryptedItem) => void;
   onAttachStrategy: (todoId: string, threadId: string) => void;
@@ -2990,7 +3068,15 @@ function TodoView({
   return (
     <div className={`todo-workspace ${selectedTodo ? "has-detail" : ""}`}>
       <div className="todo-list-pane">
-        <CaptureBox value={captureValue} onChange={onCaptureChange} onSave={onCaptureSave} variant="todo-row" />
+        <CaptureBox
+          value={captureValue}
+          threads={threads}
+          selectedThreadId={captureStrategyId}
+          onChange={onCaptureChange}
+          onThread={onCaptureStrategy}
+          onSave={onCaptureSave}
+          variant="todo-row"
+        />
         <div className="section-title-row">
           <div>
             <h2>Active</h2>

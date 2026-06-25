@@ -272,6 +272,7 @@ private fun ResolveAndroidApp(
     val quickCaptureEventVersion = ResolveQuickCaptureEvents.version
     var tab by rememberSaveable { mutableStateOf(Tab.Todo) }
     var capture by rememberSaveable { mutableStateOf(initialCapture) }
+    var captureStrategyId by rememberSaveable { mutableStateOf("") }
     var notice by remember { mutableStateOf<String?>(null) }
     var selectedTodoId by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedThreadId by rememberSaveable { mutableStateOf(state.threads.firstOrNull()?.id.orEmpty()) }
@@ -654,6 +655,7 @@ private fun ResolveAndroidApp(
             createdAt = timestamp,
             updatedAt = timestamp,
             statusChangedAt = timestamp,
+            strategyThreadId = captureStrategyId.ifBlank { null },
             sortOrder = -timestamp.toEpochMilli().toDouble()
         )
         persist(state.copy(items = listOf(item) + state.items))
@@ -1361,7 +1363,14 @@ private fun ResolveAndroidApp(
                     Spacer(Modifier.height(if (tab == Tab.Calendar) 4.dp else 10.dp))
                 }
                 if (tab == Tab.Todo && selectedTodoId == null) {
-                    CaptureBox(value = capture, onChange = { capture = it }, onSave = { saveCapture() })
+                    CaptureBox(
+                        value = capture,
+                        onChange = { capture = it },
+                        threads = state.threads.filter { !it.status.equals("archived", ignoreCase = true) }.sortedWith(strategyThreadComparator),
+                        selectedThreadId = captureStrategyId,
+                        onThread = { captureStrategyId = it },
+                        onSave = { saveCapture() }
+                    )
                     Spacer(Modifier.height(12.dp))
                 }
                 val pageKey = listOf(
@@ -1801,8 +1810,17 @@ private fun TopHeader(
 }
 
 @Composable
-private fun CaptureBox(value: String, onChange: (String) -> Unit, onSave: () -> Unit) {
+private fun CaptureBox(
+    value: String,
+    onChange: (String) -> Unit,
+    threads: List<StrategyThread>,
+    selectedThreadId: String,
+    onThread: (String) -> Unit,
+    onSave: () -> Unit
+) {
     val shape = RoundedCornerShape(28.dp)
+    var strategyMenuOpen by remember { mutableStateOf(false) }
+    val selectedThread = threads.find { it.id == selectedThreadId }
     Surface(
         color = ResolveColors.GlassStrong,
         shape = shape,
@@ -1818,32 +1836,75 @@ private fun CaptureBox(value: String, onChange: (String) -> Unit, onSave: () -> 
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Icon(Icons.Filled.Add, contentDescription = null, tint = ResolveColors.Muted, modifier = Modifier.size(22.dp))
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(40.dp),
-                contentAlignment = Alignment.CenterStart
-            ) {
-                BasicTextField(
-                    value = value,
-                    onValueChange = onChange,
-                    singleLine = true,
-                    textStyle = TextStyle(
-                        color = ResolveColors.Text,
-                        fontSize = ResolveType.Body,
-                        lineHeight = 20.sp,
-                        platformStyle = PlatformTextStyle(includeFontPadding = false)
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                if (value.isBlank()) {
-                    Text(
-                        "记一下",
-                        color = ResolveColors.Muted,
-                        fontSize = ResolveType.Body,
-                        lineHeight = 20.sp,
-                        style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(30.dp),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    BasicTextField(
+                        value = value,
+                        onValueChange = onChange,
+                        singleLine = true,
+                        textStyle = TextStyle(
+                            color = ResolveColors.Text,
+                            fontSize = ResolveType.Body,
+                            lineHeight = 20.sp,
+                            platformStyle = PlatformTextStyle(includeFontPadding = false)
+                        ),
+                        modifier = Modifier.fillMaxWidth()
                     )
+                    if (value.isBlank()) {
+                        Text(
+                            "记一下",
+                            color = ResolveColors.Muted,
+                            fontSize = ResolveType.Body,
+                            lineHeight = 20.sp,
+                            style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false))
+                        )
+                    }
+                }
+                Box {
+                    Surface(
+                        color = ResolveColors.GlassControl,
+                        shape = RoundedCornerShape(999.dp),
+                        onClick = { strategyMenuOpen = true }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(Icons.Filled.Psychology, contentDescription = null, tint = ResolveColors.Muted, modifier = Modifier.size(13.dp))
+                            Text(
+                                selectedThread?.title ?: "No strategy",
+                                color = if (selectedThread == null) ResolveColors.Muted else ResolveColors.Strategy,
+                                fontSize = ResolveType.Caption,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Icon(Icons.Filled.KeyboardArrowDown, contentDescription = null, tint = ResolveColors.Muted, modifier = Modifier.size(14.dp))
+                        }
+                    }
+                    DropdownMenu(expanded = strategyMenuOpen, onDismissRequest = { strategyMenuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text("No strategy", fontSize = ResolveType.BodySmall) },
+                            onClick = {
+                                onThread("")
+                                strategyMenuOpen = false
+                            }
+                        )
+                        threads.forEach { thread ->
+                            DropdownMenuItem(
+                                text = { Text(thread.title, fontSize = ResolveType.BodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                onClick = {
+                                    onThread(thread.id)
+                                    strategyMenuOpen = false
+                                }
+                            )
+                        }
+                    }
                 }
             }
             Surface(
