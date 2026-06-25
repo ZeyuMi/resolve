@@ -164,7 +164,7 @@ async function statusForUser(userId: string) {
   const hasGlobalConfig = Boolean(globalFeishuConfig());
   const status = row?.status ?? "not_connected";
   const hasToken = Boolean(row?.server_encrypted_token_set);
-  const needsAuthorization = status === "needs_auth" || status === "not_connected" || !hasToken;
+  const needsAuthorization = status === "not_connected" || !hasToken;
   return {
     configured: Boolean(row?.server_encrypted_config) || hasGlobalConfig,
     connected: hasToken && !needsAuthorization,

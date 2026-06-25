@@ -23,7 +23,12 @@ Deno.serve(async (request) => {
 
   const connections = await restSelect<{ user_id: string }>(
     "resolve_feishu_connections",
-    "select=user_id&mode=eq.server_connector_opt_in&status=eq.connected&server_encrypted_token_set=not.is.null"
+    [
+      "select=user_id",
+      "mode=eq.server_connector_opt_in",
+      "status=neq.not_connected",
+      "server_encrypted_token_set=not.is.null"
+    ].join("&")
   );
   const results = [];
   for (const connection of connections) {

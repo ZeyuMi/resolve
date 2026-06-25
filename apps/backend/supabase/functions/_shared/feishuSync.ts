@@ -764,6 +764,8 @@ export async function markFeishuConnectionNeedsAuth(userId: string) {
     `user_id=eq.${encodeFilter(userId)}`,
     {
       status: "needs_auth",
+      server_encrypted_token_set: null,
+      server_token_nonce: null,
       updated_at: updatedAt
     }
   );
