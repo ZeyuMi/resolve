@@ -6993,3 +6993,13 @@ body,
 .app-shell.tab-todo .section-title-row {
   padding-top: 12px !important;
 }
+
+/* Keep the sidebar mark visible on the light macOS source list. */
+.brand-mark {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.brand-mark svg circle {
+  fill: #2f66dd !important;
+}
