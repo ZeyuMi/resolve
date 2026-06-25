@@ -299,6 +299,7 @@ private fun ResolveAndroidApp(
     var applyingRemoteState by remember { mutableStateOf(false) }
     var localSaveJob by remember { mutableStateOf<Job?>(null) }
     var todoScrollToTopSignal by remember { mutableStateOf(0) }
+    var todoKeepNearArchiveSignal by remember { mutableStateOf(0) }
     val todoListState = rememberLazyListState()
     val latestStateForDispose by rememberUpdatedState(state)
 
@@ -319,18 +320,6 @@ private fun ResolveAndroidApp(
 
     fun persistLatest(delayMs: Long = 220L, transform: (ResolveState) -> ResolveState) {
         persist(transform(state), delayMs)
-    }
-
-    fun preserveTodoScrollAfterMutation() {
-        val anchorIndex = todoListState.firstVisibleItemIndex
-        val anchorOffset = todoListState.firstVisibleItemScrollOffset
-        scope.launch {
-            delay(80)
-            val total = todoListState.layoutInfo.totalItemsCount
-            if (total > 0) {
-                todoListState.scrollToItem(anchorIndex.coerceAtMost(total - 1), anchorOffset)
-            }
-        }
     }
 
     fun applyPendingQuickCaptures() {
@@ -554,7 +543,7 @@ private fun ResolveAndroidApp(
             ),
             delayMs = 0L
         )
-        preserveTodoScrollAfterMutation()
+        todoKeepNearArchiveSignal += 1
         deleteRemoteItems(deletedIds)
         if (selectedTodoId == item.id) selectedTodoId = null
         notice = null
@@ -581,7 +570,7 @@ private fun ResolveAndroidApp(
             ),
             delayMs = 0L
         )
-        preserveTodoScrollAfterMutation()
+        todoKeepNearArchiveSignal += 1
         deleteRemoteItems(archivedIds)
         notice = null
     }
@@ -1428,6 +1417,7 @@ private fun ResolveAndroidApp(
                                     showCompleted = showCompleted,
                                     showArchived = showArchived,
                                     scrollToTopSignal = todoScrollToTopSignal,
+                                    keepNearArchiveSignal = todoKeepNearArchiveSignal,
                                     onToggleDone = { item ->
                                         updateItem(item.copy(status = if (item.status == ItemStatus.Done) ItemStatus.Active else ItemStatus.Done))
                                     },
@@ -1923,6 +1913,7 @@ private fun TodoScreen(
     showCompleted: Boolean,
     showArchived: Boolean,
     scrollToTopSignal: Int,
+    keepNearArchiveSignal: Int,
     onToggleDone: (ResolveItem) -> Unit,
     onRestore: (ResolveItem) -> Unit,
     onArchive: (ResolveItem) -> Unit,
@@ -1968,6 +1959,21 @@ private fun TodoScreen(
     LaunchedEffect(scrollToTopSignal) {
         if (scrollToTopSignal > 0) {
             listState.scrollToItem(0)
+        }
+    }
+
+    LaunchedEffect(keepNearArchiveSignal, archived.size, showArchived) {
+        if (keepNearArchiveSignal > 0) {
+            delay(120)
+            val total = listState.layoutInfo.totalItemsCount
+            if (total > 0) {
+                val archiveControlIndex = if (showArchived && archived.isNotEmpty()) {
+                    total - archived.size - 1
+                } else {
+                    total - 1
+                }
+                listState.scrollToItem(archiveControlIndex.coerceIn(0, total - 1))
+            }
         }
     }
 
