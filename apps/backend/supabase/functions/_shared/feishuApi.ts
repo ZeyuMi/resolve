@@ -9,6 +9,7 @@ export interface FeishuTokenSet {
   accessToken: string;
   refreshToken?: string;
   expiresAt?: string;
+  refreshExpiresAt?: string;
 }
 
 export class FeishuAuthorizationRequiredError extends Error {
@@ -66,6 +67,7 @@ const defaultApiBaseUrl = "https://open.feishu.cn/open-apis";
 
 export function buildFeishuAuthorizeUrl(config: Pick<FeishuServerConfig, "appId" | "redirectUri">, state: string) {
   const scope = [
+    "offline_access",
     "calendar:calendar",
     "calendar:calendar:readonly",
     "calendar:calendar.event:read",
@@ -282,12 +284,14 @@ async function parseTokenResponse(response: Response, options: { refreshTokenGra
           access_token: string;
           refresh_token?: string;
           expires_in?: number;
+          refresh_token_expires_in?: number;
         };
       }
     | {
         access_token?: string;
         refresh_token?: string;
         expires_in?: number;
+        refresh_token_expires_in?: number;
         msg?: string;
       };
 
@@ -303,7 +307,8 @@ async function parseTokenResponse(response: Response, options: { refreshTokenGra
     return toTokenSet({
       access_token: body.access_token,
       refresh_token: body.refresh_token,
-      expires_in: body.expires_in
+      expires_in: body.expires_in,
+      refresh_token_expires_in: body.refresh_token_expires_in
     });
   }
   if ("data" in body && body.data?.access_token) {
@@ -328,11 +333,19 @@ function isRefreshTokenFailure(message: string) {
     ));
 }
 
-function toTokenSet(data: { access_token: string; refresh_token?: string; expires_in?: number }) {
+function toTokenSet(data: {
+  access_token: string;
+  refresh_token?: string;
+  expires_in?: number;
+  refresh_token_expires_in?: number;
+}) {
   return {
     accessToken: data.access_token,
     refreshToken: data.refresh_token,
-    expiresAt: data.expires_in ? new Date(Date.now() + data.expires_in * 1000).toISOString() : undefined
+    expiresAt: data.expires_in ? new Date(Date.now() + data.expires_in * 1000).toISOString() : undefined,
+    refreshExpiresAt: data.refresh_token_expires_in
+      ? new Date(Date.now() + data.refresh_token_expires_in * 1000).toISOString()
+      : undefined
   };
 }
 

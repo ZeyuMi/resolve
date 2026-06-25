@@ -3,6 +3,7 @@ package ai.tiiny.resolve
 data class FeishuScope(val key: String, val label: String)
 
 val FeishuCalendarScopes = listOf(
+    FeishuScope("offline_access", "离线访问已授权数据"),
     FeishuScope("calendar:calendar:readonly", "读取主日历"),
     FeishuScope("calendar:calendar", "管理日历"),
     FeishuScope("calendar:event:readonly", "读取日程列表"),

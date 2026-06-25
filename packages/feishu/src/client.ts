@@ -200,6 +200,7 @@ async function parseFeishuTokenResponse(response: Response) {
         access_token: string;
         refresh_token?: string;
         expires_in?: number;
+        refresh_token_expires_in?: number;
       }>
     | {
         code?: number;
@@ -207,6 +208,7 @@ async function parseFeishuTokenResponse(response: Response) {
         access_token?: string;
         refresh_token?: string;
         expires_in?: number;
+        refresh_token_expires_in?: number;
       };
 
   if (!response.ok) {
@@ -217,7 +219,8 @@ async function parseFeishuTokenResponse(response: Response) {
     return toTokenSet({
       access_token: body.access_token,
       refresh_token: body.refresh_token,
-      expires_in: body.expires_in
+      expires_in: body.expires_in,
+      refresh_token_expires_in: body.refresh_token_expires_in
     });
   }
 
@@ -228,11 +231,19 @@ async function parseFeishuTokenResponse(response: Response) {
   throw new Error("msg" in body && body.msg ? body.msg : `Feishu token exchange failed with HTTP ${response.status}`);
 }
 
-function toTokenSet(data: { access_token: string; refresh_token?: string; expires_in?: number }): TokenSet {
+function toTokenSet(data: {
+  access_token: string;
+  refresh_token?: string;
+  expires_in?: number;
+  refresh_token_expires_in?: number;
+}): TokenSet {
   return {
     accessToken: data.access_token,
     refreshToken: data.refresh_token,
-    expiresAt: data.expires_in ? new Date(Date.now() + data.expires_in * 1000).toISOString() : undefined
+    expiresAt: data.expires_in ? new Date(Date.now() + data.expires_in * 1000).toISOString() : undefined,
+    refreshExpiresAt: data.refresh_token_expires_in
+      ? new Date(Date.now() + data.refresh_token_expires_in * 1000).toISOString()
+      : undefined
   };
 }
 

@@ -99,7 +99,7 @@ async function syncFeishuForUserUnchecked(userId: string): Promise<SyncResult> {
   let tokenSet = await decryptToken(connection);
   let client = new FeishuServerClient(config, tokenSet);
 
-  if (isTokenExpired(tokenSet)) {
+  if (shouldRefreshToken(tokenSet)) {
     tokenSet = await refreshTokenForUser(userId, client, tokenSet);
     await saveToken(userId, tokenSet);
     client = new FeishuServerClient(config, tokenSet);
@@ -459,7 +459,7 @@ async function createFeishuEventForUserUnchecked(
   let tokenSet = await decryptToken(connection);
   let client = new FeishuServerClient(config, tokenSet);
 
-  if (isTokenExpired(tokenSet)) {
+  if (shouldRefreshToken(tokenSet)) {
     tokenSet = await refreshTokenForUser(userId, client, tokenSet);
     await saveToken(userId, tokenSet);
     client = new FeishuServerClient(config, tokenSet);
@@ -504,7 +504,7 @@ async function updateFeishuEventForUserUnchecked(
   let tokenSet = await decryptToken(connection);
   let client = new FeishuServerClient(config, tokenSet);
 
-  if (isTokenExpired(tokenSet)) {
+  if (shouldRefreshToken(tokenSet)) {
     tokenSet = await refreshTokenForUser(userId, client, tokenSet);
     await saveToken(userId, tokenSet);
     client = new FeishuServerClient(config, tokenSet);
@@ -547,7 +547,7 @@ async function deleteFeishuEventForUserUnchecked(
   let tokenSet = await decryptToken(connection);
   let client = new FeishuServerClient(config, tokenSet);
 
-  if (isTokenExpired(tokenSet)) {
+  if (shouldRefreshToken(tokenSet)) {
     tokenSet = await refreshTokenForUser(userId, client, tokenSet);
     await saveToken(userId, tokenSet);
     client = new FeishuServerClient(config, tokenSet);
@@ -739,7 +739,7 @@ async function loadLatestTokenIfAnotherSyncRefreshed(userId: string, staleTokenS
     const tokenChanged =
       Boolean(latestTokenSet.accessToken && latestTokenSet.accessToken !== staleTokenSet.accessToken) ||
       Boolean(latestTokenSet.refreshToken && latestTokenSet.refreshToken !== staleTokenSet.refreshToken);
-    return tokenChanged && !isTokenExpired(latestTokenSet) ? latestTokenSet : null;
+    return tokenChanged && !shouldRefreshToken(latestTokenSet) ? latestTokenSet : null;
   } catch {
     return null;
   }
@@ -797,6 +797,15 @@ async function saveToken(userId: string, tokenSet: FeishuTokenSet) {
 function isTokenExpired(tokenSet: FeishuTokenSet) {
   if (!tokenSet.expiresAt) return false;
   return new Date(tokenSet.expiresAt).getTime() < Date.now() + 60_000;
+}
+
+function isRefreshTokenNearExpiry(tokenSet: FeishuTokenSet) {
+  if (!tokenSet.refreshToken || !tokenSet.refreshExpiresAt) return false;
+  return new Date(tokenSet.refreshExpiresAt).getTime() < Date.now() + 24 * 60 * 60 * 1000;
+}
+
+function shouldRefreshToken(tokenSet: FeishuTokenSet) {
+  return isTokenExpired(tokenSet) || isRefreshTokenNearExpiry(tokenSet);
 }
 
 function feishuEventRowId(calendarId: string, eventId: string) {

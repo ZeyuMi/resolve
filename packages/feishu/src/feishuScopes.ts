@@ -1,5 +1,9 @@
 export const feishuCalendarScopes = [
   {
+    key: "offline_access",
+    label: "离线访问已授权数据"
+  },
+  {
     key: "calendar:calendar",
     label: "更新日历和日程信息"
   },

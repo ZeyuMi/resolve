@@ -49,6 +49,31 @@ Deno.serve(async (request) => {
     oauthState.server_config_nonce
   );
   const tokenSet = await FeishuServerClient.exchangeCode(config, code);
+  if (!tokenSet.refreshToken) {
+    const now = new Date().toISOString();
+    await restUpsert(
+      "resolve_feishu_connections",
+      {
+        user_id: oauthState.user_id,
+        mode: "server_connector_opt_in",
+        status: "needs_auth",
+        server_encrypted_config: oauthState.server_encrypted_config,
+        server_config_nonce: oauthState.server_config_nonce,
+        server_encrypted_token_set: null,
+        server_token_nonce: null,
+        updated_at: now
+      },
+      "user_id"
+    );
+    await restPatch(
+      "resolve_feishu_oauth_states",
+      `id=eq.${encodeFilter(oauthState.id)}`,
+      {
+        consumed_at: now
+      }
+    );
+    return redirectToResolve("missing_offline_access");
+  }
   const encryptedToken = await serverEncryptJson(tokenSet);
   const encryptedConfig = await serverEncryptJson(config);
   const now = new Date().toISOString();
