@@ -659,6 +659,7 @@ private fun ResolveAndroidApp(
         persist(state.copy(items = listOf(item) + state.items))
         capture = ""
         tab = Tab.Todo
+        todoScrollToTopSignal += 1
         notice = null
     }
 
