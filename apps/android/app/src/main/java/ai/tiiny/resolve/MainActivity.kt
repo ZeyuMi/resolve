@@ -1537,7 +1537,6 @@ private fun ResolveAndroidApp(
                 onDismiss = { pendingTodoArchiveClear = false },
                 onConfirm = {
                     clearArchivedItems()
-                    showArchived = false
                     pendingTodoArchiveClear = false
                 }
             )

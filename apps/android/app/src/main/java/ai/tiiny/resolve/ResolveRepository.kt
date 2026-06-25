@@ -173,6 +173,7 @@ class ResolveRepository(context: Context) {
         .put("createdAt", item.createdAt.toString())
         .put("updatedAt", item.updatedAt.toString())
         .put("statusChangedAt", item.statusChangedAt.toString())
+        .putOpt("deletedAt", item.deletedAt?.toString())
         .putOpt("dueAt", item.dueAt?.toString())
         .putOpt("strategyThreadId", item.strategyThreadId)
         .putOpt("sourceItemId", item.sourceItemId)
@@ -194,6 +195,7 @@ class ResolveRepository(context: Context) {
             updatedAt = updatedAt,
             statusChangedAt = json.optNullableString("statusChangedAt")?.let(::instantOrNull)
                 ?: fallbackStatusChangedAt(status, createdAt, updatedAt),
+            deletedAt = json.optNullableString("deletedAt")?.let(::instantOrNull),
             dueAt = json.optNullableString("dueAt")?.let(::instantOrNull),
             strategyThreadId = json.optNullableString("strategyThreadId"),
             sourceItemId = json.optNullableString("sourceItemId"),

@@ -111,10 +111,15 @@ export class SupabaseEncryptedSync {
   }
 
   async deleteRemoteItem(itemId: string) {
+    const deletedAt = new Date().toISOString();
     await throwIfSupabaseError(
       this.client
         .from("resolve_items")
-        .delete()
+        .update({
+          status: "deleted",
+          deleted_at: deletedAt,
+          updated_at: deletedAt
+        })
         .eq("user_id", this.userId)
         .eq("id", itemId)
     );
@@ -123,10 +128,15 @@ export class SupabaseEncryptedSync {
   async deleteRemoteItems(itemIds: string[]) {
     const ids = Array.from(new Set(itemIds)).filter(Boolean);
     if (!ids.length) return;
+    const deletedAt = new Date().toISOString();
     await throwIfSupabaseError(
       this.client
         .from("resolve_items")
-        .delete()
+        .update({
+          status: "deleted",
+          deleted_at: deletedAt,
+          updated_at: deletedAt
+        })
         .eq("user_id", this.userId)
         .in("id", ids)
     );
@@ -305,7 +315,7 @@ export class SupabaseEncryptedSync {
         strategyThreadId: optional(row.strategy_thread_id),
         parentItemId: optional(row.parent_item_id),
         sourceItemId: optional(row.source_item_id),
-        deletedAt: optional(row.deleted_at),
+        deletedAt: optional(row.deleted_at) ?? (row.status === "deleted" ? row.updated_at : undefined),
         encryptedPayload: row.encrypted_payload,
         payloadNonce: row.payload_nonce,
         payloadVersion: row.payload_version

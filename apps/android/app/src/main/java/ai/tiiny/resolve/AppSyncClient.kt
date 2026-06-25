@@ -55,6 +55,11 @@ class AppSyncClient(
     }
 
     fun deleteRemoteItems(itemIds: Collection<String>) {
+        val deletedAt = Instant.now().toString()
+        val body = JSONObject()
+            .put("status", "deleted")
+            .put("deleted_at", deletedAt)
+            .put("updated_at", deletedAt)
         itemIds
             .asSequence()
             .filter { it.isNotBlank() }
@@ -62,9 +67,11 @@ class AppSyncClient(
             .forEach { itemId ->
                 val connection = open(
                     "/rest/v1/resolve_items?user_id=eq.${encode(userId)}&id=eq.${encode(itemId)}",
-                    "DELETE"
+                    "PATCH"
                 ).apply {
                     setRequestProperty("prefer", "return=minimal")
+                    doOutput = true
+                    outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
                 }
                 connection.readTextOrThrow()
             }
@@ -93,6 +100,7 @@ class AppSyncClient(
             .putNullable("strategy_thread_id", item.strategyThreadId)
             .putNullable("parent_item_id", item.parentItemId)
             .putNullable("source_item_id", item.sourceItemId)
+            .putNullable("deleted_at", item.deletedAt?.toString())
             .put("encrypted_payload", encrypted.payload)
             .put("payload_nonce", encrypted.nonce)
             .put("payload_version", 1)
@@ -148,9 +156,12 @@ class AppSyncClient(
 
     private fun itemFromRow(row: JSONObject): ResolveItem {
         val payload = decryptJson(row)
-        val status = itemStatusFromRemote(row.optString("status"))
+        val remoteStatus = row.optString("status")
+        val status = itemStatusFromRemote(remoteStatus)
         val createdAt = instantOrNow(row.optString("created_at"))
         val updatedAt = instantOrNow(row.optString("updated_at"))
+        val deletedAt = row.optNullableString("deleted_at")?.let(::instantOrNull)
+            ?: if (remoteStatus == "deleted") updatedAt else null
         return ResolveItem(
             id = row.optString("id"),
             type = if (row.optString("type") == "strategy_note") ItemType.StrategyNote else ItemType.Task,
@@ -162,6 +173,7 @@ class AppSyncClient(
             updatedAt = updatedAt,
             statusChangedAt = payload.optNullableString("statusChangedAt")?.let(::instantOrNull)
                 ?: fallbackStatusChangedAt(status, createdAt, updatedAt),
+            deletedAt = deletedAt,
             dueAt = row.optNullableString("due_at")?.let(::instantOrNull),
             strategyThreadId = row.optNullableString("strategy_thread_id"),
             sourceItemId = row.optNullableString("source_item_id"),
@@ -263,7 +275,7 @@ fun mergeEncryptedRemoteState(local: ResolveState, remote: ResolveState): Resolv
     val localServerCalendars = local.calendarEvents.filter { it.provider == "feishu" && it.externalEventId != null }
     val localCalendars = local.calendarEvents.filter { it.provider != "feishu" || it.externalEventId == null }
     return local.copy(
-        items = items.values.toList(),
+        items = items.values.filter { it.deletedAt == null }.toList(),
         threads = threads.values.toList(),
         calendarEvents = normalizeCalendarEvents(localServerCalendars + newestCalendarById(localCalendars + remoteLocalCalendars))
     )
@@ -271,6 +283,12 @@ fun mergeEncryptedRemoteState(local: ResolveState, remote: ResolveState): Resolv
 
 private fun mergeResolveItem(existing: ResolveItem?, candidate: ResolveItem): ResolveItem {
     if (existing == null) return candidate
+    if (existing.deletedAt != null || candidate.deletedAt != null) {
+        return listOf(existing, candidate)
+            .filter { it.deletedAt != null }
+            .maxByOrNull { it.deletedAt ?: Instant.EPOCH }
+            ?: candidate
+    }
     val newest = if (candidate.updatedAt >= existing.updatedAt) candidate else existing
     val statusWinner = if (candidate.statusChangedAt >= existing.statusChangedAt) candidate else existing
     return newest.copy(

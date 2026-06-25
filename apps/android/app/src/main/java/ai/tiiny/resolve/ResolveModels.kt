@@ -25,6 +25,7 @@ data class ResolveItem(
     val createdAt: Instant = Instant.now(),
     val updatedAt: Instant = Instant.now(),
     val statusChangedAt: Instant = if (status == ItemStatus.Active) createdAt else updatedAt,
+    val deletedAt: Instant? = null,
     val dueAt: Instant? = null,
     val strategyThreadId: String? = null,
     val sourceItemId: String? = null,

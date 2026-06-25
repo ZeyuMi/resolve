@@ -44,6 +44,11 @@ function statusChangedAt(item: DecryptedItem) {
 
 function mergeItem(existing: DecryptedItem | undefined, candidate: DecryptedItem) {
   if (!existing) return candidate;
+  if (existing.meta.deletedAt || candidate.meta.deletedAt) {
+    return [existing, candidate]
+      .filter((item) => item.meta.deletedAt)
+      .sort((a, b) => (b.meta.deletedAt ?? "").localeCompare(a.meta.deletedAt ?? ""))[0] ?? candidate;
+  }
   const newest = candidate.meta.updatedAt.localeCompare(existing.meta.updatedAt) >= 0 ? candidate : existing;
   const statusWinner = statusChangedAt(candidate).localeCompare(statusChangedAt(existing)) >= 0 ? candidate : existing;
   const statusTimestamp = statusChangedAt(statusWinner);
