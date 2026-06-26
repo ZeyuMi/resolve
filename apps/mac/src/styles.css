@@ -7031,17 +7031,34 @@ body,
   min-height: 0;
   height: 100%;
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
   gap: 0;
   overflow: hidden;
+}
+
+.vault-layout.list-only {
+  grid-template-columns: minmax(360px, 760px);
+  justify-content: center;
+}
+
+.vault-layout.has-editor {
+  grid-template-columns: 320px minmax(0, 1fr);
 }
 
 .vault-list-pane {
   min-height: 0;
   overflow: auto;
-  border-right: 1px solid var(--native-line-soft, var(--line-soft));
   background: rgba(248, 250, 253, 0.62);
   padding: 12px;
+}
+
+.vault-layout.has-editor .vault-list-pane {
+  border-right: 1px solid var(--native-line-soft, var(--line-soft));
+}
+
+.vault-layout.list-only .vault-list-pane {
+  border: 0;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.54);
 }
 
 .vault-list-pane .segmented-control {
@@ -7152,60 +7169,79 @@ body,
   background: transparent;
 }
 
-.markdown-editor-shell .w-md-editor {
+.resolve-mdx-editor {
   height: 100% !important;
   min-height: 0;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
   background: transparent;
   color: var(--native-text, var(--text));
-  --md-editor-box-shadow-color: transparent;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
-.markdown-editor-shell .w-md-editor-toolbar {
-  min-height: 38px;
+.resolve-mdx-editor,
+.resolve-mdx-editor [class*="_rootContentEditableWrapper"],
+.resolve-mdx-editor [class*="_contentEditable"] {
+  min-height: 0;
+}
+
+.resolve-mdx-editor [class*="_toolbarRoot"] {
   border-bottom: 1px solid var(--native-line-soft, var(--line-soft));
   background: rgba(250, 251, 253, 0.72);
   padding: 4px 18px;
+  min-height: 38px;
 }
 
-.markdown-editor-shell .w-md-editor-content {
-  background: transparent;
-}
-
-.markdown-editor-shell .w-md-editor-text {
-  padding: 18px 22px 38px;
-}
-
-.markdown-editor-shell .w-md-editor-text-input,
-.markdown-editor-shell .w-md-editor-text-pre > code,
-.markdown-editor-shell .wmde-markdown {
+.resolve-mdx-content {
+  height: 100%;
+  overflow: auto;
+  padding: 22px 28px 46px;
+  outline: none;
+  color: var(--native-text, var(--text));
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-  font-size: 14px !important;
-  line-height: 1.7 !important;
+  font-size: 14px;
+  line-height: 1.72;
 }
 
-.markdown-editor-shell .w-md-editor-text-pre > code,
-.markdown-editor-shell .w-md-editor-text-input {
-  color: var(--native-text, var(--text)) !important;
-  -webkit-text-fill-color: var(--native-text, var(--text));
-}
-
-.markdown-editor-shell .wmde-markdown {
-  padding: 18px 24px 38px !important;
-  background: rgba(255, 255, 255, 0.52);
+.resolve-mdx-content h1,
+.resolve-mdx-content h2,
+.resolve-mdx-content h3 {
+  margin-top: 1.1em;
+  margin-bottom: 0.45em;
+  line-height: 1.18;
   color: var(--native-text, var(--text));
 }
 
-.markdown-editor-shell .wmde-markdown h1,
-.markdown-editor-shell .wmde-markdown h2,
-.markdown-editor-shell .wmde-markdown h3 {
-  border: 0;
-  color: var(--native-text, var(--text));
+.resolve-mdx-content h1:first-child,
+.resolve-mdx-content h2:first-child,
+.resolve-mdx-content h3:first-child {
+  margin-top: 0;
 }
 
-.markdown-editor-shell .wmde-markdown code {
+.resolve-mdx-content p {
+  margin: 0.45em 0;
+}
+
+.resolve-mdx-content ul,
+.resolve-mdx-content ol {
+  padding-left: 1.4em;
+}
+
+.resolve-mdx-content blockquote {
+  margin: 0.8em 0;
+  padding-left: 0.9em;
+  border-left: 3px solid rgba(47, 102, 221, 0.24);
+  color: var(--native-secondary, var(--text-2));
+}
+
+.resolve-mdx-content code {
   border-radius: 5px;
   background: rgba(39, 100, 217, 0.08);
+  padding: 0.08em 0.28em;
+}
+
+.resolve-mdx-content pre {
+  border-radius: 10px;
+  background: rgba(20, 27, 40, 0.06);
+  padding: 12px;
+  overflow: auto;
 }

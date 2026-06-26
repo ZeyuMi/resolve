@@ -32,9 +32,26 @@ import {
   Trash2,
   X
 } from "lucide-react";
-import MDEditor from "@uiw/react-md-editor";
-import "@uiw/react-md-editor/markdown-editor.css";
-import "@uiw/react-markdown-preview/markdown.css";
+import {
+  BlockTypeSelect,
+  BoldItalicUnderlineToggles,
+  CreateLink,
+  InsertTable,
+  ListsToggle,
+  MDXEditor,
+  Separator,
+  UndoRedo,
+  codeBlockPlugin,
+  headingsPlugin,
+  linkPlugin,
+  listsPlugin,
+  markdownShortcutPlugin,
+  quotePlugin,
+  tablePlugin,
+  thematicBreakPlugin,
+  toolbarPlugin
+} from "@mdxeditor/editor";
+import "@mdxeditor/editor/style.css";
 import {
   emptyEncryptedFields,
   makeId,
@@ -2608,7 +2625,10 @@ export function App() {
             calendarCount={state.calendarEvents.length}
             strategyCount={state.strategyThreads.length}
             noteCount={state.notes.filter((note) => note.meta.status !== "archived").length}
-            onChange={setTab}
+            onChange={(nextTab) => {
+              if (nextTab === "vault") setSelectedNoteId(null);
+              setTab(nextTab);
+            }}
           />
           <SyncPanel feishuSettings={feishuSettings} backendSettings={backendSettings} />
         </div>
@@ -4616,8 +4636,33 @@ function VaultView({
   const selectedTask = selectedNote?.meta.taskId ? todoById.get(selectedNote.meta.taskId) : undefined;
   const selectedThread = selectedNote?.meta.strategyThreadId ? threadById.get(selectedNote.meta.strategyThreadId) : undefined;
 
+  const editorPlugins = useMemo(() => [
+    headingsPlugin(),
+    listsPlugin(),
+    quotePlugin(),
+    thematicBreakPlugin(),
+    linkPlugin(),
+    tablePlugin(),
+    codeBlockPlugin(),
+    markdownShortcutPlugin(),
+    toolbarPlugin({
+      toolbarContents: () => (
+        <>
+          <UndoRedo />
+          <Separator />
+          <BlockTypeSelect />
+          <BoldItalicUnderlineToggles />
+          <ListsToggle />
+          <Separator />
+          <CreateLink />
+          <InsertTable />
+        </>
+      )
+    })
+  ], []);
+
   return (
-    <div className="vault-layout">
+    <div className={`vault-layout ${selectedNote ? "has-editor" : "list-only"}`}>
       <aside className="vault-list-pane">
         <div className="section-title-row">
           <div>
@@ -4662,9 +4707,8 @@ function VaultView({
         </div>
       </aside>
 
-      <section className="vault-editor-pane">
-        {selectedNote ? (
-          <>
+      {selectedNote && (
+        <section className="vault-editor-pane">
             <div className="vault-editor-head">
               <div>
                 <div className="eyebrow">Note</div>
@@ -4689,23 +4733,18 @@ function VaultView({
               {!selectedTask && selectedNote.meta.taskId && <span>Orphan task link</span>}
             </div>
             <div className="markdown-editor-shell" data-color-mode="light">
-              <MDEditor
-                value={loading ? "Loading Note..." : content}
-                onChange={(value) => onContent(value ?? "")}
-                preview="live"
-                height="100%"
-                textareaProps={{
-                  disabled: loading,
-                  spellCheck: false,
-                  placeholder: "Write in Markdown..."
-                }}
+              <MDXEditor
+                key={selectedNote.meta.id}
+                markdown={loading ? "Loading Note..." : content}
+                onChange={onContent}
+                readOnly={loading}
+                className="resolve-mdx-editor"
+                contentEditableClassName="resolve-mdx-content"
+                plugins={editorPlugins}
               />
             </div>
-          </>
-        ) : (
-          <EmptyState label="Select a Note, or click a Task title to create one" />
-        )}
-      </section>
+        </section>
+      )}
     </div>
   );
 }
