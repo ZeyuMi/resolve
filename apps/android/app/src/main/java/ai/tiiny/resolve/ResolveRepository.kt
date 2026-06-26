@@ -117,10 +117,17 @@ class ResolveRepository(private val context: Context) {
         return if (file.exists()) file.readText() else defaultNoteMarkdown(note)
     }
 
+    fun readNoteBody(note: MarkdownNote): String =
+        stripNoteFrontmatter(readNote(note))
+
     fun writeNote(note: MarkdownNote, markdown: String) {
         val file = context.filesDir.resolve("resolve-vault").resolve(note.canonicalPath)
         file.parentFile?.mkdirs()
         file.writeText(markdown)
+    }
+
+    fun writeNoteBody(note: MarkdownNote, body: String) {
+        writeNote(note, noteMarkdownDocument(note, body))
     }
 
     fun createNoteForTask(item: ResolveItem, strategyTitle: String?): Pair<MarkdownNote, String> {
@@ -436,6 +443,19 @@ private fun notePath(noteId: String, title: String, createdAt: Instant): String 
 }
 
 private fun defaultNoteMarkdown(note: MarkdownNote, body: String = "", strategyTitle: String? = null): String {
+    val content = buildString {
+        appendLine("# ${note.title}")
+        appendLine()
+        if (body.isNotBlank()) {
+            appendLine(body)
+            appendLine()
+        }
+        if (!strategyTitle.isNullOrBlank()) appendLine("Strategy: $strategyTitle")
+    }
+    return noteMarkdownDocument(note, content)
+}
+
+private fun noteMarkdownDocument(note: MarkdownNote, body: String = ""): String {
     val frontmatter = buildString {
         appendLine("---")
         appendLine("note_id: ${note.id}")
@@ -448,17 +468,12 @@ private fun defaultNoteMarkdown(note: MarkdownNote, body: String = "", strategyT
         appendLine("---")
         appendLine()
     }
-    val content = buildString {
-        appendLine("# ${note.title}")
-        appendLine()
-        if (body.isNotBlank()) {
-            appendLine(body)
-            appendLine()
-        }
-        if (!strategyTitle.isNullOrBlank()) appendLine("Strategy: $strategyTitle")
-    }
+    val content = stripNoteFrontmatter(body).trim().ifBlank { "# ${note.title}\n" }
     return frontmatter + content
 }
+
+private fun stripNoteFrontmatter(markdown: String): String =
+    markdown.replace(Regex("^---\\r?\\n[\\s\\S]*?\\r?\\n---\\r?\\n?"), "")
 
 private fun noteContentHash(value: String): String =
     value.fold(0) { hash, char -> hash * 31 + char.code }

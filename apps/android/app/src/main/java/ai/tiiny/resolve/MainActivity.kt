@@ -352,7 +352,7 @@ private fun ResolveAndroidApp(
 
     fun openNote(note: MarkdownNote) {
         selectedNoteId = note.id
-        noteDraft = repository.readNote(note)
+        noteDraft = repository.readNoteBody(note)
         tab = Tab.Vault
     }
 
@@ -369,7 +369,7 @@ private fun ResolveAndroidApp(
         val strategyTitle = item.strategyThreadId?.let { threadId ->
             state.threads.find { it.id == threadId }?.title
         }
-        val (note, markdown) = repository.createNoteForTask(item, strategyTitle)
+        val (note, _) = repository.createNoteForTask(item, strategyTitle)
         val now = Instant.now()
         val nextItem = item.copy(noteId = note.id, updatedAt = now)
         val next = state.copy(
@@ -377,7 +377,7 @@ private fun ResolveAndroidApp(
             notes = listOf(note) + state.notes
         )
         persist(next)
-        noteDraft = markdown
+        noteDraft = repository.readNoteBody(note)
         selectedNoteId = note.id
         pendingNoteTask = null
         tab = Tab.Vault
@@ -385,7 +385,6 @@ private fun ResolveAndroidApp(
 
     fun saveSelectedNote() {
         val note = state.notes.find { it.id == selectedNoteId } ?: return
-        repository.writeNote(note, noteDraft)
         val now = Instant.now()
         val title = noteDraft.lineSequence()
             .firstOrNull { it.trim().startsWith("# ") }
@@ -394,7 +393,9 @@ private fun ResolveAndroidApp(
             ?.trim()
             ?.ifBlank { null }
             ?: note.title
-        persist(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(title = title, updatedAt = now) else it }))
+        val nextNote = note.copy(title = title, updatedAt = now)
+        repository.writeNoteBody(nextNote, noteDraft)
+        persist(state.copy(notes = state.notes.map { if (it.id == note.id) nextNote else it }))
     }
 
     fun archiveSelectedNote(note: MarkdownNote) {

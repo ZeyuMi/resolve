@@ -32,6 +32,9 @@ import {
   Trash2,
   X
 } from "lucide-react";
+import MDEditor from "@uiw/react-md-editor";
+import "@uiw/react-md-editor/markdown-editor.css";
+import "@uiw/react-markdown-preview/markdown.css";
 import {
   emptyEncryptedFields,
   makeId,
@@ -169,10 +172,14 @@ function noteFrontmatter(note: DecryptedNote) {
   return lines.join("\n");
 }
 
+function stripNoteFrontmatter(markdown = "") {
+  return markdown.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
+}
+
 function noteMarkdownDocument(note: DecryptedNote, body = "") {
   const title = note.meta.title || note.payload.title || "Untitled Note";
-  const content = body.trim() || `# ${title}\n\n`;
-  return `${noteFrontmatter(note)}${content.replace(/^---[\s\S]*?---\s*/m, "")}`;
+  const content = stripNoteFrontmatter(body).trim() || `# ${title}\n\n`;
+  return `${noteFrontmatter(note)}${content}`;
 }
 
 function createNoteForTodoModel(todo: DecryptedItem, strategyTitle?: string): DecryptedNote {
@@ -905,11 +912,11 @@ export function App() {
       try {
         const file = await readNoteFile(selectedNote.meta.canonicalPath);
         if (!cancelled) {
-          setNoteContent(file.content || noteMarkdownDocument(selectedNote, selectedNote.payload.markdown));
+          setNoteContent(stripNoteFrontmatter(file.content || noteMarkdownDocument(selectedNote, selectedNote.payload.markdown)));
         }
       } catch (error) {
         console.warn("Could not read note file", error);
-        if (!cancelled) setNoteContent(noteMarkdownDocument(selectedNote, selectedNote.payload.markdown));
+        if (!cancelled) setNoteContent(stripNoteFrontmatter(noteMarkdownDocument(selectedNote, selectedNote.payload.markdown)));
       } finally {
         if (!cancelled) setNoteLoading(false);
       }
@@ -1246,7 +1253,7 @@ export function App() {
       notes: [note, ...stateRef.current.notes]
     });
     setSelectedNoteId(note.meta.id);
-    setNoteContent(markdown);
+    setNoteContent(stripNoteFrontmatter(markdown));
     setTab("vault");
     showToast("Note created");
   }
@@ -1255,31 +1262,33 @@ export function App() {
     const note = selectedNote;
     if (!note) return;
     const timestamp = nowIso();
-    const titleMatch = noteContent.match(/^#\s+(.+)$/m);
+    const editableBody = stripNoteFrontmatter(noteContent);
+    const titleMatch = editableBody.match(/^#\s+(.+)$/m);
     const title = titleMatch?.[1]?.trim() || note.meta.title;
+    const nextFrontmatterNote = { ...note, meta: { ...note.meta, title, updatedAt: timestamp } };
     const nextNote: DecryptedNote = {
       ...note,
       meta: {
         ...note.meta,
         title,
         updatedAt: timestamp,
-        contentHash: noteContentHash(noteContent),
-        frontmatterHash: noteContentHash(noteFrontmatter({ ...note, meta: { ...note.meta, title, updatedAt: timestamp } }))
+        contentHash: noteContentHash(editableBody),
+        frontmatterHash: noteContentHash(noteFrontmatter(nextFrontmatterNote))
       },
       payload: {
         ...note.payload,
         title,
-        markdown: noteContent.replace(/^---[\s\S]*?---\s*/m, ""),
-        excerpt: noteContent.replace(/^---[\s\S]*?---\s*/m, "").replace(/^#.*$/m, "").trim().slice(0, 180)
+        markdown: editableBody,
+        excerpt: editableBody.replace(/^#.*$/m, "").trim().slice(0, 180)
       }
     };
-    const markdown = noteMarkdownDocument(nextNote, noteContent);
+    const markdown = noteMarkdownDocument(nextNote, editableBody);
     await writeNoteFile(nextNote.meta.canonicalPath, markdown);
     persist({
       ...stateRef.current,
       notes: stateRef.current.notes.map((item) => item.meta.id === nextNote.meta.id ? nextNote : item)
     });
-    setNoteContent(markdown);
+    setNoteContent(editableBody);
     showToast("Note saved");
   }
 
@@ -4613,7 +4622,6 @@ function VaultView({
         <div className="section-title-row">
           <div>
             <h2>Vault</h2>
-            <p>Markdown Notes live as local files. Views are index, not copies.</p>
           </div>
           <StatusPill tone="muted" label={`${notes.length} notes`} />
         </div>
@@ -4680,16 +4688,22 @@ function VaultView({
               {selectedThread && <span>Strategy: {selectedThread.payload.title}</span>}
               {!selectedTask && selectedNote.meta.taskId && <span>Orphan task link</span>}
             </div>
-            <textarea
-              className="markdown-editor"
-              value={loading ? "Loading Note..." : content}
-              disabled={loading}
-              onChange={(event) => onContent(event.target.value)}
-              spellCheck={false}
-            />
+            <div className="markdown-editor-shell" data-color-mode="light">
+              <MDEditor
+                value={loading ? "Loading Note..." : content}
+                onChange={(value) => onContent(value ?? "")}
+                preview="live"
+                height="100%"
+                textareaProps={{
+                  disabled: loading,
+                  spellCheck: false,
+                  placeholder: "Write in Markdown..."
+                }}
+              />
+            </div>
           </>
         ) : (
-          <EmptyState label="选择一个 Note，或从 Task 标题创建新的 Note" />
+          <EmptyState label="Select a Note, or click a Task title to create one" />
         )}
       </section>
     </div>
