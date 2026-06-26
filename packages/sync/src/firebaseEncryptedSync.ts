@@ -125,7 +125,7 @@ export class FirebaseEncryptedSync {
       })
     );
 
-    return { items, strategyThreads, calendarEvents };
+    return { items, strategyThreads, calendarEvents, notes: [] };
   }
 
   async deleteRemoteItem(itemId: string) {

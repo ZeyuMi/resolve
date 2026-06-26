@@ -47,6 +47,7 @@ export interface ItemMetadata extends EncryptedPayloadFields {
   strategyThreadId?: string;
   parentItemId?: string;
   sourceItemId?: string;
+  noteId?: string;
   deletedAt?: string;
 }
 
@@ -54,6 +55,7 @@ export interface ItemPayload {
   title: string;
   content?: string;
   notes?: string;
+  noteId?: string;
   sortOrder?: number;
   statusChangedAt?: string;
   attachments?: Array<{
@@ -160,6 +162,31 @@ export interface CalendarEventPayload {
   feishuRaw?: unknown;
 }
 
+export type NoteStatus = "active" | "archived" | "conflict";
+
+export interface NoteMetadata extends EncryptedPayloadFields {
+  id: string;
+  canonicalPath: string;
+  title: string;
+  status: NoteStatus;
+  createdAt: string;
+  updatedAt: string;
+  lastOpenedAt?: string;
+  taskId?: string;
+  strategyThreadId?: string;
+  parentNoteId?: string;
+  contentHash?: string;
+  frontmatterHash?: string;
+  deviceUpdatedAt?: string;
+  remoteUpdatedAt?: string;
+}
+
+export interface NotePayload {
+  title: string;
+  markdown?: string;
+  excerpt?: string;
+}
+
 export interface SyncState {
   provider: "feishu";
   userId: string;
@@ -185,6 +212,11 @@ export interface DecryptedStrategyThread {
 export interface DecryptedCalendarEvent {
   meta: CalendarEventMetadata;
   payload: CalendarEventPayload;
+}
+
+export interface DecryptedNote {
+  meta: NoteMetadata;
+  payload: NotePayload;
 }
 
 export interface TodaySummary {

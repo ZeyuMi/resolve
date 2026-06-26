@@ -83,7 +83,8 @@ export function mergeEncryptedRemoteState(local: ResolveState, remote: ResolveSt
         local.calendarEvents.filter(shouldSyncCalendarEvent),
         remote.calendarEvents
       )
-    ]
+    ],
+    notes: newestByUpdatedAt(local.notes ?? [], remote.notes ?? [])
   };
 }
 
@@ -121,7 +122,8 @@ export class ResolveAppEncryptedSync {
   async push(state: ResolveState, options: { changedSince?: string } = {}) {
     await this.sync.pushState({
       ...state,
-      calendarEvents: state.calendarEvents.filter(shouldSyncCalendarEvent)
+      calendarEvents: state.calendarEvents.filter(shouldSyncCalendarEvent),
+      notes: []
     }, options);
   }
 

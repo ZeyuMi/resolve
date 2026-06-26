@@ -18,6 +18,7 @@ import {
   ChevronRight,
   Clock3,
   ExternalLink,
+  FileText,
   KeyRound,
   LayoutList,
   Lock,
@@ -39,8 +40,10 @@ import {
   type CalendarEventPayload,
   type DecryptedCalendarEvent,
   type DecryptedItem,
+  type DecryptedNote,
   type DecryptedStrategyThread,
   type ItemPayload,
+  type NotePayload,
   type StrategyNotePayload
 } from "@resolve/core";
 import { type ResolveState } from "@resolve/sync";
@@ -98,7 +101,10 @@ import {
   loadSecureSyncSecret,
   runNativeFeishuOAuth,
   saveSecureFeishuCredentials,
-  saveSecureSyncSecret
+  saveSecureSyncSecret,
+  ensureResolveVaultRoot,
+  readNoteFile,
+  writeNoteFile
 } from "./platform/nativeIntegrations";
 
 const feishuOAuthScopes = feishuCalendarScopes
@@ -121,6 +127,89 @@ function appSyncCursorWithLookback(cursor?: string) {
 
 function saveAppSyncCursor(cursor: string) {
   localStorage.setItem(appSyncCursorKey, cursor);
+}
+
+function slugifyNoteTitle(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60) || "note";
+}
+
+function noteContentHash(value: string) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = Math.imul(31, hash) + value.charCodeAt(index) | 0;
+  }
+  return Math.abs(hash).toString(36);
+}
+
+function notePathFor(noteId: string, title: string, createdAt = nowIso()) {
+  const date = new Date(createdAt);
+  const year = String(date.getFullYear());
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  return `Notes/${year}/${month}/${noteId}-${slugifyNoteTitle(title)}.md`;
+}
+
+function noteFrontmatter(note: DecryptedNote) {
+  const lines = [
+    "---",
+    `note_id: ${note.meta.id}`,
+    `title: ${JSON.stringify(note.meta.title)}`,
+    `status: ${note.meta.status}`,
+    `created_at: ${note.meta.createdAt}`,
+    `updated_at: ${note.meta.updatedAt}`
+  ];
+  if (note.meta.taskId) lines.push(`task_id: ${note.meta.taskId}`);
+  if (note.meta.strategyThreadId) lines.push(`strategy_thread_id: ${note.meta.strategyThreadId}`);
+  if (note.meta.parentNoteId) lines.push(`parent_note_id: ${note.meta.parentNoteId}`);
+  lines.push("---", "");
+  return lines.join("\n");
+}
+
+function noteMarkdownDocument(note: DecryptedNote, body = "") {
+  const title = note.meta.title || note.payload.title || "Untitled Note";
+  const content = body.trim() || `# ${title}\n\n`;
+  return `${noteFrontmatter(note)}${content.replace(/^---[\s\S]*?---\s*/m, "")}`;
+}
+
+function createNoteForTodoModel(todo: DecryptedItem, strategyTitle?: string): DecryptedNote {
+  const payload = todo.payload as ItemPayload;
+  const timestamp = nowIso();
+  const id = makeId("note");
+  const title = payload.title || "Untitled Note";
+  const note: DecryptedNote = {
+    meta: {
+      id,
+      canonicalPath: notePathFor(id, title, timestamp),
+      title,
+      status: "active",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      taskId: todo.meta.id,
+      strategyThreadId: todo.meta.strategyThreadId,
+      ...emptyEncryptedFields
+    },
+    payload: {
+      title,
+      markdown: `# ${title}\n\n${payload.notes ? `${payload.notes}\n\n` : ""}${strategyTitle ? `Strategy: ${strategyTitle}\n` : ""}`
+    }
+  };
+  const markdown = noteMarkdownDocument(note, note.payload.markdown);
+  return {
+    ...note,
+    meta: {
+      ...note.meta,
+      contentHash: noteContentHash(markdown),
+      frontmatterHash: noteContentHash(noteFrontmatter(note))
+    },
+    payload: {
+      ...note.payload,
+      excerpt: (payload.notes || strategyTitle || "").slice(0, 160)
+    }
+  };
 }
 
 async function openExternalUrl(url: string) {
@@ -732,6 +821,9 @@ export function App() {
   const [selectedCalendarEventKey, setSelectedCalendarEventKey] = useState<string | null>(null);
   const [selectedTodoId, setSelectedTodoId] = useState<string | null>(null);
   const [selectedStrategyTodoId, setSelectedStrategyTodoId] = useState<string | null>(null);
+  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const [noteContent, setNoteContent] = useState("");
+  const [noteLoading, setNoteLoading] = useState(false);
   const [showCompleted, setShowCompleted] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const stateRef = useRef(state);
@@ -778,6 +870,7 @@ export function App() {
   const selectedStrategyTodo = taskItems.find(
     (item) => item.meta.id === selectedStrategyTodoId && item.meta.strategyThreadId === selectedThreadId
   );
+  const selectedNote = state.notes.find((note) => note.meta.id === selectedNoteId);
   const selectedTodoSubtasks = useMemo(
     () => directTodoSubtasks(taskItems, selectedTodo?.meta.id),
     [taskItems, selectedTodo?.meta.id]
@@ -800,6 +893,32 @@ export function App() {
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadSelectedNote() {
+      if (!selectedNote) {
+        setNoteContent("");
+        return;
+      }
+      setNoteLoading(true);
+      try {
+        const file = await readNoteFile(selectedNote.meta.canonicalPath);
+        if (!cancelled) {
+          setNoteContent(file.content || noteMarkdownDocument(selectedNote, selectedNote.payload.markdown));
+        }
+      } catch (error) {
+        console.warn("Could not read note file", error);
+        if (!cancelled) setNoteContent(noteMarkdownDocument(selectedNote, selectedNote.payload.markdown));
+      } finally {
+        if (!cancelled) setNoteLoading(false);
+      }
+    }
+    void loadSelectedNote();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedNote?.meta.id, selectedNote?.meta.canonicalPath]);
 
   useEffect(() => {
     return () => {
@@ -1061,6 +1180,126 @@ export function App() {
   function showToast(message: string) {
     setToast(message);
     window.setTimeout(() => setToast(null), 2200);
+  }
+
+  async function openNote(noteId: string) {
+    const note = stateRef.current.notes.find((item) => item.meta.id === noteId);
+    if (!note) {
+      showToast("Note not found");
+      return;
+    }
+    const timestamp = nowIso();
+    persist({
+      ...stateRef.current,
+      notes: stateRef.current.notes.map((item) =>
+        item.meta.id === noteId
+          ? { ...item, meta: { ...item.meta, lastOpenedAt: timestamp } }
+          : item
+      )
+    });
+    setSelectedNoteId(noteId);
+    setTab("vault");
+  }
+
+  async function openNoteForTodo(todo: DecryptedItem) {
+    const payload = todo.payload as ItemPayload;
+    const linkedNoteId = payload.noteId ?? todo.meta.noteId;
+    if (linkedNoteId && stateRef.current.notes.some((note) => note.meta.id === linkedNoteId)) {
+      await openNote(linkedNoteId);
+      return;
+    }
+
+    const confirmed = window.confirm("Create Note for this task?");
+    if (!confirmed) {
+      setSelectedTodoId(todo.meta.id);
+      return;
+    }
+
+    await ensureResolveVaultRoot().catch((error) => {
+      console.warn("Could not prepare Resolve Vault", error);
+    });
+    const strategyTitle = todo.meta.strategyThreadId
+      ? stateRef.current.strategyThreads.find((thread) => thread.meta.id === todo.meta.strategyThreadId)?.payload.title
+      : undefined;
+    const note = createNoteForTodoModel(todo, strategyTitle);
+    const markdown = noteMarkdownDocument(note, note.payload.markdown);
+    await writeNoteFile(note.meta.canonicalPath, markdown);
+    const timestamp = nowIso();
+    const nextItems = stateRef.current.items.map((item) => {
+      if (item.meta.id !== todo.meta.id) return item;
+      return {
+        ...item,
+        meta: {
+          ...item.meta,
+          noteId: note.meta.id,
+          updatedAt: timestamp
+        },
+        payload: {
+          ...(item.payload as ItemPayload),
+          noteId: note.meta.id
+        }
+      } satisfies DecryptedItem;
+    });
+    persist({
+      ...stateRef.current,
+      items: nextItems,
+      notes: [note, ...stateRef.current.notes]
+    });
+    setSelectedNoteId(note.meta.id);
+    setNoteContent(markdown);
+    setTab("vault");
+    showToast("Note created");
+  }
+
+  async function saveSelectedNote() {
+    const note = selectedNote;
+    if (!note) return;
+    const timestamp = nowIso();
+    const titleMatch = noteContent.match(/^#\s+(.+)$/m);
+    const title = titleMatch?.[1]?.trim() || note.meta.title;
+    const nextNote: DecryptedNote = {
+      ...note,
+      meta: {
+        ...note.meta,
+        title,
+        updatedAt: timestamp,
+        contentHash: noteContentHash(noteContent),
+        frontmatterHash: noteContentHash(noteFrontmatter({ ...note, meta: { ...note.meta, title, updatedAt: timestamp } }))
+      },
+      payload: {
+        ...note.payload,
+        title,
+        markdown: noteContent.replace(/^---[\s\S]*?---\s*/m, ""),
+        excerpt: noteContent.replace(/^---[\s\S]*?---\s*/m, "").replace(/^#.*$/m, "").trim().slice(0, 180)
+      }
+    };
+    const markdown = noteMarkdownDocument(nextNote, noteContent);
+    await writeNoteFile(nextNote.meta.canonicalPath, markdown);
+    persist({
+      ...stateRef.current,
+      notes: stateRef.current.notes.map((item) => item.meta.id === nextNote.meta.id ? nextNote : item)
+    });
+    setNoteContent(markdown);
+    showToast("Note saved");
+  }
+
+  function archiveNote(note: DecryptedNote) {
+    const timestamp = nowIso();
+    persist({
+      ...stateRef.current,
+      notes: stateRef.current.notes.map((item) =>
+        item.meta.id === note.meta.id
+          ? {
+              ...item,
+              meta: {
+                ...item.meta,
+                status: item.meta.status === "archived" ? "active" : "archived",
+                updatedAt: timestamp
+              }
+            }
+          : item
+      )
+    });
   }
 
   async function manualSyncNow() {
@@ -2359,6 +2598,7 @@ export function App() {
             todoCount={todoItems.length}
             calendarCount={state.calendarEvents.length}
             strategyCount={state.strategyThreads.length}
+            noteCount={state.notes.filter((note) => note.meta.status !== "archived").length}
             onChange={setTab}
           />
           <SyncPanel feishuSettings={feishuSettings} backendSettings={backendSettings} />
@@ -2391,6 +2631,7 @@ export function App() {
               onCaptureChange={setCaptureText}
               onCaptureStrategy={setCaptureStrategyId}
               onCaptureSave={handleCapture}
+              onOpenNote={openNoteForTodo}
               onOpenCalendar={openCalendarDraft}
               onAttachStrategy={attachTodoToStrategy}
               onComplete={(todo) => {
@@ -2462,6 +2703,7 @@ export function App() {
               selectedTodoSubtasks={selectedStrategyTodoSubtasks}
               calendarEvents={state.calendarEvents}
               onSelectTodo={(todo) => setSelectedStrategyTodoId(todo.meta.id)}
+              onOpenNote={openNoteForTodo}
               onCloseDetail={() => setSelectedStrategyTodoId(null)}
               onOpenCalendar={openCalendarDraft}
               onComplete={(todo) => {
@@ -2478,6 +2720,20 @@ export function App() {
               onSaveTodoDetail={updateTodoDetail}
               onAddSubtask={addTodoSubtask}
               onToggleSubtask={(todo) => updateTodo(todo.meta.id, { status: todo.meta.status === "done" ? "active" : "done" })}
+            />
+          )}
+          {tab === "vault" && (
+            <VaultView
+              notes={state.notes}
+              todos={taskItems}
+              threads={strategyThreads}
+              selectedNote={selectedNote}
+              content={noteContent}
+              loading={noteLoading}
+              onSelectNote={openNote}
+              onContent={setNoteContent}
+              onSave={() => void saveSelectedNote()}
+              onArchive={archiveNote}
             />
           )}
           {tab === "settings" && (
@@ -2547,6 +2803,7 @@ function TopBar({
     todo: "Todo",
     calendar: "Calendar",
     strategy: "Strategy",
+    vault: "Vault",
     settings: "Settings"
   }[tab];
 
@@ -2882,6 +3139,7 @@ function TodoView({
   onCaptureChange,
   onCaptureStrategy,
   onCaptureSave,
+  onOpenNote,
   onOpenCalendar,
   onAttachStrategy,
   onComplete,
@@ -2915,6 +3173,7 @@ function TodoView({
   onCaptureChange: (value: string) => void;
   onCaptureStrategy: (threadId: string) => void;
   onCaptureSave: () => void;
+  onOpenNote: (todo: DecryptedItem) => void | Promise<void>;
   onOpenCalendar: (todo: DecryptedItem) => void;
   onAttachStrategy: (todoId: string, threadId: string) => void;
   onComplete: (todo: DecryptedItem) => void;
@@ -3059,6 +3318,7 @@ function TodoView({
       onToggleCollapse={toggleCollapse}
       onPointerReorderStart={(event) => beginPointerReorder("todo", entry.todo.meta.id, event)}
       onComplete={onComplete}
+      onOpenNote={onOpenNote}
       onSelectTodo={(todo) => {
         if (!suppressNextClickRef.current) onSelectTodo(todo);
       }}
@@ -3193,6 +3453,7 @@ function TodoCard({
   onToggleCollapse,
   onPointerReorderStart,
   onComplete,
+  onOpenNote,
   onSelectTodo
 }: {
   todo: DecryptedItem;
@@ -3208,6 +3469,7 @@ function TodoCard({
   onToggleCollapse?: (todoId: string) => void;
   onPointerReorderStart?: (event: ReactPointerEvent<HTMLElement>) => void;
   onComplete: (todo: DecryptedItem) => void;
+  onOpenNote: (todo: DecryptedItem) => void | Promise<void>;
   onSelectTodo: (todo: DecryptedItem) => void;
 }) {
   const payload = todo.payload as ItemPayload;
@@ -3244,7 +3506,17 @@ function TodoCard({
       </button>
       <div className="item-main">
         <div className="todo-title-row">
-          <p>{payload.title}</p>
+          <button
+            className="todo-title-note-link"
+            onClick={(event) => {
+              event.stopPropagation();
+              void onOpenNote(todo);
+            }}
+            title="Open Note"
+          >
+            {payload.title}
+          </button>
+          {(payload.noteId ?? todo.meta.noteId) && <FileText size={13} className="todo-note-indicator" />}
         </div>
         {childCount > 0 && (
           <button
@@ -3967,6 +4239,7 @@ function StrategyView({
   onAddThread,
   onAddTask,
   onSelectTodo,
+  onOpenNote,
   onCloseDetail,
   onOpenCalendar,
   onComplete,
@@ -3996,6 +4269,7 @@ function StrategyView({
   onAddThread: () => void;
   onAddTask: () => void;
   onSelectTodo: (todo: DecryptedItem) => void;
+  onOpenNote: (todo: DecryptedItem) => void | Promise<void>;
   onCloseDetail: () => void;
   onOpenCalendar: (todo: DecryptedItem) => void;
   onComplete: (todo: DecryptedItem) => void;
@@ -4177,7 +4451,16 @@ function StrategyView({
                     <div>
                       <StatusPill tone="success" label="Todo" />
                       <div className="strategy-note-title-row">
-                        <h3>{(todo.payload as ItemPayload).title}</h3>
+                        <button
+                          className="strategy-note-title-button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void onOpenNote(todo);
+                          }}
+                        >
+                          {(todo.payload as ItemPayload).title}
+                        </button>
+                        {((todo.payload as ItemPayload).noteId ?? todo.meta.noteId) && <FileText size={13} />}
                       </div>
                       {childCount > 0 && (
                         <button
@@ -4264,6 +4547,151 @@ function StrategyView({
           onArchive={onArchive}
         />
       )}
+    </div>
+  );
+}
+
+function VaultView({
+  notes,
+  todos,
+  threads,
+  selectedNote,
+  content,
+  loading,
+  onSelectNote,
+  onContent,
+  onSave,
+  onArchive
+}: {
+  notes: DecryptedNote[];
+  todos: DecryptedItem[];
+  threads: DecryptedStrategyThread[];
+  selectedNote?: DecryptedNote;
+  content: string;
+  loading: boolean;
+  onSelectNote: (noteId: string) => void | Promise<void>;
+  onContent: (content: string) => void;
+  onSave: () => void;
+  onArchive: (note: DecryptedNote) => void;
+}) {
+  const [view, setView] = useState<"recent" | "dates" | "strategy" | "archive">("recent");
+  const activeNotes = notes.filter((note) => note.meta.status !== "archived");
+  const archivedNotes = notes.filter((note) => note.meta.status === "archived");
+  const visibleNotes = (view === "archive" ? archivedNotes : activeNotes).sort((a, b) => b.meta.updatedAt.localeCompare(a.meta.updatedAt));
+  const todoById = new Map(todos.map((todo) => [todo.meta.id, todo] as const));
+  const threadById = new Map(threads.map((thread) => [thread.meta.id, thread] as const));
+
+  const groupedNotes = (() => {
+    if (view === "strategy") {
+      const groups = new Map<string, DecryptedNote[]>();
+      visibleNotes.forEach((note) => {
+        const key = note.meta.strategyThreadId ?? "No strategy";
+        groups.set(key, [...(groups.get(key) ?? []), note]);
+      });
+      return Array.from(groups.entries()).map(([key, value]) => ({
+        title: threadById.get(key)?.payload.title ?? key,
+        notes: value
+      }));
+    }
+    if (view === "dates") {
+      const groups = new Map<string, DecryptedNote[]>();
+      visibleNotes.forEach((note) => {
+        const key = new Date(note.meta.updatedAt).toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" });
+        groups.set(key, [...(groups.get(key) ?? []), note]);
+      });
+      return Array.from(groups.entries()).map(([title, value]) => ({ title, notes: value }));
+    }
+    return [{ title: view === "archive" ? "Archived" : "Recent", notes: visibleNotes }];
+  })();
+
+  const selectedTask = selectedNote?.meta.taskId ? todoById.get(selectedNote.meta.taskId) : undefined;
+  const selectedThread = selectedNote?.meta.strategyThreadId ? threadById.get(selectedNote.meta.strategyThreadId) : undefined;
+
+  return (
+    <div className="vault-layout">
+      <aside className="vault-list-pane">
+        <div className="section-title-row">
+          <div>
+            <h2>Vault</h2>
+            <p>Markdown Notes live as local files. Views are index, not copies.</p>
+          </div>
+          <StatusPill tone="muted" label={`${notes.length} notes`} />
+        </div>
+        <SegmentedControl
+          value={view}
+          options={[
+            { value: "recent", label: "Recent" },
+            { value: "dates", label: "Dates" },
+            { value: "strategy", label: "Strategy" },
+            { value: "archive", label: "Archive" }
+          ]}
+          onChange={(value) => setView(value as "recent" | "dates" | "strategy" | "archive")}
+        />
+
+        <div className="vault-note-list">
+          {groupedNotes.map((group) => (
+            <section className="vault-note-group" key={group.title}>
+              <h3>{group.title}</h3>
+              {group.notes.length ? group.notes.map((note) => {
+                const taskExists = !note.meta.taskId || todoById.has(note.meta.taskId);
+                const thread = note.meta.strategyThreadId ? threadById.get(note.meta.strategyThreadId) : undefined;
+                return (
+                  <button
+                    className={`vault-note-row ${selectedNote?.meta.id === note.meta.id ? "active" : ""}`}
+                    key={note.meta.id}
+                    onClick={() => void onSelectNote(note.meta.id)}
+                  >
+                    <FileText size={15} />
+                    <span>{note.meta.title}</span>
+                    <small>
+                      {thread?.payload.title ?? (taskExists ? relativeAgeLabel(note.meta.updatedAt) : "Orphan")}
+                    </small>
+                  </button>
+                );
+              }) : <EmptyState label="No notes" />}
+            </section>
+          ))}
+        </div>
+      </aside>
+
+      <section className="vault-editor-pane">
+        {selectedNote ? (
+          <>
+            <div className="vault-editor-head">
+              <div>
+                <div className="eyebrow">Note</div>
+                <h2>{selectedNote.meta.title}</h2>
+                <p>{selectedNote.meta.canonicalPath}</p>
+              </div>
+              <div className="detail-head-actions">
+                <button className="secondary-button" onClick={onSave} disabled={loading}>
+                  <Send size={14} />
+                  Save
+                </button>
+                <button className="ghost-button" onClick={() => onArchive(selectedNote)}>
+                  <Archive size={14} />
+                  {selectedNote.meta.status === "archived" ? "Restore" : "Archive"}
+                </button>
+              </div>
+            </div>
+            <div className="vault-meta-strip">
+              <span>note_id: {selectedNote.meta.id}</span>
+              {selectedTask && <span>Task: {(selectedTask.payload as ItemPayload).title}</span>}
+              {selectedThread && <span>Strategy: {selectedThread.payload.title}</span>}
+              {!selectedTask && selectedNote.meta.taskId && <span>Orphan task link</span>}
+            </div>
+            <textarea
+              className="markdown-editor"
+              value={loading ? "Loading Note..." : content}
+              disabled={loading}
+              onChange={(event) => onContent(event.target.value)}
+              spellCheck={false}
+            />
+          </>
+        ) : (
+          <EmptyState label="选择一个 Note，或从 Task 标题创建新的 Note" />
+        )}
+      </section>
     </div>
   );
 }
@@ -4961,18 +5389,21 @@ function SidebarNav({
   todoCount,
   calendarCount,
   strategyCount,
+  noteCount,
   onChange
 }: {
   active: Tab;
   todoCount: number;
   calendarCount: number;
   strategyCount: number;
+  noteCount: number;
   onChange: (tab: Tab) => void;
 }) {
   const tabs: Array<{ id: Tab; label: string; icon: ReactNode; count?: number }> = [
     { id: "todo", label: "Todo", icon: <LayoutList size={18} />, count: todoCount },
     { id: "calendar", label: "Calendar", icon: <CalendarDays size={18} />, count: calendarCount },
     { id: "strategy", label: "Strategy", icon: <Brain size={18} />, count: strategyCount },
+    { id: "vault", label: "Vault", icon: <FileText size={18} />, count: noteCount },
     { id: "settings", label: "Settings", icon: <Settings size={18} /> }
   ];
 

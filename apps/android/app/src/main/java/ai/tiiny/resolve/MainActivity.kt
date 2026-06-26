@@ -247,6 +247,7 @@ private enum class Tab(
     Todo("Todo", Icons.Filled.TaskAlt),
     Calendar("Calendar", Icons.Filled.CalendarMonth),
     Strategy("Strategy", Icons.Filled.Psychology),
+    Vault("Vault", Icons.Filled.OpenInBrowser),
     Settings("Settings", Icons.Filled.Settings)
 }
 
@@ -288,6 +289,9 @@ private fun ResolveAndroidApp(
     var openedStrategyThreadId by rememberSaveable { mutableStateOf<String?>(null) }
     var showStrategyDraft by rememberSaveable { mutableStateOf(false) }
     var todoReturnStrategyThreadId by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedNoteId by rememberSaveable { mutableStateOf<String?>(null) }
+    var noteDraft by remember { mutableStateOf("") }
+    var pendingNoteTask by remember { mutableStateOf<ResolveItem?>(null) }
     var pendingTodoArchive by remember { mutableStateOf<ResolveItem?>(null) }
     var pendingTodoDelete by remember { mutableStateOf<ResolveItem?>(null) }
     var pendingTodoArchiveClear by remember { mutableStateOf(false) }
@@ -344,6 +348,60 @@ private fun ResolveAndroidApp(
         repository.save(next)
         repository.clearPendingQuickCaptures()
         todoScrollToTopSignal += 1
+    }
+
+    fun openNote(note: MarkdownNote) {
+        selectedNoteId = note.id
+        noteDraft = repository.readNote(note)
+        tab = Tab.Vault
+    }
+
+    fun openNoteForTask(item: ResolveItem) {
+        val existing = item.noteId?.let { noteId -> state.notes.find { it.id == noteId } }
+        if (existing != null) {
+            openNote(existing)
+        } else {
+            pendingNoteTask = item
+        }
+    }
+
+    fun createNoteForTask(item: ResolveItem) {
+        val strategyTitle = item.strategyThreadId?.let { threadId ->
+            state.threads.find { it.id == threadId }?.title
+        }
+        val (note, markdown) = repository.createNoteForTask(item, strategyTitle)
+        val now = Instant.now()
+        val nextItem = item.copy(noteId = note.id, updatedAt = now)
+        val next = state.copy(
+            items = state.items.map { if (it.id == item.id) nextItem else it },
+            notes = listOf(note) + state.notes
+        )
+        persist(next)
+        noteDraft = markdown
+        selectedNoteId = note.id
+        pendingNoteTask = null
+        tab = Tab.Vault
+    }
+
+    fun saveSelectedNote() {
+        val note = state.notes.find { it.id == selectedNoteId } ?: return
+        repository.writeNote(note, noteDraft)
+        val now = Instant.now()
+        val title = noteDraft.lineSequence()
+            .firstOrNull { it.trim().startsWith("# ") }
+            ?.trim()
+            ?.removePrefix("#")
+            ?.trim()
+            ?.ifBlank { null }
+            ?: note.title
+        persist(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(title = title, updatedAt = now) else it }))
+    }
+
+    fun archiveSelectedNote(note: MarkdownNote) {
+        val nextStatus = if (note.status == "archived") "active" else "archived"
+        persist(state.copy(notes = state.notes.map {
+            if (it.id == note.id) it.copy(status = nextStatus, updatedAt = Instant.now()) else it
+        }))
     }
 
     DisposableEffect(Unit) {
@@ -1252,7 +1310,8 @@ private fun ResolveAndroidApp(
             pendingCalendarDelete != null ||
             selectedTodoId != null ||
             (tab == Tab.Calendar && (editingCalendarEvent != null || selectedCalendarEvent != null || showCalendarDraft || expandedCalendarDate != null)) ||
-            (tab == Tab.Strategy && (showStrategyDraft || openedStrategyThreadId != null))
+            (tab == Tab.Strategy && (showStrategyDraft || openedStrategyThreadId != null)) ||
+            (tab == Tab.Vault && selectedNoteId != null)
 
     fun navigateBack() {
         when {
@@ -1274,6 +1333,7 @@ private fun ResolveAndroidApp(
             tab == Tab.Calendar && expandedCalendarDate != null -> expandedCalendarDate = null
             tab == Tab.Strategy && showStrategyDraft -> showStrategyDraft = false
             tab == Tab.Strategy && openedStrategyThreadId != null -> openedStrategyThreadId = null
+            tab == Tab.Vault && selectedNoteId != null -> selectedNoteId = null
         }
     }
 
@@ -1286,7 +1346,8 @@ private fun ResolveAndroidApp(
             selectedCalendarEvent != null ||
             editingCalendarEvent != null ||
             showCalendarDraft ||
-            (tab == Tab.Strategy && (openedStrategyThreadId != null || showStrategyDraft))
+            (tab == Tab.Strategy && (openedStrategyThreadId != null || showStrategyDraft)) ||
+            (tab == Tab.Vault && selectedNoteId != null)
 
     ResolveTheme {
         Box(
@@ -1381,7 +1442,8 @@ private fun ResolveAndroidApp(
                     showCalendarDraft.toString(),
                     expandedCalendarDate?.toString().orEmpty(),
                     openedStrategyThreadId.orEmpty(),
-                    showStrategyDraft.toString()
+                    showStrategyDraft.toString(),
+                    selectedNoteId.orEmpty()
                 ).joinToString(":")
                 Box(
                     Modifier
@@ -1418,7 +1480,8 @@ private fun ResolveAndroidApp(
                                         selectedTodoId = null
                                         tab = Tab.Calendar
                                         showCalendarDraft = true
-                                    }
+                                    },
+                                    onNote = { openNoteForTask(it) }
                                 )
                             } else {
                                 TodoScreen(
@@ -1536,6 +1599,17 @@ private fun ResolveAndroidApp(
                             onArchiveThread = { pendingStrategyArchive = it }
                         )
 
+                        Tab.Vault -> VaultScreen(
+                            state = state,
+                            selectedNoteId = selectedNoteId,
+                            noteDraft = noteDraft,
+                            onSelectNote = { openNote(it) },
+                            onNoteDraft = { noteDraft = it },
+                            onSave = { saveSelectedNote() },
+                            onArchive = { note -> archiveSelectedNote(note) },
+                            onCloseNote = { selectedNoteId = null }
+                        )
+
                         Tab.Settings -> SettingsScreen(
                             state = state,
                             isConnecting = isConnecting,
@@ -1617,6 +1691,16 @@ private fun ResolveAndroidApp(
                     deleteCalendarEvent(event)
                     pendingCalendarDelete = null
                 }
+            )
+        }
+        pendingNoteTask?.let { item ->
+            ConfirmActionDialog(
+                title = "Create Note?",
+                message = item.title,
+                confirmLabel = "Create",
+                danger = false,
+                onDismiss = { pendingNoteTask = null },
+                onConfirm = { createNoteForTask(item) }
             )
         }
     }
@@ -3749,7 +3833,8 @@ private fun TodoDetailPage(
     onToggleSubtask: (ResolveItem) -> Unit,
     onAddSubtask: (String) -> Unit,
     onArchive: (ResolveItem) -> Unit,
-    onCalendar: (ResolveItem) -> Unit
+    onCalendar: (ResolveItem) -> Unit,
+    onNote: (ResolveItem) -> Unit
 ) {
     val context = LocalContext.current
     var title by remember(item.id) { mutableStateOf(item.title) }
@@ -3853,6 +3938,15 @@ private fun TodoDetailPage(
                             Spacer(Modifier.width(6.dp))
                             Text("Calendar", fontSize = ResolveType.BodySmall)
                         }
+                        Button(
+                            onClick = { onNote(currentItem()) },
+                            colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.InkSoft, contentColor = ResolveColors.Accent),
+                            modifier = Modifier.height(38.dp)
+                        ) {
+                            Icon(Icons.Filled.OpenInBrowser, contentDescription = null, Modifier.size(15.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Note", fontSize = ResolveType.BodySmall)
+                        }
                     }
                 }
             }
@@ -3920,12 +4014,205 @@ private fun TodoDetailPage(
 }
 
 @Composable
+private fun VaultScreen(
+    state: ResolveState,
+    selectedNoteId: String?,
+    noteDraft: String,
+    onSelectNote: (MarkdownNote) -> Unit,
+    onNoteDraft: (String) -> Unit,
+    onSave: () -> Unit,
+    onArchive: (MarkdownNote) -> Unit,
+    onCloseNote: () -> Unit
+) {
+    val selectedNote = state.notes.find { it.id == selectedNoteId }
+    if (selectedNote != null) {
+        NoteEditorPage(
+            note = selectedNote,
+            markdown = noteDraft,
+            threads = state.threads,
+            task = selectedNote.taskId?.let { taskId -> state.items.find { it.id == taskId } },
+            onMarkdown = onNoteDraft,
+            onSave = onSave,
+            onArchive = { onArchive(selectedNote) },
+            onClose = onCloseNote
+        )
+        return
+    }
+
+    var view by rememberSaveable { mutableStateOf("recent") }
+    val activeNotes = state.notes.filter { it.status != "archived" }
+    val archivedNotes = state.notes.filter { it.status == "archived" }
+    val visibleNotes = when (view) {
+        "archive" -> archivedNotes.sortedByDescending { it.updatedAt }
+        else -> activeNotes.sortedByDescending { it.updatedAt }
+    }
+
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        item {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf("recent" to "Recent", "date" to "Date", "strategy" to "Strategy", "archive" to "Archive").forEach { (key, label) ->
+                    AssistChip(
+                        onClick = { view = key },
+                        label = { Text(label, fontSize = ResolveType.Caption) },
+                        modifier = Modifier.height(32.dp)
+                    )
+                }
+            }
+        }
+
+        if (view == "strategy") {
+            val grouped = activeNotes.groupBy { it.strategyThreadId.orEmpty() }
+            state.threads.sortedWith(strategyThreadComparator).forEach { thread ->
+                val notes = grouped[thread.id].orEmpty().sortedByDescending { it.updatedAt }
+                if (notes.isNotEmpty()) {
+                    item { DetailSectionTitle(thread.title, notes.size.toString()) }
+                    items(notes, key = { it.id }) { note ->
+                        NoteListRow(note, state, onClick = { onSelectNote(note) })
+                    }
+                }
+            }
+            grouped[""].orEmpty().takeIf { it.isNotEmpty() }?.let { notes ->
+                item { DetailSectionTitle("Orphan Notes", notes.size.toString()) }
+                items(notes.sortedByDescending { it.updatedAt }, key = { it.id }) { note ->
+                    NoteListRow(note, state, onClick = { onSelectNote(note) })
+                }
+            }
+        } else if (view == "date") {
+            visibleNotes.groupBy { it.updatedAt.atZone(ZoneId.systemDefault()).toLocalDate() }
+                .toSortedMap(compareByDescending<LocalDate> { it })
+                .forEach { (date, notes) ->
+                    item { DetailSectionTitle(date.format(DateTimeFormatter.ofPattern("M月d日")), notes.size.toString()) }
+                    items(notes.sortedByDescending { it.updatedAt }, key = { it.id }) { note ->
+                        NoteListRow(note, state, onClick = { onSelectNote(note) })
+                    }
+                }
+        } else {
+            item { DetailSectionTitle(if (view == "archive") "Archived Notes" else "Notes", visibleNotes.size.toString()) }
+            if (visibleNotes.isEmpty()) {
+                item {
+                    Surface(color = ResolveColors.Surface, shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            "Click a task title to create its first Note.",
+                            modifier = Modifier.padding(14.dp),
+                            color = ResolveColors.Muted,
+                            fontSize = ResolveType.BodySmall
+                        )
+                    }
+                }
+            }
+            items(visibleNotes, key = { it.id }) { note ->
+                NoteListRow(note, state, onClick = { onSelectNote(note) })
+            }
+        }
+    }
+}
+
+@Composable
+private fun NoteListRow(note: MarkdownNote, state: ResolveState, onClick: () -> Unit) {
+    val thread = note.strategyThreadId?.let { id -> state.threads.find { it.id == id } }
+    val taskMissing = note.taskId != null && state.items.none { it.id == note.taskId }
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .border(1.dp, ResolveColors.GlassStroke, RoundedCornerShape(18.dp)),
+        color = ResolveColors.Glass,
+        shape = RoundedCornerShape(18.dp),
+        tonalElevation = 1.dp
+    ) {
+        Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.OpenInBrowser, contentDescription = null, tint = ResolveColors.Accent, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(note.title, color = ResolveColors.Text, fontSize = ResolveType.Body, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                    MetaPill("note_id ${note.id.takeLast(6)}")
+                    thread?.let { MetaPill(it.title, tone = "strategy") }
+                    if (taskMissing) MetaPill("Orphan")
+                    if (note.status == "archived") MetaPill("Archived")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NoteEditorPage(
+    note: MarkdownNote,
+    markdown: String,
+    threads: List<StrategyThread>,
+    task: ResolveItem?,
+    onMarkdown: (String) -> Unit,
+    onSave: () -> Unit,
+    onArchive: () -> Unit,
+    onClose: () -> Unit
+) {
+    val thread = note.strategyThreadId?.let { id -> threads.find { it.id == id } }
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        item {
+            DetailPageHeader(title = "Note", onClose = onClose)
+        }
+        item {
+            Surface(color = ResolveColors.Surface, shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(note.title, color = ResolveColors.Text, fontSize = ResolveType.CardTitle, fontWeight = FontWeight.SemiBold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                        MetaPill("note_id ${note.id.takeLast(6)}")
+                        task?.let { MetaPill("Task") }
+                        thread?.let { MetaPill(it.title, tone = "strategy") }
+                        if (task == null && note.taskId != null) MetaPill("Orphan")
+                    }
+                }
+            }
+        }
+        item {
+            Surface(color = ResolveColors.Glass, shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
+                CompactInputField(
+                    value = markdown,
+                    onValueChange = onMarkdown,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 420.dp)
+                        .padding(12.dp),
+                    placeholder = "Write in Markdown...",
+                    singleLine = false,
+                    minHeight = 420.dp,
+                    textStyle = TextStyle(
+                        color = ResolveColors.Text,
+                        fontSize = ResolveType.Body,
+                        lineHeight = 20.sp,
+                        platformStyle = PlatformTextStyle(includeFontPadding = false)
+                    )
+                )
+            }
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                Button(onClick = onSave, colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.Accent), modifier = Modifier.height(38.dp)) {
+                    Text("Save", fontSize = ResolveType.BodySmall)
+                }
+                TextButton(onClick = onArchive, colors = ButtonDefaults.textButtonColors(contentColor = ResolveColors.Muted)) {
+                    Icon(Icons.Filled.Archive, contentDescription = null, Modifier.size(15.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text(if (note.status == "archived") "Restore Note" else "Archive Note", fontSize = ResolveType.Caption)
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun BottomTabs(tab: Tab, onTab: (Tab) -> Unit) {
     NavigationBar(
         containerColor = ResolveColors.NavBar,
         tonalElevation = 0.dp
     ) {
-        listOf(Tab.Todo, Tab.Calendar, Tab.Strategy, Tab.Settings).forEach { item ->
+        listOf(Tab.Todo, Tab.Calendar, Tab.Strategy, Tab.Vault, Tab.Settings).forEach { item ->
             val selected = tab == item
             NavigationBarItem(
                 selected = selected,

@@ -30,6 +30,7 @@ data class ResolveItem(
     val strategyThreadId: String? = null,
     val sourceItemId: String? = null,
     val parentItemId: String? = null,
+    val noteId: String? = null,
     val sortOrder: Double? = null
 )
 
@@ -62,6 +63,18 @@ data class CalendarEvent(
     val strategyThreadId: String? = null,
     val canEdit: Boolean = true,
     val canDelete: Boolean = true
+)
+
+data class MarkdownNote(
+    val id: String = "note_${UUID.randomUUID()}",
+    val canonicalPath: String,
+    val title: String,
+    val status: String = "active",
+    val createdAt: Instant = Instant.now(),
+    val updatedAt: Instant = Instant.now(),
+    val taskId: String? = null,
+    val strategyThreadId: String? = null,
+    val contentHash: String? = null
 )
 
 data class FeishuSettings(
@@ -110,6 +123,7 @@ data class ResolveState(
     val items: List<ResolveItem>,
     val threads: List<StrategyThread>,
     val calendarEvents: List<CalendarEvent>,
+    val notes: List<MarkdownNote> = emptyList(),
     val feishuSettings: FeishuSettings = FeishuSettings(),
     val backendSettings: BackendSettings = BackendSettings()
 )
@@ -140,6 +154,7 @@ fun sampleResolveState(): ResolveState {
     return ResolveState(
         items = emptyList(),
         threads = emptyList(),
+        notes = emptyList(),
         calendarEvents = listOf(
             CalendarEvent(
                 provider = "feishu",

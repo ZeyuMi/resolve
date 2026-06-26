@@ -1,4 +1,4 @@
-export type Tab = "todo" | "calendar" | "strategy" | "settings";
+export type Tab = "todo" | "calendar" | "strategy" | "vault" | "settings";
 
 export type CalendarViewMode = "week" | "month" | "year";
 

@@ -6,12 +6,13 @@ import org.json.JSONObject
 import java.time.Duration
 import java.time.Instant
 
-class ResolveRepository(context: Context) {
+class ResolveRepository(private val context: Context) {
     private val prefs = context.getSharedPreferences("resolve_state", Context.MODE_PRIVATE)
     private val stateJsonKey = "state_json"
     private val appSyncCursorKey = "last_app_sync_cursor_v2"
     private val pendingQuickCapturesKey = "pending_quick_captures"
     private val appSyncCursorLookback = Duration.ofDays(30)
+    private val notesRoot by lazy { context.filesDir.resolve("resolve-vault").resolve("Notes") }
 
     fun load(): ResolveState {
         return synchronized(prefsLock) {
@@ -98,6 +99,7 @@ class ResolveRepository(context: Context) {
         .put("items", JSONArray(state.items.map(::encodeItem)))
         .put("threads", JSONArray(state.threads.map(::encodeThread)))
         .put("calendarEvents", JSONArray(state.calendarEvents.map(::encodeCalendarEvent)))
+        .put("notes", JSONArray(state.notes.map(::encodeNote)))
         .put("feishuSettings", encodeFeishuSettings(state.feishuSettings))
         .put("backendSettings", encodeBackendSettings(state.backendSettings))
 
@@ -105,9 +107,38 @@ class ResolveRepository(context: Context) {
         items = json.optJSONArray("items").orEmpty().mapJson(::decodeItem),
         threads = json.optJSONArray("threads").orEmpty().mapJson(::decodeThread),
         calendarEvents = json.optJSONArray("calendarEvents").orEmpty().mapJson(::decodeCalendarEvent),
+        notes = json.optJSONArray("notes").orEmpty().mapJson(::decodeNote),
         feishuSettings = decodeFeishuSettings(json.optJSONObject("feishuSettings") ?: JSONObject()),
         backendSettings = decodeBackendSettings(json.optJSONObject("backendSettings") ?: JSONObject())
     )
+
+    fun readNote(note: MarkdownNote): String {
+        val file = context.filesDir.resolve("resolve-vault").resolve(note.canonicalPath)
+        return if (file.exists()) file.readText() else defaultNoteMarkdown(note)
+    }
+
+    fun writeNote(note: MarkdownNote, markdown: String) {
+        val file = context.filesDir.resolve("resolve-vault").resolve(note.canonicalPath)
+        file.parentFile?.mkdirs()
+        file.writeText(markdown)
+    }
+
+    fun createNoteForTask(item: ResolveItem, strategyTitle: String?): Pair<MarkdownNote, String> {
+        val timestamp = Instant.now()
+        val id = "note_${java.util.UUID.randomUUID()}"
+        val note = MarkdownNote(
+            id = id,
+            title = item.title,
+            canonicalPath = notePath(id, item.title, timestamp),
+            createdAt = timestamp,
+            updatedAt = timestamp,
+            taskId = item.id,
+            strategyThreadId = item.strategyThreadId
+        )
+        val markdown = defaultNoteMarkdown(note, item.notes, strategyTitle)
+        writeNote(note, markdown)
+        return note.copy(contentHash = noteContentHash(markdown)) to markdown
+    }
 
     private fun drainPendingQuickCaptures(state: ResolveState): ResolveState {
         val pendingRaw = prefs.getString(pendingQuickCapturesKey, null) ?: return state
@@ -178,6 +209,7 @@ class ResolveRepository(context: Context) {
         .putOpt("strategyThreadId", item.strategyThreadId)
         .putOpt("sourceItemId", item.sourceItemId)
         .putOpt("parentItemId", item.parentItemId)
+        .putOpt("noteId", item.noteId)
         .putOpt("sortOrder", item.sortOrder)
 
     private fun decodeItem(json: JSONObject): ResolveItem {
@@ -200,7 +232,34 @@ class ResolveRepository(context: Context) {
             strategyThreadId = json.optNullableString("strategyThreadId"),
             sourceItemId = json.optNullableString("sourceItemId"),
             parentItemId = json.optNullableString("parentItemId"),
+            noteId = json.optNullableString("noteId"),
             sortOrder = json.optNullableDouble("sortOrder")
+        )
+    }
+
+    private fun encodeNote(note: MarkdownNote) = JSONObject()
+        .put("id", note.id)
+        .put("canonicalPath", note.canonicalPath)
+        .put("title", note.title)
+        .put("status", note.status)
+        .put("createdAt", note.createdAt.toString())
+        .put("updatedAt", note.updatedAt.toString())
+        .putOpt("taskId", note.taskId)
+        .putOpt("strategyThreadId", note.strategyThreadId)
+        .putOpt("contentHash", note.contentHash)
+
+    private fun decodeNote(json: JSONObject): MarkdownNote {
+        val createdAt = instantOrNow(json.optString("createdAt"))
+        return MarkdownNote(
+            id = json.optString("id"),
+            canonicalPath = json.optString("canonicalPath"),
+            title = json.optString("title"),
+            status = json.optString("status", "active"),
+            createdAt = createdAt,
+            updatedAt = instantOrNull(json.optString("updatedAt")) ?: createdAt,
+            taskId = json.optNullableString("taskId"),
+            strategyThreadId = json.optNullableString("strategyThreadId"),
+            contentHash = json.optNullableString("contentHash")
         )
     }
 
@@ -362,6 +421,48 @@ class ResolveRepository(context: Context) {
         }
     }
 }
+
+private fun notePath(noteId: String, title: String, createdAt: Instant): String {
+    val date = createdAt.atZone(java.time.ZoneId.systemDefault())
+    val year = date.year.toString()
+    val month = date.monthValue.toString().padStart(2, '0')
+    val slug = title.trim()
+        .lowercase()
+        .replace(Regex("[^\\p{L}\\p{N}]+"), "-")
+        .trim('-')
+        .take(60)
+        .ifBlank { "note" }
+    return "Notes/$year/$month/$noteId-$slug.md"
+}
+
+private fun defaultNoteMarkdown(note: MarkdownNote, body: String = "", strategyTitle: String? = null): String {
+    val frontmatter = buildString {
+        appendLine("---")
+        appendLine("note_id: ${note.id}")
+        appendLine("title: \"${note.title.replace("\"", "\\\"")}\"")
+        appendLine("status: ${note.status}")
+        appendLine("created_at: ${note.createdAt}")
+        appendLine("updated_at: ${note.updatedAt}")
+        note.taskId?.let { appendLine("task_id: $it") }
+        note.strategyThreadId?.let { appendLine("strategy_thread_id: $it") }
+        appendLine("---")
+        appendLine()
+    }
+    val content = buildString {
+        appendLine("# ${note.title}")
+        appendLine()
+        if (body.isNotBlank()) {
+            appendLine(body)
+            appendLine()
+        }
+        if (!strategyTitle.isNullOrBlank()) appendLine("Strategy: $strategyTitle")
+    }
+    return frontmatter + content
+}
+
+private fun noteContentHash(value: String): String =
+    value.fold(0) { hash, char -> hash * 31 + char.code }
+        .let { java.lang.Integer.toString(kotlin.math.abs(it), 36) }
 
 private fun JSONArray?.orEmpty() = this ?: JSONArray()
 

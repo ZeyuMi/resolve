@@ -7003,3 +7003,156 @@ body,
 .brand-mark svg circle {
   fill: #2f66dd !important;
 }
+
+.todo-title-note-link,
+.strategy-note-title-button {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.todo-title-note-link:hover,
+.strategy-note-title-button:hover {
+  color: var(--accent);
+}
+
+.todo-note-indicator,
+.strategy-note-title-row svg {
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+
+.vault-layout {
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(260px, 34%) minmax(0, 1fr);
+  gap: 0;
+  overflow: hidden;
+}
+
+.vault-list-pane {
+  min-height: 0;
+  overflow: auto;
+  border-right: 1px solid var(--native-line-soft, var(--line-soft));
+  background: rgba(248, 250, 253, 0.62);
+  padding: 14px;
+}
+
+.vault-list-pane .segmented-control {
+  margin: 8px 0 12px;
+}
+
+.vault-note-list {
+  display: grid;
+  gap: 14px;
+}
+
+.vault-note-group h3 {
+  margin: 0 0 6px;
+  color: var(--native-muted, var(--text-3));
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.vault-note-row {
+  width: 100%;
+  min-height: 34px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: transparent;
+  color: var(--native-secondary, var(--text-2));
+  text-align: left;
+}
+
+.vault-note-row:hover {
+  background: rgba(39, 100, 217, 0.07);
+}
+
+.vault-note-row.active {
+  background: rgba(39, 100, 217, 0.12);
+  color: var(--native-text, var(--text));
+}
+
+.vault-note-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 560;
+}
+
+.vault-note-row small {
+  color: var(--native-muted, var(--text-3));
+  font-size: 11px;
+}
+
+.vault-editor-pane {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  background: rgba(255, 255, 255, 0.58);
+  overflow: hidden;
+}
+
+.vault-editor-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 22px 10px;
+  border-bottom: 1px solid var(--native-line-soft, var(--line-soft));
+}
+
+.vault-editor-head h2 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 25px;
+}
+
+.vault-editor-head p {
+  margin: 4px 0 0;
+  color: var(--native-muted, var(--text-3));
+  font-size: 12px;
+}
+
+.vault-meta-strip {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 22px;
+  border-bottom: 1px solid var(--native-line-soft, var(--line-soft));
+  color: var(--native-muted, var(--text-3));
+  font-size: 11px;
+}
+
+.vault-meta-strip span {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(39, 100, 217, 0.07);
+}
+
+.markdown-editor {
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  resize: none;
+  padding: 20px 24px 40px;
+  background: transparent;
+  color: var(--native-text, var(--text));
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.65;
+}

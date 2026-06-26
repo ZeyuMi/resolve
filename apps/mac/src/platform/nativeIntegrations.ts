@@ -16,6 +16,11 @@ interface SecureStoreKey {
   account: string;
 }
 
+interface NativeNoteFileResult {
+  path: string;
+  content: string;
+}
+
 type ResolveNativeWindow = Window & {
   __resolveNativeHttpBridgeInstalled?: boolean;
 };
@@ -125,4 +130,27 @@ export async function clearSecureSyncSecret() {
     return;
   }
   await invoke("secure_store_delete", { key: key("sync_secret") });
+}
+
+export async function ensureResolveVaultRoot() {
+  if (!isTauriRuntime()) return "Resolve Vault";
+  return invoke<string>("resolve_vault_root");
+}
+
+export async function readNoteFile(path: string) {
+  if (!isTauriRuntime()) {
+    return {
+      path,
+      content: localStorage.getItem(`resolve:note-file:${path}`) ?? ""
+    };
+  }
+  return invoke<NativeNoteFileResult>("note_file_read", { path });
+}
+
+export async function writeNoteFile(path: string, content: string) {
+  if (!isTauriRuntime()) {
+    localStorage.setItem(`resolve:note-file:${path}`, content);
+    return { path, content };
+  }
+  return invoke<NativeNoteFileResult>("note_file_write", { input: { path, content } });
 }

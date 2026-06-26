@@ -3,8 +3,10 @@
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
+    fs,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
+    path::PathBuf,
     process::Command,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -24,6 +26,60 @@ struct FeishuOAuthResult {
 struct SecureStoreKey {
     service: String,
     account: String,
+}
+
+#[derive(Debug, Serialize)]
+struct NoteFileResult {
+    path: String,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct NoteFileWrite {
+    path: String,
+    content: String,
+}
+
+#[tauri::command]
+fn resolve_vault_root() -> Result<String, String> {
+    let root = default_vault_root()?;
+    fs::create_dir_all(root.join("Notes")).map_err(|error| {
+        format!("Could not create Resolve Vault folder: {error}")
+    })?;
+    fs::create_dir_all(root.join("Conflicts")).map_err(|error| {
+        format!("Could not create Resolve Vault conflict folder: {error}")
+    })?;
+    fs::create_dir_all(root.join("Archive")).map_err(|error| {
+        format!("Could not create Resolve Vault archive folder: {error}")
+    })?;
+    Ok(root.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn note_file_read(path: String) -> Result<NoteFileResult, String> {
+    let path = safe_note_path(&path)?;
+    let content = fs::read_to_string(&path).unwrap_or_default();
+    Ok(NoteFileResult {
+        path: path.to_string_lossy().to_string(),
+        content,
+    })
+}
+
+#[tauri::command]
+fn note_file_write(input: NoteFileWrite) -> Result<NoteFileResult, String> {
+    let path = safe_note_path(&input.path)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!("Could not create note folder: {error}")
+        })?;
+    }
+    fs::write(&path, input.content.as_bytes()).map_err(|error| {
+        format!("Could not write note file: {error}")
+    })?;
+    Ok(NoteFileResult {
+        path: path.to_string_lossy().to_string(),
+        content: input.content,
+    })
 }
 
 #[tauri::command]
@@ -318,13 +374,38 @@ fn random_state() -> String {
     format!("resolve-{fallback}-{}", std::process::id())
 }
 
+fn default_vault_root() -> Result<PathBuf, String> {
+    let home = std::env::var("HOME").map_err(|_| "Could not find HOME for Resolve Vault.".to_string())?;
+    Ok(PathBuf::from(home).join("Documents").join("Resolve Vault"))
+}
+
+fn safe_note_path(path: &str) -> Result<PathBuf, String> {
+    let root = default_vault_root()?;
+    let requested = PathBuf::from(path);
+    let full = if requested.is_absolute() {
+        requested
+    } else {
+        root.join(requested)
+    };
+    if full.components().any(|component| matches!(component, std::path::Component::ParentDir)) {
+        return Err("Note path cannot contain parent directory segments.".to_string());
+    }
+    if !full.starts_with(&root) {
+        return Err("Resolve can only read and write notes inside Resolve Vault.".to_string());
+    }
+    Ok(full)
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             run_feishu_oauth,
             secure_store_get,
             secure_store_set,
-            secure_store_delete
+            secure_store_delete,
+            resolve_vault_root,
+            note_file_read,
+            note_file_write
         ])
         .setup(|app| {
             let handle = app.handle();

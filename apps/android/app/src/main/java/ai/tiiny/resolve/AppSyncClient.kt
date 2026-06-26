@@ -82,6 +82,7 @@ class AppSyncClient(
             JSONObject()
                 .put("title", item.title)
                 .put("notes", item.notes.takeIf { it.isNotBlank() })
+                .put("noteId", item.noteId)
                 .put("sortOrder", item.sortOrder)
                 .put("statusChangedAt", item.statusChangedAt.toString())
         )
@@ -178,6 +179,7 @@ class AppSyncClient(
             strategyThreadId = row.optNullableString("strategy_thread_id"),
             sourceItemId = row.optNullableString("source_item_id"),
             parentItemId = row.optNullableString("parent_item_id"),
+            noteId = payload.optNullableString("noteId"),
             sortOrder = payload.optNullableDouble("sortOrder")
         )
     }
@@ -277,7 +279,8 @@ fun mergeEncryptedRemoteState(local: ResolveState, remote: ResolveState): Resolv
     return local.copy(
         items = items.values.toList(),
         threads = threads.values.toList(),
-        calendarEvents = normalizeCalendarEvents(localServerCalendars + newestCalendarById(localCalendars + remoteLocalCalendars))
+        calendarEvents = normalizeCalendarEvents(localServerCalendars + newestCalendarById(localCalendars + remoteLocalCalendars)),
+        notes = local.notes
     )
 }
 

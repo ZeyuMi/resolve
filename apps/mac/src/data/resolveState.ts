@@ -96,6 +96,7 @@ export function normalizeState(state: ResolveState): ResolveState {
           title: (item.payload as ItemPayload).title,
           content: (item.payload as ItemPayload).content,
           notes: (item.payload as ItemPayload).notes,
+          noteId: (item.payload as ItemPayload).noteId,
           sortOrder: (item.payload as ItemPayload).sortOrder,
           statusChangedAt: (item.payload as ItemPayload).statusChangedAt,
           attachments: (item.payload as ItemPayload).attachments

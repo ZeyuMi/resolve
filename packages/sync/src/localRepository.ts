@@ -1,9 +1,10 @@
-import { createSampleData, type DecryptedCalendarEvent, type DecryptedItem, type DecryptedStrategyThread } from "@resolve/core";
+import { createSampleData, type DecryptedCalendarEvent, type DecryptedItem, type DecryptedNote, type DecryptedStrategyThread } from "@resolve/core";
 
 export interface ResolveState {
   items: DecryptedItem[];
   strategyThreads: DecryptedStrategyThread[];
   calendarEvents: DecryptedCalendarEvent[];
+  notes: DecryptedNote[];
 }
 
 const storageKey = "resolve:v1";
@@ -16,7 +17,13 @@ export class BrowserLocalRepository {
       this.save(sample);
       return sample;
     }
-    return JSON.parse(raw) as ResolveState;
+    const parsed = JSON.parse(raw) as Partial<ResolveState>;
+    return {
+      items: parsed.items ?? [],
+      strategyThreads: parsed.strategyThreads ?? [],
+      calendarEvents: parsed.calendarEvents ?? [],
+      notes: parsed.notes ?? []
+    };
   }
 
   save(state: ResolveState) {

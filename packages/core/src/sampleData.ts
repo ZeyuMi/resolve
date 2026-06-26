@@ -55,6 +55,7 @@ export function createSampleData() {
   return {
     items: [] satisfies DecryptedItem[],
     strategyThreads: [] satisfies DecryptedStrategyThread[],
-    calendarEvents
+    calendarEvents,
+    notes: []
   };
 }
