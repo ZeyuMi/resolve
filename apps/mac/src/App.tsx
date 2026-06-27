@@ -2663,7 +2663,7 @@ export function App() {
   }
 
   return (
-    <div className={`app-shell tab-${tab} theme-feishu`}>
+    <div className={`app-shell tab-${tab} theme-redesign`}>
       <aside className="focus-sidebar">
         <div className="sidebar-brand">
           <ResolveMark />
@@ -4246,6 +4246,9 @@ function CalendarView({
           <button className="icon-button" onClick={() => movePeriod(-1)} aria-label="Previous period">
             <ChevronLeft size={18} />
           </button>
+          <button className="icon-button" onClick={() => movePeriod(1)} aria-label="Next period">
+            <ChevronRight size={18} />
+          </button>
           <div className="calendar-title-block">
             <h2>{monthLabel}</h2>
             <span>{viewMode}</span>
@@ -4265,9 +4268,6 @@ function CalendarView({
               <option value="month">Month</option>
               <option value="year">Year</option>
             </select>
-            <button className="icon-button" onClick={() => movePeriod(1)} aria-label="Next period">
-            <ChevronRight size={18} />
-            </button>
           </div>
         </div>
         {viewMode === "year" ? (
