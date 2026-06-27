@@ -4189,13 +4189,13 @@ function CalendarView({
 	      const cellHeight = gridRect.height / rows;
         const cellWidth = gridRect.width / 7;
       if (viewMode === "month") {
-        const dateArea = 31;
-        const verticalPadding = 14;
-        const rowHeight = 17;
-        const rowGap = 4;
+        const dateArea = 24;
+        const verticalPadding = 8;
+        const rowHeight = 19;
+        const rowGap = 1;
         const available = Math.max(cellHeight - dateArea - verticalPadding, 0);
         const rawSlots = Math.max(0, Math.min(9, Math.floor((available + rowGap) / (rowHeight + rowGap))));
-        const monthSlots = cellWidth < 92 || cellHeight < 76 ? 0 : rawSlots;
+        const monthSlots = cellWidth < 92 || cellHeight < 76 ? 0 : Math.max(3, rawSlots);
         setVisibleEventsPerCell((current) => (current === monthSlots ? current : monthSlots));
         return;
       }
@@ -4287,6 +4287,7 @@ function CalendarView({
           </button>
           <div className="calendar-title-block">
             <h2>{monthLabel}</h2>
+            <ChevronRight className="calendar-title-chevron" size={15} />
             <span>{viewMode}</span>
           </div>
           <div className="calendar-toolbar-actions">
@@ -4358,8 +4359,8 @@ function CalendarView({
                         {compactOverflow && (
                           <button
                             className="calendar-day-count"
-                            aria-label={`还有 ${hiddenEventCount} 项`}
-                            title={`还有 ${hiddenEventCount} 项`}
+                            aria-label={`+${hiddenEventCount} more`}
+                            title={`+${hiddenEventCount} more`}
                             onClick={(clickEvent) => {
                               clickEvent.stopPropagation();
                               openDayList(key);
@@ -4390,15 +4391,15 @@ function CalendarView({
                     {hasMoreEvents && !compactOverflow && (
                       <button
                         className="calendar-more-label"
-                        aria-label={`还有 ${hiddenEventCount} 项`}
-                        title={`还有 ${hiddenEventCount} 项`}
+                        aria-label={`+${hiddenEventCount} more`}
+                        title={`+${hiddenEventCount} more`}
                         onClick={(clickEvent) => {
                           clickEvent.stopPropagation();
                           openDayList(key);
                         }}
                         type="button"
                       >
-                        <span className="calendar-more-full">还有 {hiddenEventCount} 项</span>
+                        <span className="calendar-more-full">+{hiddenEventCount} more</span>
                         <span className="calendar-more-compact">+{hiddenEventCount}</span>
                         <span className="calendar-more-tiny">{hiddenEventCount}</span>
                       </button>
