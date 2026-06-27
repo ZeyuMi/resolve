@@ -122,6 +122,7 @@ import {
   runNativeFeishuOAuth,
   saveSecureFeishuCredentials,
   saveSecureSyncSecret,
+  deleteNoteFile,
   ensureResolveVaultRoot,
   readNoteFile,
   writeNoteFile
@@ -847,6 +848,7 @@ export function App() {
   const [selectedStrategyTodoId, setSelectedStrategyTodoId] = useState<string | null>(null);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [pendingNoteTodoId, setPendingNoteTodoId] = useState<string | null>(null);
+  const [pendingDeleteNoteId, setPendingDeleteNoteId] = useState<string | null>(null);
   const [noteContent, setNoteContent] = useState("");
   const [noteContentNoteId, setNoteContentNoteId] = useState<string | null>(null);
   const [noteLoading, setNoteLoading] = useState(false);
@@ -898,6 +900,7 @@ export function App() {
   );
   const selectedNote = state.notes.find((note) => note.meta.id === selectedNoteId);
   const pendingNoteTodo = taskItems.find((item) => item.meta.id === pendingNoteTodoId);
+  const pendingDeleteNote = state.notes.find((note) => note.meta.id === pendingDeleteNoteId);
   const selectedTodoSubtasks = useMemo(
     () => directTodoSubtasks(taskItems, selectedTodo?.meta.id),
     [taskItems, selectedTodo?.meta.id]
@@ -1346,6 +1349,32 @@ export function App() {
           : item
       )
     });
+  }
+
+  async function deleteArchivedNote(note: DecryptedNote) {
+    if (note.meta.status !== "archived") {
+      showToast("Archive the Note first");
+      return;
+    }
+    try {
+      await deleteNoteFile(note.meta.canonicalPath);
+    } catch (error) {
+      console.warn("Could not delete note file", error);
+      showToast("Note file delete failed");
+      return;
+    }
+    persist({
+      ...stateRef.current,
+      notes: stateRef.current.notes.filter((item) => item.meta.id !== note.meta.id)
+    });
+    if (selectedNoteId === note.meta.id) {
+      setSelectedNoteId(null);
+      setNoteContent("");
+      setNoteContentNoteId(null);
+      setNoteLoading(false);
+    }
+    setPendingDeleteNoteId(null);
+    showToast("Note deleted");
   }
 
   async function manualSyncNow() {
@@ -2789,6 +2818,7 @@ export function App() {
               }}
               onSave={() => void saveSelectedNote()}
               onArchive={archiveNote}
+              onRequestDelete={(note) => setPendingDeleteNoteId(note.meta.id)}
             />
           )}
           {tab === "settings" && (
@@ -2840,6 +2870,11 @@ export function App() {
         todo={pendingNoteTodo}
         onCancel={() => setPendingNoteTodoId(null)}
         onCreate={(todo) => void createNoteForTodo(todo)}
+      />
+      <DeleteNoteDialog
+        note={pendingDeleteNote}
+        onCancel={() => setPendingDeleteNoteId(null)}
+        onDelete={(note) => void deleteArchivedNote(note)}
       />
       {toast && <Toast message={toast} />}
     </div>
@@ -3106,6 +3141,45 @@ function CreateNoteDialog({
           <button className="primary-button" onClick={() => onCreate(todo)}>
             <FileText size={15} />
             Yes, create
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function DeleteNoteDialog({
+  note,
+  onCancel,
+  onDelete
+}: {
+  note?: DecryptedNote;
+  onCancel: () => void;
+  onDelete: (note: DecryptedNote) => void;
+}) {
+  if (!note) return null;
+
+  return (
+    <div className="confirm-backdrop" onClick={onCancel}>
+      <section
+        className="confirm-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Delete Note"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="confirm-dialog-copy">
+          <span className="eyebrow">Delete forever</span>
+          <h3>{note.meta.title}</h3>
+          <p>This removes the Note index and its local Markdown file. This cannot be undone.</p>
+        </div>
+        <div className="confirm-dialog-actions">
+          <button className="ghost-button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="danger-button" onClick={() => onDelete(note)}>
+            <Trash2 size={15} />
+            Delete
           </button>
         </div>
       </section>
@@ -4663,7 +4737,8 @@ function VaultView({
   onSelectNote,
   onContent,
   onSave,
-  onArchive
+  onArchive,
+  onRequestDelete
 }: {
   notes: DecryptedNote[];
   todos: DecryptedItem[];
@@ -4677,6 +4752,7 @@ function VaultView({
   onContent: (noteId: string, content: string) => void;
   onSave: () => void;
   onArchive: (note: DecryptedNote) => void;
+  onRequestDelete: (note: DecryptedNote) => void;
 }) {
   const [view, setView] = useState<"recent" | "dates" | "strategy" | "archive">("recent");
   const activeNotes = notes.filter((note) => note.meta.status !== "archived");
@@ -4765,17 +4841,23 @@ function VaultView({
                 const taskExists = !note.meta.taskId || todoById.has(note.meta.taskId);
                 const thread = note.meta.strategyThreadId ? threadById.get(note.meta.strategyThreadId) : undefined;
                 return (
-                  <button
-                    className={`vault-note-row ${selectedNote?.meta.id === note.meta.id ? "active" : ""}`}
-                    key={note.meta.id}
-                    onClick={() => void onSelectNote(note.meta.id)}
-                  >
-                    <FileText size={15} />
-                    <span>{note.meta.title}</span>
-                    <small>
-                      {thread?.payload.title ?? (taskExists ? relativeAgeLabel(note.meta.updatedAt) : "Orphan")}
-                    </small>
-                  </button>
+                  <div className="vault-note-row-wrap" key={note.meta.id}>
+                    <button
+                      className={`vault-note-row ${selectedNote?.meta.id === note.meta.id ? "active" : ""}`}
+                      onClick={() => void onSelectNote(note.meta.id)}
+                    >
+                      <FileText size={15} />
+                      <span>{note.meta.title}</span>
+                      <small>
+                        {thread?.payload.title ?? (taskExists ? relativeAgeLabel(note.meta.updatedAt) : "Orphan")}
+                      </small>
+                    </button>
+                    {view === "archive" && (
+                      <button className="vault-note-delete" onClick={() => onRequestDelete(note)}>
+                        Delete
+                      </button>
+                    )}
+                  </div>
                 );
               }) : <EmptyState label="No notes" />}
             </section>

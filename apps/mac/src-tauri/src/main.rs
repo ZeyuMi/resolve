@@ -83,6 +83,17 @@ fn note_file_write(input: NoteFileWrite) -> Result<NoteFileResult, String> {
 }
 
 #[tauri::command]
+fn note_file_delete(path: String) -> Result<(), String> {
+    let path = safe_note_path(&path)?;
+    if path.exists() {
+        fs::remove_file(&path).map_err(|error| {
+            format!("Could not delete note file: {error}")
+        })?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn run_feishu_oauth(
     app: tauri::AppHandle,
     app_id: String,
@@ -405,7 +416,8 @@ fn main() {
             secure_store_delete,
             resolve_vault_root,
             note_file_read,
-            note_file_write
+            note_file_write,
+            note_file_delete
         ])
         .setup(|app| {
             let handle = app.handle();

@@ -154,3 +154,11 @@ export async function writeNoteFile(path: string, content: string) {
   }
   return invoke<NativeNoteFileResult>("note_file_write", { input: { path, content } });
 }
+
+export async function deleteNoteFile(path: string) {
+  if (!isTauriRuntime()) {
+    localStorage.removeItem(`resolve:note-file:${path}`);
+    return;
+  }
+  await invoke("note_file_delete", { path });
+}

@@ -2595,6 +2595,24 @@ button:hover {
   margin-top: 18px;
 }
 
+.danger-button {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 9px;
+  padding: 0 12px;
+  background: rgba(199, 54, 47, 0.12);
+  color: var(--danger);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.danger-button:hover {
+  background: rgba(199, 54, 47, 0.18);
+}
+
 .quick-capture-icon {
   margin-top: 9px;
   color: var(--text-3);
@@ -7124,6 +7142,13 @@ body,
   text-transform: uppercase;
 }
 
+.vault-note-row-wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+
 .vault-note-row {
   width: 100%;
   min-height: 34px;
@@ -7159,6 +7184,21 @@ body,
 .vault-note-row small {
   color: var(--native-muted, var(--text-3));
   font-size: 11px;
+}
+
+.vault-note-delete {
+  min-height: 28px;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--danger);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.vault-note-delete:hover {
+  background: rgba(199, 54, 47, 0.1);
 }
 
 .vault-editor-pane {
