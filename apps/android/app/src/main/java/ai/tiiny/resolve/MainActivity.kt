@@ -248,7 +248,6 @@ private enum class Tab(
     Calendar("Calendar", Icons.Filled.CalendarMonth),
     Strategy("Strategy", Icons.Filled.Psychology),
     Vault("Vault", Icons.Filled.OpenInBrowser),
-    Lab("Lab", Icons.Filled.Settings),
     Settings("Settings", Icons.Filled.Settings)
 }
 
@@ -292,7 +291,6 @@ private fun ResolveAndroidApp(
     var todoReturnStrategyThreadId by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedNoteId by rememberSaveable { mutableStateOf<String?>(null) }
     var noteDraft by remember { mutableStateOf("") }
-    var uiStyle by rememberSaveable { mutableStateOf("Native") }
     var pendingNoteTask by remember { mutableStateOf<ResolveItem?>(null) }
     var pendingTodoArchive by remember { mutableStateOf<ResolveItem?>(null) }
     var pendingTodoDelete by remember { mutableStateOf<ResolveItem?>(null) }
@@ -1355,8 +1353,6 @@ private fun ResolveAndroidApp(
             (tab == Tab.Strategy && (openedStrategyThreadId != null || showStrategyDraft)) ||
             (tab == Tab.Vault && selectedNoteId != null)
 
-    ResolveColors.applyStyle(uiStyle)
-
     ResolveTheme {
         Box(
             modifier = Modifier
@@ -1616,11 +1612,6 @@ private fun ResolveAndroidApp(
                             onSave = { saveSelectedNote(it) },
                             onArchive = { note -> archiveSelectedNote(note) },
                             onCloseNote = { selectedNoteId = null }
-                        )
-
-                        Tab.Lab -> UiLabScreen(
-                            style = uiStyle,
-                            onStyle = { uiStyle = it }
                         )
 
                         Tab.Settings -> SettingsScreen(
@@ -3668,171 +3659,6 @@ private fun StrategyScreen(
 }
 
 @Composable
-private fun UiLabScreen(style: String, onStyle: (String) -> Unit) {
-    val styles = listOf(
-        "Native" to "清爽、接近系统 app",
-        "Dense" to "更高信息密度",
-        "Soft" to "更柔和、压力更低"
-    )
-    LazyColumn(
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-        modifier = Modifier.fillMaxSize()
-    ) {
-        item {
-            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                Text("UI Lab", color = ResolveColors.Text, fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
-                Text(
-                    "先在这里试视觉方向。数据和同步不受影响。",
-                    color = ResolveColors.Secondary,
-                    fontSize = ResolveType.Body,
-                    lineHeight = 20.sp
-                )
-            }
-        }
-        item {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.horizontalScroll(rememberScrollState())
-            ) {
-                styles.forEach { (name, description) ->
-                    val selected = style == name
-                    Surface(
-                        color = if (selected) ResolveColors.Accent else ResolveColors.Surface,
-                        contentColor = if (selected) Color.White else ResolveColors.Text,
-                        shape = RoundedCornerShape(18.dp),
-                        tonalElevation = if (selected) 2.dp else 0.dp,
-                        modifier = Modifier
-                            .width(154.dp)
-                            .clickable { onStyle(name) }
-                    ) {
-                        Column(
-                            Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(5.dp)
-                        ) {
-                            Text(name, fontSize = ResolveType.Body, fontWeight = FontWeight.SemiBold)
-                            Text(
-                                description,
-                                color = if (selected) Color.White.copy(alpha = 0.78f) else ResolveColors.Secondary,
-                                fontSize = ResolveType.Caption,
-                                lineHeight = 15.sp
-                            )
-                        }
-                    }
-                }
-            }
-        }
-        item {
-            UiLabPreviewCard(title = "Todo") {
-                UiLabTaskPreview(title = "整理融资叙事 v2", meta = "融资策略 · 今天 · 2 subtasks")
-                UiLabTaskPreview(title = "同步飞书会议链接", meta = "Completed · 2 days ago", done = true)
-            }
-        }
-        item {
-            UiLabPreviewCard(title = "Calendar") {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    listOf("23", "24", "25").forEachIndexed { index, day ->
-                        Surface(
-                            color = if (index == 1) ResolveColors.GlassControl else ResolveColors.SurfaceHigh,
-                            shape = RoundedCornerShape(16.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(128.dp)
-                        ) {
-                            Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                                Text(day, color = ResolveColors.Text, fontSize = ResolveType.Body, fontWeight = FontWeight.SemiBold)
-                                UiLabEventLine("09:30 晨会")
-                                UiLabEventLine("13:30 Investor call")
-                                if (index == 1) {
-                                    Text("还有 3 项", color = ResolveColors.Accent, fontSize = ResolveType.Caption, fontWeight = FontWeight.SemiBold)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        item {
-            UiLabPreviewCard(title = "Strategy") {
-                Text("产品方向 / PMF", color = ResolveColors.Text, fontSize = ResolveType.SectionTitle, fontWeight = FontWeight.SemiBold)
-                Text(
-                    "Hypothesis compact. Subtasks carry the motion.",
-                    color = ResolveColors.Secondary,
-                    fontSize = ResolveType.BodySmall,
-                    lineHeight = 18.sp
-                )
-                Spacer(Modifier.height(4.dp))
-                UiLabTaskPreview(title = "验证 enterprise workflow", meta = "Active")
-                UiLabTaskPreview(title = "整理 onboarding 卡点", meta = "Waiting")
-            }
-        }
-    }
-}
-
-@Composable
-private fun UiLabPreviewCard(title: String, content: @Composable () -> Unit) {
-    Surface(
-        color = ResolveColors.Surface,
-        shape = RoundedCornerShape(22.dp),
-        tonalElevation = 1.dp,
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(
-            Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Text(title, color = ResolveColors.Secondary, fontSize = ResolveType.Caption, fontWeight = FontWeight.SemiBold)
-            content()
-        }
-    }
-}
-
-@Composable
-private fun UiLabTaskPreview(title: String, meta: String, done: Boolean = false) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Surface(
-            color = if (done) ResolveColors.Accent else Color.Transparent,
-            shape = CircleShape,
-            border = if (done) null else androidx.compose.foundation.BorderStroke(2.dp, ResolveColors.Muted),
-            modifier = Modifier.size(24.dp)
-        ) {
-            if (done) {
-                Icon(Icons.Filled.Check, contentDescription = null, tint = Color.White, modifier = Modifier.padding(5.dp))
-            }
-        }
-        Spacer(Modifier.width(10.dp))
-        Column(Modifier.weight(1f)) {
-            Text(
-                title,
-                color = if (done) ResolveColors.Muted else ResolveColors.Text,
-                fontSize = ResolveType.Body,
-                fontWeight = FontWeight.SemiBold,
-                textDecoration = if (done) TextDecoration.LineThrough else TextDecoration.None,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(meta, color = ResolveColors.Secondary, fontSize = ResolveType.Caption, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-    }
-}
-
-@Composable
-private fun UiLabEventLine(label: String) {
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-        Box(
-            Modifier
-                .size(5.dp)
-                .clip(CircleShape)
-                .background(ResolveColors.Accent)
-        )
-        Spacer(Modifier.width(5.dp))
-        Text(label, color = ResolveColors.Secondary, fontSize = ResolveType.Caption, maxLines = 1, overflow = TextOverflow.Ellipsis)
-    }
-}
-
-@Composable
 private fun SettingsScreen(
     state: ResolveState,
     isConnecting: Boolean,
@@ -4490,7 +4316,7 @@ private fun BottomTabs(tab: Tab, onTab: (Tab) -> Unit) {
         containerColor = ResolveColors.NavBar,
         tonalElevation = 0.dp
     ) {
-        listOf(Tab.Todo, Tab.Calendar, Tab.Strategy, Tab.Vault, Tab.Lab, Tab.Settings).forEach { item ->
+        listOf(Tab.Todo, Tab.Calendar, Tab.Strategy, Tab.Vault, Tab.Settings).forEach { item ->
             val selected = tab == item
             NavigationBarItem(
                 selected = selected,
@@ -5055,111 +4881,37 @@ private fun relativeTime(instant: Instant): String {
 }
 
 private object ResolveColors {
-    var Bg = Color(0xFFF6F8FE)
-    var Backdrop = Brush.linearGradient(
+    val Bg = Color(0xFFF5F7FA)
+    val Backdrop = Brush.linearGradient(
         listOf(
-            Color(0xFFF9FBFF),
-            Color(0xFFEFF5FF),
-            Color(0xFFFBFDFF)
+            Color(0xFFF8FAFD),
+            Color(0xFFF1F5FA),
+            Color(0xFFFFFFFF)
         )
     )
-    var Surface = Color(0xFFFFFFFF)
-    var SurfaceHigh = Color(0xFFF5F8FE)
-    var Glass = Color(0xFFFCFDFF)
-    var GlassStrong = Color(0xFFFFFFFF)
-    var GlassSoft = Color(0xFFF7FAFF)
-    var GlassMuted = Color(0xFFF3F6FC)
-    var GlassControl = Color(0xFFF6FAFF)
-    var GlassStroke = Color(0xD9FFFFFF)
-    var GlassStrokeSoft = Color(0x92FFFFFF)
-    var NavBar = Color(0xFFFCFDFF)
-    var Pill = Color(0xFFF6FAFF)
-    var InkSoft = Color(0xFFEAF2FF)
-    var AccentGlass = Color(0xDDEAF2FF)
-    var DangerGlass = Color(0xDFFFF0EF)
-    var WarningGlass = Color(0xE8FFF7E8)
-    var WarningStroke = Color(0x66E6B45B)
-    var Line = Color(0x2E516178)
-    var Text = Color(0xFF1C2430)
-    var Secondary = Color(0xFF596274)
-    var Muted = Color(0xFF929AAA)
-    var Accent = Color(0xFF2F66DD)
-    var Strategy = Color(0xFF6857D9)
-    var Danger = Color(0xFFC7362F)
-
-    fun applyStyle(style: String) {
-        when (style) {
-            "Dense" -> {
-                Bg = Color(0xFFF4F5F7)
-                Backdrop = Brush.linearGradient(listOf(Color(0xFFF8F9FB), Color(0xFFECEFF3), Color(0xFFF7F8FA)))
-                Surface = Color(0xFFFFFFFF)
-                SurfaceHigh = Color(0xFFF0F2F5)
-                Glass = Color(0xFFFFFFFF)
-                GlassStrong = Color(0xFFFFFFFF)
-                GlassSoft = Color(0xFFF3F5F8)
-                GlassMuted = Color(0xFFECEFF4)
-                GlassControl = Color(0xFFE9EEF6)
-                GlassStroke = Color(0xFFE2E6EE)
-                GlassStrokeSoft = Color(0xFFD9DEE8)
-                NavBar = Color(0xFFF8F9FB)
-                Pill = Color(0xFFECEFF4)
-                InkSoft = Color(0xFFE8EEF8)
-                AccentGlass = Color(0xFFE3ECFF)
-                Line = Color(0x38516178)
-                Text = Color(0xFF151A22)
-                Secondary = Color(0xFF515866)
-                Muted = Color(0xFF828A98)
-                Accent = Color(0xFF1F5FD1)
-                Strategy = Color(0xFF5D50C8)
-            }
-            "Soft" -> {
-                Bg = Color(0xFFFAF8F3)
-                Backdrop = Brush.linearGradient(listOf(Color(0xFFFFFCF7), Color(0xFFF1F6FF), Color(0xFFFBF4EF)))
-                Surface = Color(0xFFFFFFFF)
-                SurfaceHigh = Color(0xFFFAF7F1)
-                Glass = Color(0xFFFFFCF7)
-                GlassStrong = Color(0xFFFFFFFF)
-                GlassSoft = Color(0xFFF8F2EA)
-                GlassMuted = Color(0xFFF2EEE8)
-                GlassControl = Color(0xFFEFF4FF)
-                GlassStroke = Color(0xE9FFFFFF)
-                GlassStrokeSoft = Color(0xA6FFFFFF)
-                NavBar = Color(0xFFFFFCF7)
-                Pill = Color(0xFFF3F0EA)
-                InkSoft = Color(0xFFEAF1FF)
-                AccentGlass = Color(0xE9EAF1FF)
-                Line = Color(0x2E7A6F62)
-                Text = Color(0xFF25262B)
-                Secondary = Color(0xFF64606A)
-                Muted = Color(0xFF99939D)
-                Accent = Color(0xFF426FE6)
-                Strategy = Color(0xFF7A5CF0)
-            }
-            else -> {
-                Bg = Color(0xFFF6F8FE)
-                Backdrop = Brush.linearGradient(listOf(Color(0xFFF9FBFF), Color(0xFFEFF5FF), Color(0xFFFBFDFF)))
-                Surface = Color(0xFFFFFFFF)
-                SurfaceHigh = Color(0xFFF5F8FE)
-                Glass = Color(0xFFFCFDFF)
-                GlassStrong = Color(0xFFFFFFFF)
-                GlassSoft = Color(0xFFF7FAFF)
-                GlassMuted = Color(0xFFF3F6FC)
-                GlassControl = Color(0xFFF6FAFF)
-                GlassStroke = Color(0xD9FFFFFF)
-                GlassStrokeSoft = Color(0x92FFFFFF)
-                NavBar = Color(0xFFFCFDFF)
-                Pill = Color(0xFFF6FAFF)
-                InkSoft = Color(0xFFEAF2FF)
-                AccentGlass = Color(0xDDEAF2FF)
-                Line = Color(0x2E516178)
-                Text = Color(0xFF1C2430)
-                Secondary = Color(0xFF596274)
-                Muted = Color(0xFF929AAA)
-                Accent = Color(0xFF2F66DD)
-                Strategy = Color(0xFF6857D9)
-            }
-        }
-    }
+    val Surface = Color(0xFFFFFFFF)
+    val SurfaceHigh = Color(0xFFF2F6FC)
+    val Glass = Color(0xFFFFFFFF)
+    val GlassStrong = Color(0xFFFFFFFF)
+    val GlassSoft = Color(0xFFF7FAFD)
+    val GlassMuted = Color(0xFFF0F3F8)
+    val GlassControl = Color(0xFFEAF2FF)
+    val GlassStroke = Color(0xFFE4EAF2)
+    val GlassStrokeSoft = Color(0xFFDDE5EF)
+    val NavBar = Color(0xFFFFFFFF)
+    val Pill = Color(0xFFF0F4FA)
+    val InkSoft = Color(0xFFE8F1FF)
+    val AccentGlass = Color(0xFFE6F0FF)
+    val DangerGlass = Color(0xFFFFF0EF)
+    val WarningGlass = Color(0xFFFFF7E8)
+    val WarningStroke = Color(0x66E6B45B)
+    val Line = Color(0x26516178)
+    val Text = Color(0xFF1F2329)
+    val Secondary = Color(0xFF646A73)
+    val Muted = Color(0xFF8F959E)
+    val Accent = Color(0xFF3370FF)
+    val Strategy = Color(0xFF6B5CFF)
+    val Danger = Color(0xFFD83931)
 }
 
 private object ResolveType {
