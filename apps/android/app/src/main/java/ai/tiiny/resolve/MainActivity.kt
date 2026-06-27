@@ -350,9 +350,19 @@ private fun ResolveAndroidApp(
         todoScrollToTopSignal += 1
     }
 
+    fun normalizedNote(note: MarkdownNote): MarkdownNote {
+        val task = note.taskId?.let { taskId -> state.items.find { it.id == taskId } } ?: return note
+        val next = repository.canonicalizeNoteForTask(note, task)
+        if (next != note) {
+            persist(state.copy(notes = state.notes.map { if (it.id == note.id) next else it }))
+        }
+        return next
+    }
+
     fun openNote(note: MarkdownNote) {
-        selectedNoteId = note.id
-        noteDraft = repository.readNoteBody(note)
+        val nextNote = normalizedNote(note)
+        selectedNoteId = nextNote.id
+        noteDraft = repository.readNoteBody(nextNote)
         tab = Tab.Vault
     }
 
@@ -386,14 +396,8 @@ private fun ResolveAndroidApp(
     fun saveSelectedNote() {
         val note = state.notes.find { it.id == selectedNoteId } ?: return
         val now = Instant.now()
-        val title = noteDraft.lineSequence()
-            .firstOrNull { it.trim().startsWith("# ") }
-            ?.trim()
-            ?.removePrefix("#")
-            ?.trim()
-            ?.ifBlank { null }
-            ?: note.title
-        val nextNote = note.copy(title = title, updatedAt = now)
+        val canonicalNote = normalizedNote(note)
+        val nextNote = canonicalNote.copy(updatedAt = now)
         repository.writeNoteBody(nextNote, noteDraft)
         persist(state.copy(notes = state.notes.map { if (it.id == note.id) nextNote else it }))
     }
@@ -4116,6 +4120,8 @@ private fun VaultScreen(
 @Composable
 private fun NoteListRow(note: MarkdownNote, state: ResolveState, onClick: () -> Unit) {
     val thread = note.strategyThreadId?.let { id -> state.threads.find { it.id == id } }
+    val task = note.taskId?.let { id -> state.items.find { it.id == id } }
+    val displayTitle = task?.title?.takeIf { it.isNotBlank() } ?: note.title
     val taskMissing = note.taskId != null && state.items.none { it.id == note.taskId }
     Surface(
         modifier = Modifier
@@ -4130,7 +4136,7 @@ private fun NoteListRow(note: MarkdownNote, state: ResolveState, onClick: () -> 
             Icon(Icons.Filled.OpenInBrowser, contentDescription = null, tint = ResolveColors.Accent, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(note.title, color = ResolveColors.Text, fontSize = ResolveType.Body, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(displayTitle, color = ResolveColors.Text, fontSize = ResolveType.Body, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
                     MetaPill("note_id ${note.id.takeLast(6)}")
                     thread?.let { MetaPill(it.title, tone = "strategy") }
@@ -4154,6 +4160,7 @@ private fun NoteEditorPage(
     onClose: () -> Unit
 ) {
     val thread = note.strategyThreadId?.let { id -> threads.find { it.id == id } }
+    val displayTitle = task?.title?.takeIf { it.isNotBlank() } ?: note.title
     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
             DetailPageHeader(title = "Note", onClose = onClose)
@@ -4161,7 +4168,7 @@ private fun NoteEditorPage(
         item {
             Surface(color = ResolveColors.Surface, shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(note.title, color = ResolveColors.Text, fontSize = ResolveType.CardTitle, fontWeight = FontWeight.SemiBold)
+                    Text(displayTitle, color = ResolveColors.Text, fontSize = ResolveType.CardTitle, fontWeight = FontWeight.SemiBold)
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
                         MetaPill("note_id ${note.id.takeLast(6)}")
                         task?.let { MetaPill("Task") }

@@ -174,6 +174,35 @@ function notePathFor(noteId: string, title: string, createdAt = nowIso()) {
   return `Notes/${year}/${month}/${noteId}-${slugifyNoteTitle(title)}.md`;
 }
 
+function titleForNote(note: DecryptedNote, todo?: DecryptedItem) {
+  const todoTitle = todo ? (todo.payload as ItemPayload).title?.trim() : "";
+  return todoTitle || note.meta.title || note.payload.title || "Untitled Note";
+}
+
+function noteWithTitle(note: DecryptedNote, title: string, updatedAt = note.meta.updatedAt): DecryptedNote {
+  const canonicalPath = notePathFor(note.meta.id, title, note.meta.createdAt);
+  const nextNote = {
+    ...note,
+    meta: {
+      ...note.meta,
+      title,
+      canonicalPath,
+      updatedAt
+    },
+    payload: {
+      ...note.payload,
+      title
+    }
+  };
+  return {
+    ...nextNote,
+    meta: {
+      ...nextNote.meta,
+      frontmatterHash: noteContentHash(noteFrontmatter(nextNote))
+    }
+  };
+}
+
 function noteFrontmatter(note: DecryptedNote) {
   const lines = [
     "---",
@@ -194,9 +223,18 @@ function stripNoteFrontmatter(markdown = "") {
   return markdown.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
 }
 
+function stripGeneratedNoteTitle(markdown: string, title: string) {
+  const body = stripNoteFrontmatter(markdown).trimStart();
+  const lines = body.split(/\r?\n/);
+  if (lines[0]?.trim() === `# ${title}`) {
+    return lines.slice(1).join("\n").trimStart();
+  }
+  return body;
+}
+
 function noteMarkdownDocument(note: DecryptedNote, body = "") {
   const title = note.meta.title || note.payload.title || "Untitled Note";
-  const content = stripNoteFrontmatter(body).trim() || `# ${title}\n\n`;
+  const content = stripGeneratedNoteTitle(body, title).trim();
   return `${noteFrontmatter(note)}${content}`;
 }
 
@@ -219,7 +257,7 @@ function createNoteForTodoModel(todo: DecryptedItem, strategyTitle?: string): De
     },
     payload: {
       title,
-      markdown: `# ${title}\n\n${payload.notes ? `${payload.notes}\n\n` : ""}${strategyTitle ? `Strategy: ${strategyTitle}\n` : ""}`
+      markdown: `${payload.notes ? `${payload.notes}\n\n` : ""}${strategyTitle ? `Strategy: ${strategyTitle}\n` : ""}`
     }
   };
   const markdown = noteMarkdownDocument(note, note.payload.markdown);
@@ -939,13 +977,13 @@ export function App() {
       try {
         const file = await readNoteFile(selectedNote.meta.canonicalPath);
         if (!cancelled) {
-          setNoteContent(stripNoteFrontmatter(file.content || noteMarkdownDocument(selectedNote, selectedNote.payload.markdown)));
+          setNoteContent(stripGeneratedNoteTitle(file.content || noteMarkdownDocument(selectedNote, selectedNote.payload.markdown), selectedNote.meta.title));
           setNoteContentNoteId(selectedNote.meta.id);
         }
       } catch (error) {
         console.warn("Could not read note file", error);
         if (!cancelled) {
-          setNoteContent(stripNoteFrontmatter(noteMarkdownDocument(selectedNote, selectedNote.payload.markdown)));
+          setNoteContent(stripGeneratedNoteTitle(noteMarkdownDocument(selectedNote, selectedNote.payload.markdown), selectedNote.meta.title));
           setNoteContentNoteId(selectedNote.meta.id);
         }
       } finally {
@@ -1220,12 +1258,57 @@ export function App() {
     window.setTimeout(() => setToast(null), 2200);
   }
 
+  async function normalizeNoteIdentity(note: DecryptedNote) {
+    const task = note.meta.taskId
+      ? stateRef.current.items.find((item) => item.meta.id === note.meta.taskId)
+      : undefined;
+    if (!task) return note;
+
+    const title = titleForNote(note, task);
+    const normalizedNote = noteWithTitle(note, title);
+    if (normalizedNote.meta.title === note.meta.title && normalizedNote.meta.canonicalPath === note.meta.canonicalPath) {
+      return note;
+    }
+
+    let body = note.payload.markdown ?? "";
+    try {
+      const existingFile = await readNoteFile(note.meta.canonicalPath);
+      body = stripGeneratedNoteTitle(existingFile.content || body, note.meta.title);
+    } catch (error) {
+      console.warn("Could not read note before identity migration", error);
+      body = stripGeneratedNoteTitle(body, note.meta.title);
+    }
+
+    const markdown = noteMarkdownDocument(normalizedNote, body);
+    await writeNoteFile(normalizedNote.meta.canonicalPath, markdown);
+    if (normalizedNote.meta.canonicalPath !== note.meta.canonicalPath) {
+      await deleteNoteFile(note.meta.canonicalPath).catch((error) => {
+        console.warn("Could not remove old note file after identity migration", error);
+      });
+    }
+
+    return {
+      ...normalizedNote,
+      meta: {
+        ...normalizedNote.meta,
+        contentHash: noteContentHash(markdown),
+        frontmatterHash: noteContentHash(noteFrontmatter(normalizedNote))
+      },
+      payload: {
+        ...normalizedNote.payload,
+        markdown: body,
+        excerpt: stripGeneratedNoteTitle(body, normalizedNote.meta.title).replace(/^#.*$/m, "").trim().slice(0, 180)
+      }
+    };
+  }
+
   async function openNote(noteId: string) {
     const note = stateRef.current.notes.find((item) => item.meta.id === noteId);
     if (!note) {
       showToast("Note not found");
       return;
     }
+    const normalizedNote = await normalizeNoteIdentity(note);
     setNoteLoading(true);
     setNoteContent("");
     setNoteContentNoteId(null);
@@ -1234,7 +1317,7 @@ export function App() {
       ...stateRef.current,
       notes: stateRef.current.notes.map((item) =>
         item.meta.id === noteId
-          ? { ...item, meta: { ...item.meta, lastOpenedAt: timestamp } }
+          ? { ...normalizedNote, meta: { ...normalizedNote.meta, lastOpenedAt: timestamp } }
           : item
       )
     });
@@ -1285,7 +1368,7 @@ export function App() {
       notes: [note, ...stateRef.current.notes]
     });
     setSelectedNoteId(note.meta.id);
-    setNoteContent(stripNoteFrontmatter(markdown));
+    setNoteContent(stripGeneratedNoteTitle(markdown, note.meta.title));
     setNoteContentNoteId(note.meta.id);
     setPendingNoteTodoId(null);
     setTab("vault");
@@ -1300,23 +1383,20 @@ export function App() {
     }
     const note = stateRef.current.notes.find((item) => item.meta.id === currentNoteId);
     if (!note) return;
+    const canonicalNote = await normalizeNoteIdentity(note);
     const timestamp = nowIso();
-    const editableBody = stripNoteFrontmatter(noteContent);
-    const titleMatch = editableBody.match(/^#\s+(.+)$/m);
-    const title = titleMatch?.[1]?.trim() || note.meta.title;
-    const nextFrontmatterNote = { ...note, meta: { ...note.meta, title, updatedAt: timestamp } };
+    const editableBody = stripGeneratedNoteTitle(noteContent, canonicalNote.meta.title);
+    const nextFrontmatterNote = { ...canonicalNote, meta: { ...canonicalNote.meta, updatedAt: timestamp } };
     const nextNote: DecryptedNote = {
-      ...note,
+      ...canonicalNote,
       meta: {
-        ...note.meta,
-        title,
+        ...canonicalNote.meta,
         updatedAt: timestamp,
         contentHash: noteContentHash(editableBody),
         frontmatterHash: noteContentHash(noteFrontmatter(nextFrontmatterNote))
       },
       payload: {
-        ...note.payload,
-        title,
+        ...canonicalNote.payload,
         markdown: editableBody,
         excerpt: editableBody.replace(/^#.*$/m, "").trim().slice(0, 180)
       }
@@ -4839,6 +4919,8 @@ function VaultView({
               <h3>{group.title}</h3>
               {group.notes.length ? group.notes.map((note) => {
                 const taskExists = !note.meta.taskId || todoById.has(note.meta.taskId);
+                const task = note.meta.taskId ? todoById.get(note.meta.taskId) : undefined;
+                const displayTitle = titleForNote(note, task);
                 const thread = note.meta.strategyThreadId ? threadById.get(note.meta.strategyThreadId) : undefined;
                 return (
                   <div className="vault-note-row-wrap" key={note.meta.id}>
@@ -4847,7 +4929,7 @@ function VaultView({
                       onClick={() => void onSelectNote(note.meta.id)}
                     >
                       <FileText size={15} />
-                      <span>{note.meta.title}</span>
+                      <span>{displayTitle}</span>
                       <small>
                         {thread?.payload.title ?? (taskExists ? relativeAgeLabel(note.meta.updatedAt) : "Orphan")}
                       </small>
@@ -4870,7 +4952,7 @@ function VaultView({
             <div className="vault-editor-head">
               <div>
                 <div className="eyebrow">Note</div>
-                <h2>{selectedNote.meta.title}</h2>
+                <h2>{titleForNote(selectedNote, selectedTask)}</h2>
                 <p>{selectedNote.meta.canonicalPath}</p>
               </div>
               <div className="detail-head-actions">

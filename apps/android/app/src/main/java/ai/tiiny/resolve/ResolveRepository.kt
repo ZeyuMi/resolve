@@ -118,7 +118,7 @@ class ResolveRepository(private val context: Context) {
     }
 
     fun readNoteBody(note: MarkdownNote): String =
-        stripNoteFrontmatter(readNote(note))
+        stripGeneratedNoteTitle(readNote(note), note.title)
 
     fun writeNote(note: MarkdownNote, markdown: String) {
         val file = context.filesDir.resolve("resolve-vault").resolve(note.canonicalPath)
@@ -128,6 +128,23 @@ class ResolveRepository(private val context: Context) {
 
     fun writeNoteBody(note: MarkdownNote, body: String) {
         writeNote(note, noteMarkdownDocument(note, body))
+    }
+
+    fun canonicalizeNoteForTask(note: MarkdownNote, item: ResolveItem): MarkdownNote {
+        val title = item.title.trim().ifBlank { note.title.ifBlank { "Untitled Note" } }
+        val canonicalPath = notePath(note.id, title, note.createdAt)
+        if (note.title == title && note.canonicalPath == canonicalPath) return note
+
+        val oldPath = note.canonicalPath
+        val body = runCatching { stripGeneratedNoteTitle(readNote(note), note.title) }
+            .getOrElse { "" }
+        val next = note.copy(title = title, canonicalPath = canonicalPath, updatedAt = Instant.now())
+        val markdown = noteMarkdownDocument(next, body)
+        writeNote(next, markdown)
+        if (oldPath != canonicalPath) {
+            context.filesDir.resolve("resolve-vault").resolve(oldPath).delete()
+        }
+        return next.copy(contentHash = noteContentHash(markdown))
     }
 
     fun createNoteForTask(item: ResolveItem, strategyTitle: String?): Pair<MarkdownNote, String> {
@@ -444,8 +461,6 @@ private fun notePath(noteId: String, title: String, createdAt: Instant): String 
 
 private fun defaultNoteMarkdown(note: MarkdownNote, body: String = "", strategyTitle: String? = null): String {
     val content = buildString {
-        appendLine("# ${note.title}")
-        appendLine()
         if (body.isNotBlank()) {
             appendLine(body)
             appendLine()
@@ -468,12 +483,22 @@ private fun noteMarkdownDocument(note: MarkdownNote, body: String = ""): String 
         appendLine("---")
         appendLine()
     }
-    val content = stripNoteFrontmatter(body).trim().ifBlank { "# ${note.title}\n" }
+    val content = stripGeneratedNoteTitle(body, note.title).trim()
     return frontmatter + content
 }
 
 private fun stripNoteFrontmatter(markdown: String): String =
     markdown.replace(Regex("^---\\r?\\n[\\s\\S]*?\\r?\\n---\\r?\\n?"), "")
+
+private fun stripGeneratedNoteTitle(markdown: String, title: String): String {
+    val body = stripNoteFrontmatter(markdown).trimStart()
+    val lines = body.lines()
+    return if (lines.firstOrNull()?.trim() == "# $title") {
+        lines.drop(1).joinToString("\n").trimStart()
+    } else {
+        body
+    }
+}
 
 private fun noteContentHash(value: String): String =
     value.fold(0) { hash, char -> hash * 31 + char.code }
