@@ -1,5 +1,72 @@
 # Resolve Architecture
 
+## Layer Boundaries
+
+Resolve is split into replaceable layers. New UI experiments should start at the
+UI layer and depend on domain ports instead of calling storage, Supabase, Feishu,
+or Tauri APIs directly.
+
+```text
+packages/core
+  Pure domain types, state constructors, Note/Markdown helpers, and replaceable
+  ports. No React, Compose, Tauri, Supabase, Feishu, filesystem, or network.
+
+packages/sync
+  Cloud/local sync adapters that implement core ports. Supabase/Firebase details
+  stay here.
+
+packages/feishu
+  Feishu OpenAPI contracts and client code. Apps should use this through calendar
+  services, not from UI components.
+
+packages/ui
+  Shared design tokens and future cross-platform visual contracts. Platform apps
+  can have native components, but colors/type/spacing should be sourced here when
+  possible.
+
+apps/mac/src/platform
+  Tauri, Keychain, filesystem, OAuth, menu/global-shortcut integration.
+
+apps/mac/src/data
+  App-specific adapters that wire core ports to browser/Tauri persistence and
+  backend sessions.
+
+apps/mac/src/App.tsx
+  Current Mac shell and views. It should become progressively thinner. UI style
+  experiments should fork or replace views here without modifying core/sync.
+
+apps/android/.../resolve
+  Native Compose app. Kotlin has parallel boundaries: models/domain operations,
+  repository, sync clients, secure vault/platform integrations, and Compose UI.
+
+apps/backend/supabase
+  Database schema and Edge Functions. Backend owns Feishu server connector only;
+  personal content tables stay encrypted payload first.
+```
+
+## Replaceable Ports
+
+`packages/core/src/ports.ts` defines the seams to use in tests and experiments:
+
+```text
+ResolveStateRepository
+ResolveSyncPort
+NoteFilePort
+SecureSecretPort
+CalendarProviderPort
+```
+
+Tests should prefer fake implementations of these ports instead of booting a
+Mac app, Android activity, Supabase project, or Feishu account. A UI prototype
+can run against:
+
+```text
+FakeRepository + FakeSync + in-memory NoteFilePort
+```
+
+and still exercise real Todo/Strategy/Note state transitions from
+`packages/core`.
+
 ## Shape
 
 Resolve is a personal command system, not a generic team workspace.
@@ -31,6 +98,7 @@ Feishu OpenAPI
 resolve_items
 resolve_strategy_threads
 resolve_calendar_events
+resolve_notes
 resolve_sync_states
 resolve_devices
 resolve_device_messages
@@ -74,6 +142,10 @@ encryption.
 
 Sync triggers are app open, local mutations, Supabase Realtime, and periodic
 background polling as a fallback.
+
+Notes are synced through `resolve_notes`. The cloud row stores IDs, timestamps,
+status, and relationship metadata in cleartext; title, canonical path, Markdown
+body, and excerpt stay in encrypted payload.
 
 Calendar is a full month view backed by Feishu events. Creating an event from a
 day cell or from a Todo creates a local `local_pending_create` event that is

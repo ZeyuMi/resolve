@@ -1,10 +1,6 @@
-import { BrowserLocalRepository, type ResolveState } from "@resolve/sync";
+import type { ResolveStateRepository } from "@resolve/core";
+import { BrowserLocalRepository } from "@resolve/sync";
 
-export interface AppRepository {
-  load(): ResolveState;
-  save(state: ResolveState): void;
-}
-
-export function createAppRepository(): AppRepository {
+export function createAppRepository(): ResolveStateRepository {
   return new BrowserLocalRepository();
 }

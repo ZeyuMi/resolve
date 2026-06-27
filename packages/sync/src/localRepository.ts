@@ -1,4 +1,11 @@
-import { createSampleData, type DecryptedCalendarEvent, type DecryptedItem, type DecryptedNote, type DecryptedStrategyThread } from "@resolve/core";
+import {
+  createSampleData,
+  type DecryptedCalendarEvent,
+  type DecryptedItem,
+  type DecryptedNote,
+  type DecryptedStrategyThread,
+  type ResolveStateRepository
+} from "@resolve/core";
 
 export interface ResolveState {
   items: DecryptedItem[];
@@ -9,7 +16,7 @@ export interface ResolveState {
 
 const storageKey = "resolve:v1";
 
-export class BrowserLocalRepository {
+export class BrowserLocalRepository implements ResolveStateRepository {
   load(): ResolveState {
     const raw = localStorage.getItem(storageKey);
     if (!raw) {

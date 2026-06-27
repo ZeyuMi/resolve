@@ -7,6 +7,7 @@ import type {
   DecryptedStrategyThread,
   ItemPayload,
   NotePayload,
+  ResolveSyncPort,
   StrategyNotePayload,
   StrategyThreadPayload,
   TrackerItemPayload
@@ -57,7 +58,7 @@ async function throwIfSupabaseError<T>(request: PromiseLike<{ data: T; error: un
   return result.data;
 }
 
-export class SupabaseEncryptedSync {
+export class SupabaseEncryptedSync implements ResolveSyncPort {
   constructor(
     private readonly client: SupabaseClient,
     private readonly userId: string,
@@ -75,6 +76,10 @@ export class SupabaseEncryptedSync {
       this.pushCalendarEvents(changedAfter(state.calendarEvents)),
       this.pushNotes(state.notes)
     ]);
+  }
+
+  async push(state: ResolveState, options: { changedSince?: string } = {}) {
+    await this.pushState(state, options);
   }
 
   async pullState(options: { includeCalendarEvents?: boolean; changedSince?: string } = {}): Promise<ResolveState> {
@@ -121,6 +126,10 @@ export class SupabaseEncryptedSync {
     return { items, strategyThreads, calendarEvents, notes };
   }
 
+  async pull(options: { includeCalendarEvents?: boolean; changedSince?: string } = {}) {
+    return this.pullState(options);
+  }
+
   async deleteRemoteItem(itemId: string) {
     const deletedAt = new Date().toISOString();
     await throwIfSupabaseError(
@@ -151,6 +160,10 @@ export class SupabaseEncryptedSync {
         .eq("user_id", this.userId)
         .in("id", ids)
     );
+  }
+
+  async deleteItems(itemIds: string[]) {
+    await this.deleteRemoteItems(itemIds);
   }
 
   async upsertSyncState(state: Omit<SupabaseSyncStateRow, "user_id">) {
@@ -200,6 +213,10 @@ export class SupabaseEncryptedSync {
     return () => {
       void this.client.removeChannel(channel);
     };
+  }
+
+  subscribe(onChange: (kind: string) => void) {
+    return this.subscribeToRemoteChanges((kind) => onChange(kind));
   }
 
   private async pushItems(items: DecryptedItem[]) {
