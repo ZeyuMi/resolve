@@ -122,8 +122,7 @@ export class ResolveAppEncryptedSync {
   async push(state: ResolveState, options: { changedSince?: string } = {}) {
     await this.sync.pushState({
       ...state,
-      calendarEvents: state.calendarEvents.filter(shouldSyncCalendarEvent),
-      notes: []
+      calendarEvents: state.calendarEvents.filter(shouldSyncCalendarEvent)
     }, options);
   }
 

@@ -387,7 +387,7 @@ private fun ResolveAndroidApp(
         val note = state.notes.find { it.id == selectedNoteId } ?: return
         val now = Instant.now()
         val renamedNote = title?.let { repository.renameNote(note, it, noteDraft) } ?: note
-        val nextNote = renamedNote.copy(updatedAt = now)
+        val nextNote = renamedNote.copy(markdown = noteDraft, updatedAt = now)
         repository.writeNoteBody(nextNote, noteDraft)
         persist(state.copy(notes = state.notes.map { if (it.id == note.id) nextNote else it }))
     }
@@ -445,7 +445,7 @@ private fun ResolveAndroidApp(
             if (secureVault.loadBackendSession() == null) return
             val syncSecret = secureVault.loadSyncSecret() ?: return
             if (state.backendSettings.email.isBlank()) return
-            val localSnapshot = state
+            val localSnapshot = repository.withCurrentNoteBodies(state)
             val session = backendSession(forceRefresh)
             val client = AppSyncClient(localSnapshot.backendSettings, session, syncSecret)
             val changedSince = repository.loadAppSyncCursor()
@@ -456,7 +456,10 @@ private fun ResolveAndroidApp(
             // A sync request can finish after the user has already added or edited local
             // tasks. Merge into the latest in-memory state so stale snapshots never hide
             // fresh local work until the next manual sync.
-            val merged = mergeEncryptedRemoteState(state, remote)
+            val merged = mergeEncryptedRemoteState(localSnapshot, remote)
+            withContext(Dispatchers.IO) {
+                repository.materializeNotes(merged.notes)
+            }
             applyingRemoteState = true
             persist(merged)
             applyingRemoteState = false
@@ -4155,6 +4158,7 @@ private fun NoteEditorPage(
 ) {
     val thread = note.strategyThreadId?.let { id -> threads.find { it.id == id } }
     var titleDraft by remember(note.id, note.title) { mutableStateOf(note.title) }
+    var editing by remember(note.id) { mutableStateOf(false) }
     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
             DetailPageHeader(title = "Note", onClose = onClose)
@@ -4186,35 +4190,121 @@ private fun NoteEditorPage(
         }
         item {
             Surface(color = ResolveColors.Glass, shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
-                CompactInputField(
-                    value = markdown,
-                    onValueChange = onMarkdown,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 420.dp)
-                        .padding(12.dp),
-                    placeholder = "Write in Markdown...",
-                    singleLine = false,
-                    minHeight = 420.dp,
-                    textStyle = TextStyle(
-                        color = ResolveColors.Text,
-                        fontSize = ResolveType.Body,
-                        lineHeight = 20.sp,
-                        platformStyle = PlatformTextStyle(includeFontPadding = false)
+                if (editing) {
+                    CompactInputField(
+                        value = markdown,
+                        onValueChange = onMarkdown,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 420.dp)
+                            .padding(12.dp),
+                        placeholder = "Write in Markdown...",
+                        singleLine = false,
+                        minHeight = 420.dp,
+                        textStyle = TextStyle(
+                            color = ResolveColors.Text,
+                            fontSize = ResolveType.Body,
+                            lineHeight = 20.sp,
+                            platformStyle = PlatformTextStyle(includeFontPadding = false)
+                        )
                     )
-                )
+                } else {
+                    MarkdownPreview(
+                        markdown = markdown,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 420.dp)
+                            .padding(18.dp)
+                    )
+                }
             }
         }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
-                Button(onClick = { onSave(titleDraft) }, colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.Accent), modifier = Modifier.height(38.dp)) {
-                    Text("Save", fontSize = ResolveType.BodySmall)
+                if (editing) {
+                    Button(
+                        onClick = {
+                            onSave(titleDraft)
+                            editing = false
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.Accent),
+                        modifier = Modifier.height(38.dp)
+                    ) {
+                        Text("Save", fontSize = ResolveType.BodySmall)
+                    }
+                } else {
+                    Button(
+                        onClick = { editing = true },
+                        colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.Accent),
+                        modifier = Modifier.height(38.dp)
+                    ) {
+                        Text("Edit", fontSize = ResolveType.BodySmall)
+                    }
                 }
                 TextButton(onClick = onArchive, colors = ButtonDefaults.textButtonColors(contentColor = ResolveColors.Muted)) {
                     Icon(Icons.Filled.Archive, contentDescription = null, Modifier.size(15.dp))
                     Spacer(Modifier.width(5.dp))
                     Text(if (note.status == "archived") "Restore Note" else "Archive Note", fontSize = ResolveType.Caption)
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MarkdownPreview(markdown: String, modifier: Modifier = Modifier) {
+    val lines = markdown.lineSequence().toList()
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        if (lines.all { it.isBlank() }) {
+            Text(
+                "Empty Note",
+                color = ResolveColors.Muted,
+                fontSize = ResolveType.Body,
+                lineHeight = 20.sp
+            )
+            return@Column
+        }
+        lines.forEach { rawLine ->
+            val line = rawLine.trimEnd()
+            when {
+                line.isBlank() -> Spacer(Modifier.height(5.dp))
+                line.startsWith("### ") -> Text(
+                    line.removePrefix("### "),
+                    color = ResolveColors.Text,
+                    fontSize = ResolveType.Body,
+                    fontWeight = FontWeight.SemiBold,
+                    lineHeight = 20.sp
+                )
+                line.startsWith("## ") -> Text(
+                    line.removePrefix("## "),
+                    color = ResolveColors.Text,
+                    fontSize = ResolveType.CardTitle,
+                    fontWeight = FontWeight.SemiBold,
+                    lineHeight = 24.sp
+                )
+                line.startsWith("# ") -> Text(
+                    line.removePrefix("# "),
+                    color = ResolveColors.Text,
+                    fontSize = ResolveType.PageTitle,
+                    fontWeight = FontWeight.SemiBold,
+                    lineHeight = 30.sp
+                )
+                line.startsWith("- ") || line.startsWith("* ") -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("•", color = ResolveColors.Accent, fontSize = ResolveType.Body, lineHeight = 20.sp)
+                    Text(
+                        line.drop(2),
+                        color = ResolveColors.Text,
+                        fontSize = ResolveType.Body,
+                        lineHeight = 20.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                else -> Text(
+                    line,
+                    color = ResolveColors.Text,
+                    fontSize = ResolveType.Body,
+                    lineHeight = 20.sp
+                )
             }
         }
     }

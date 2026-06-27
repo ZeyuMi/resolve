@@ -32,25 +32,30 @@ class AppSyncClient(
         } else {
             JSONArray()
         }
+        val noteRows = getArray("/rest/v1/resolve_notes?select=*&user_id=eq.${encode(userId)}$changedFilter&order=updated_at.desc")
 
         return ResolveState(
             items = (0 until itemRows.length()).mapNotNull { itemRows.optJSONObject(it)?.let(::itemFromRow) },
             threads = (0 until threadRows.length()).mapNotNull { threadRows.optJSONObject(it)?.let(::threadFromRow) },
-            calendarEvents = (0 until eventRows.length()).mapNotNull { eventRows.optJSONObject(it)?.let(::calendarFromRow) }
+            calendarEvents = (0 until eventRows.length()).mapNotNull { eventRows.optJSONObject(it)?.let(::calendarFromRow) },
+            notes = (0 until noteRows.length()).mapNotNull { noteRows.optJSONObject(it)?.let(::noteFromRow) }
         )
     }
 
     fun pushState(state: ResolveState, changedSince: Instant? = null) {
         val changedItems = changedSince?.let { since -> state.items.filter { it.updatedAt > since } } ?: state.items
         val changedThreads = changedSince?.let { since -> state.threads.filter { it.updatedAt > since } } ?: state.threads
+        val changedNotes = state.notes
         val items = JSONArray(changedItems.map(::itemToRow))
         val threads = JSONArray(changedThreads.map(::threadToRow))
+        val notes = JSONArray(changedNotes.map(::noteToRow))
         val localCalendarRows = state.calendarEvents
             .filter { it.provider != "feishu" || it.externalEventId == null }
             .map(::calendarToRow)
 
         if (items.length() > 0) upsert("resolve_items", items)
         if (threads.length() > 0) upsert("resolve_strategy_threads", threads)
+        if (notes.length() > 0) upsert("resolve_notes", notes)
         if (localCalendarRows.isNotEmpty()) upsert("resolve_calendar_events", JSONArray(localCalendarRows))
     }
 
@@ -155,6 +160,30 @@ class AppSyncClient(
             .put("payload_version", 1)
     }
 
+    private fun noteToRow(note: MarkdownNote): JSONObject {
+        val encrypted = encryptJson(
+            JSONObject()
+                .put("title", note.title)
+                .put("canonicalPath", note.canonicalPath)
+                .put("markdown", note.markdown)
+        )
+        return JSONObject()
+            .put("user_id", userId)
+            .put("id", note.id)
+            .put("status", note.status)
+            .put("created_at", note.createdAt.toString())
+            .put("updated_at", note.updatedAt.toString())
+            .putNullable("last_opened_at", null)
+            .putNullable("task_id", note.taskId)
+            .putNullable("strategy_thread_id", note.strategyThreadId)
+            .putNullable("parent_note_id", null)
+            .putNullable("content_hash", note.contentHash)
+            .putNullable("frontmatter_hash", null)
+            .put("encrypted_payload", encrypted.payload)
+            .put("payload_nonce", encrypted.nonce)
+            .put("payload_version", 1)
+    }
+
     private fun itemFromRow(row: JSONObject): ResolveItem {
         val payload = decryptJson(row)
         val remoteStatus = row.optString("status")
@@ -215,6 +244,23 @@ class AppSyncClient(
             strategyThreadId = row.optNullableString("strategy_thread_id"),
             canEdit = row.optBoolean("can_edit", true),
             canDelete = row.optBoolean("can_delete", true)
+        )
+    }
+
+    private fun noteFromRow(row: JSONObject): MarkdownNote {
+        val payload = decryptJson(row)
+        val createdAt = instantOrNow(row.optString("created_at"))
+        return MarkdownNote(
+            id = row.optString("id"),
+            canonicalPath = payload.optString("canonicalPath").ifBlank { "Notes/${row.optString("id")}.md" },
+            title = payload.optString("title").ifBlank { "Untitled Note" },
+            markdown = payload.optString("markdown"),
+            status = row.optString("status", "active"),
+            createdAt = createdAt,
+            updatedAt = instantOrNull(row.optString("updated_at")) ?: createdAt,
+            taskId = row.optNullableString("task_id"),
+            strategyThreadId = row.optNullableString("strategy_thread_id"),
+            contentHash = row.optNullableString("content_hash")
         )
     }
 
@@ -280,7 +326,7 @@ fun mergeEncryptedRemoteState(local: ResolveState, remote: ResolveState): Resolv
         items = items.values.toList(),
         threads = threads.values.toList(),
         calendarEvents = normalizeCalendarEvents(localServerCalendars + newestCalendarById(localCalendars + remoteLocalCalendars)),
-        notes = local.notes
+        notes = newestNotesById(local.notes + remote.notes)
     )
 }
 
@@ -302,6 +348,15 @@ private fun mergeResolveItem(existing: ResolveItem?, candidate: ResolveItem): Re
 
 private fun newestCalendarById(events: List<CalendarEvent>): List<CalendarEvent> =
     events.associateBy { it.id }.values.toList()
+
+private fun newestNotesById(notes: List<MarkdownNote>): List<MarkdownNote> {
+    val map = linkedMapOf<String, MarkdownNote>()
+    notes.forEach { note ->
+        val existing = map[note.id]
+        if (existing == null || note.updatedAt >= existing.updatedAt) map[note.id] = note
+    }
+    return map.values.toList()
+}
 
 private data class EncryptedJson(val payload: String, val nonce: String)
 

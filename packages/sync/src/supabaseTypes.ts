@@ -54,6 +54,23 @@ export interface SupabaseEncryptedCalendarEventRow {
   payload_version: number;
 }
 
+export interface SupabaseEncryptedNoteRow {
+  user_id: string;
+  id: string;
+  status: "active" | "archived" | "conflict";
+  created_at: string;
+  updated_at: string;
+  last_opened_at?: string | null;
+  task_id?: string | null;
+  strategy_thread_id?: string | null;
+  parent_note_id?: string | null;
+  content_hash?: string | null;
+  frontmatter_hash?: string | null;
+  encrypted_payload: string;
+  payload_nonce: string;
+  payload_version: number;
+}
+
 export interface SupabaseSyncStateRow {
   user_id: string;
   provider: "feishu";
@@ -82,6 +99,7 @@ export type ResolveRealtimeTable =
   | "resolve_items"
   | "resolve_strategy_threads"
   | "resolve_calendar_events"
+  | "resolve_notes"
   | "resolve_sync_states"
   | "resolve_device_messages";
 
@@ -89,5 +107,6 @@ export type ResolveRemoteChangeKind =
   | "items"
   | "strategyThreads"
   | "calendarEvents"
+  | "notes"
   | "syncStates"
   | "deviceMessages";

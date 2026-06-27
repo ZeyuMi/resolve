@@ -243,6 +243,14 @@ function activeNoteForTodo(todo: DecryptedItem, notes: DecryptedNote[]) {
   return notes.find((note) => note.meta.id === noteId && note.meta.status !== "archived");
 }
 
+async function materializeNoteFiles(notes: DecryptedNote[]) {
+  await Promise.all(
+    notes
+      .filter((note) => note.payload.markdown !== undefined)
+      .map((note) => writeNoteFile(note.meta.canonicalPath, noteMarkdownDocument(note, note.payload.markdown ?? "")))
+  );
+}
+
 function createNoteForTodoModel(todo: DecryptedItem, strategyTitle?: string): DecryptedNote {
   const payload = todo.payload as ItemPayload;
   const timestamp = nowIso();
@@ -1230,6 +1238,7 @@ export function App() {
           changedSince: options.changedSince
         });
         const merged = normalizeState(mergeEncryptedRemoteState(stateRef.current, remote));
+        await materializeNoteFiles(merged.notes);
         applyingRemoteStateRef.current = true;
         stateRef.current = merged;
         setState(merged);

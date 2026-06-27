@@ -3,8 +3,10 @@ import type {
   CalendarEventPayload,
   DecryptedCalendarEvent,
   DecryptedItem,
+  DecryptedNote,
   DecryptedStrategyThread,
   ItemPayload,
+  NotePayload,
   StrategyNotePayload,
   StrategyThreadPayload,
   TrackerItemPayload
@@ -15,6 +17,7 @@ import type {
   ResolveRemoteChangeKind,
   SupabaseEncryptedCalendarEventRow,
   SupabaseEncryptedItemRow,
+  SupabaseEncryptedNoteRow,
   SupabaseEncryptedStrategyThreadRow,
   SupabaseFeishuConnectionRow,
   SupabaseSyncStateRow
@@ -69,7 +72,8 @@ export class SupabaseEncryptedSync {
     await Promise.all([
       this.pushItems(changedAfter(state.items)),
       this.pushStrategyThreads(changedAfter(state.strategyThreads)),
-      this.pushCalendarEvents(changedAfter(state.calendarEvents))
+      this.pushCalendarEvents(changedAfter(state.calendarEvents)),
+      this.pushNotes(state.notes)
     ]);
   }
 
@@ -92,22 +96,29 @@ export class SupabaseEncryptedSync {
       .eq("user_id", this.userId)
       .eq("encryption_scheme", "vault_v1");
     if (changedSince) eventQuery = eventQuery.gt("updated_at", changedSince);
+    let noteQuery = this.client
+      .from("resolve_notes")
+      .select("*")
+      .eq("user_id", this.userId);
+    if (changedSince) noteQuery = noteQuery.gt("updated_at", changedSince);
 
-    const [itemRows, threadRows, eventRows] = await Promise.all([
+    const [itemRows, threadRows, eventRows, noteRows] = await Promise.all([
       throwIfSupabaseError(itemQuery.order("updated_at", { ascending: false })) as Promise<SupabaseEncryptedItemRow[]>,
       throwIfSupabaseError(threadQuery.order("updated_at", { ascending: false })) as Promise<SupabaseEncryptedStrategyThreadRow[]>,
       includeCalendarEvents
         ? (throwIfSupabaseError(eventQuery.order("updated_at", { ascending: false })) as Promise<SupabaseEncryptedCalendarEventRow[]>)
-        : Promise.resolve([] as SupabaseEncryptedCalendarEventRow[])
+        : Promise.resolve([] as SupabaseEncryptedCalendarEventRow[]),
+      throwIfSupabaseError(noteQuery.order("updated_at", { ascending: false })) as Promise<SupabaseEncryptedNoteRow[]>
     ]);
 
-    const [items, strategyThreads, calendarEvents] = await Promise.all([
+    const [items, strategyThreads, calendarEvents, notes] = await Promise.all([
       Promise.all(itemRows.map((row) => this.itemFromRow(row))),
       Promise.all(threadRows.map((row) => this.strategyThreadFromRow(row))),
-      Promise.all(eventRows.map((row) => this.calendarEventFromRow(row)))
+      Promise.all(eventRows.map((row) => this.calendarEventFromRow(row))),
+      Promise.all(noteRows.map((row) => this.noteFromRow(row)))
     ]);
 
-    return { items, strategyThreads, calendarEvents, notes: [] };
+    return { items, strategyThreads, calendarEvents, notes };
   }
 
   async deleteRemoteItem(itemId: string) {
@@ -182,6 +193,7 @@ export class SupabaseEncryptedSync {
     this.subscribeTable(channel, "resolve_items", "items", onChange);
     this.subscribeTable(channel, "resolve_strategy_threads", "strategyThreads", onChange);
     this.subscribeTable(channel, "resolve_calendar_events", "calendarEvents", onChange);
+    this.subscribeTable(channel, "resolve_notes", "notes", onChange);
     this.subscribeTable(channel, "resolve_sync_states", "syncStates", onChange);
     this.subscribeTable(channel, "resolve_device_messages", "deviceMessages", onChange);
     channel.subscribe();
@@ -223,6 +235,19 @@ export class SupabaseEncryptedSync {
     await throwIfSupabaseError(
       this.client
         .from("resolve_calendar_events")
+        .upsert(rows, { onConflict: "user_id,id" })
+    );
+  }
+
+  private async pushNotes(notes: DecryptedNote[]) {
+    if (!notes.length) return;
+    const rows = await Promise.all(notes.map((note) => this.noteToRow(note)));
+    rows.forEach((row) =>
+      assertNoPlaintextColumns(row as unknown as Record<string, unknown>, "resolve_notes")
+    );
+    await throwIfSupabaseError(
+      this.client
+        .from("resolve_notes")
         .upsert(rows, { onConflict: "user_id,id" })
     );
   }
@@ -286,6 +311,33 @@ export class SupabaseEncryptedSync {
       strategy_thread_id: event.meta.strategyThreadId ?? null,
       can_edit: event.meta.canEdit ?? null,
       can_delete: event.meta.canDelete ?? null,
+      encrypted_payload: encrypted.encryptedPayload,
+      payload_nonce: encrypted.payloadNonce,
+      payload_version: encrypted.payloadVersion
+    };
+  }
+
+  private async noteToRow(note: DecryptedNote): Promise<SupabaseEncryptedNoteRow> {
+    const encrypted = await encryptPayload(
+      {
+        ...note.payload,
+        title: note.payload.title || note.meta.title,
+        canonicalPath: note.meta.canonicalPath
+      },
+      this.vaultKey
+    );
+    return {
+      user_id: this.userId,
+      id: note.meta.id,
+      status: note.meta.status,
+      created_at: note.meta.createdAt,
+      updated_at: note.meta.updatedAt,
+      last_opened_at: note.meta.lastOpenedAt ?? null,
+      task_id: note.meta.taskId ?? null,
+      strategy_thread_id: note.meta.strategyThreadId ?? null,
+      parent_note_id: note.meta.parentNoteId ?? null,
+      content_hash: note.meta.contentHash ?? null,
+      frontmatter_hash: note.meta.frontmatterHash ?? null,
       encrypted_payload: encrypted.encryptedPayload,
       payload_nonce: encrypted.payloadNonce,
       payload_version: encrypted.payloadVersion
@@ -380,6 +432,41 @@ export class SupabaseEncryptedSync {
         payloadVersion: row.payload_version
       },
       payload
+    };
+  }
+
+  private async noteFromRow(row: SupabaseEncryptedNoteRow): Promise<DecryptedNote> {
+    const payload = await decryptPayload<NotePayload & { canonicalPath?: string }>(
+      {
+        encryptedPayload: row.encrypted_payload,
+        payloadNonce: row.payload_nonce,
+        payloadVersion: row.payload_version
+      },
+      this.vaultKey
+    );
+    return {
+      meta: {
+        id: row.id,
+        canonicalPath: payload.canonicalPath || `Notes/${row.id}.md`,
+        title: payload.title || "Untitled Note",
+        status: row.status,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        lastOpenedAt: optional(row.last_opened_at),
+        taskId: optional(row.task_id),
+        strategyThreadId: optional(row.strategy_thread_id),
+        parentNoteId: optional(row.parent_note_id),
+        contentHash: optional(row.content_hash),
+        frontmatterHash: optional(row.frontmatter_hash),
+        encryptedPayload: row.encrypted_payload,
+        payloadNonce: row.payload_nonce,
+        payloadVersion: row.payload_version
+      },
+      payload: {
+        title: payload.title || "Untitled Note",
+        markdown: payload.markdown,
+        excerpt: payload.excerpt
+      }
     };
   }
 

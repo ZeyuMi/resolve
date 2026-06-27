@@ -114,7 +114,7 @@ class ResolveRepository(private val context: Context) {
 
     fun readNote(note: MarkdownNote): String {
         val file = context.filesDir.resolve("resolve-vault").resolve(note.canonicalPath)
-        return if (file.exists()) file.readText() else defaultNoteMarkdown(note)
+        return if (file.exists()) file.readText() else defaultNoteMarkdown(note, note.markdown)
     }
 
     fun readNoteBody(note: MarkdownNote): String =
@@ -130,6 +130,17 @@ class ResolveRepository(private val context: Context) {
         writeNote(note, noteMarkdownDocument(note, body))
     }
 
+    fun withCurrentNoteBodies(state: ResolveState): ResolveState =
+        state.copy(notes = state.notes.map { note ->
+            note.copy(markdown = readNoteBody(note))
+        })
+
+    fun materializeNotes(notes: List<MarkdownNote>) {
+        notes
+            .filter { it.markdown.isNotBlank() || it.contentHash != null }
+            .forEach { note -> writeNoteBody(note, note.markdown) }
+    }
+
     fun renameNote(note: MarkdownNote, title: String, body: String): MarkdownNote {
         val title = title.trim().ifBlank { "Untitled Note" }
         val canonicalPath = notePath(note.id, title, note.createdAt)
@@ -137,7 +148,7 @@ class ResolveRepository(private val context: Context) {
 
         val oldPath = note.canonicalPath
         val cleanBody = stripGeneratedNoteTitle(body, note.title)
-        val next = note.copy(title = title, canonicalPath = canonicalPath, updatedAt = Instant.now())
+        val next = note.copy(title = title, markdown = cleanBody, canonicalPath = canonicalPath, updatedAt = Instant.now())
         val markdown = noteMarkdownDocument(next, cleanBody)
         writeNote(next, markdown)
         if (oldPath != canonicalPath) {
@@ -153,12 +164,13 @@ class ResolveRepository(private val context: Context) {
             id = id,
             title = item.title,
             canonicalPath = notePath(id, item.title, timestamp),
+            markdown = defaultNoteBody(item.notes, strategyTitle),
             createdAt = timestamp,
             updatedAt = timestamp,
             taskId = item.id,
             strategyThreadId = item.strategyThreadId
         )
-        val markdown = defaultNoteMarkdown(note, item.notes, strategyTitle)
+        val markdown = noteMarkdownDocument(note, note.markdown)
         writeNote(note, markdown)
         return note.copy(contentHash = noteContentHash(markdown)) to markdown
     }
@@ -264,6 +276,7 @@ class ResolveRepository(private val context: Context) {
         .put("id", note.id)
         .put("canonicalPath", note.canonicalPath)
         .put("title", note.title)
+        .put("markdown", note.markdown)
         .put("status", note.status)
         .put("createdAt", note.createdAt.toString())
         .put("updatedAt", note.updatedAt.toString())
@@ -277,6 +290,7 @@ class ResolveRepository(private val context: Context) {
             id = json.optString("id"),
             canonicalPath = json.optString("canonicalPath"),
             title = json.optString("title"),
+            markdown = json.optString("markdown"),
             status = json.optString("status", "active"),
             createdAt = createdAt,
             updatedAt = instantOrNull(json.optString("updatedAt")) ?: createdAt,
@@ -458,14 +472,17 @@ private fun notePath(noteId: String, title: String, createdAt: Instant): String 
     return "Notes/$year/$month/$noteId-$slug.md"
 }
 
-private fun defaultNoteMarkdown(note: MarkdownNote, body: String = "", strategyTitle: String? = null): String {
-    val content = buildString {
+private fun defaultNoteBody(body: String = "", strategyTitle: String? = null): String =
+    buildString {
         if (body.isNotBlank()) {
             appendLine(body)
             appendLine()
         }
         if (!strategyTitle.isNullOrBlank()) appendLine("Strategy: $strategyTitle")
     }
+
+private fun defaultNoteMarkdown(note: MarkdownNote, body: String = "", strategyTitle: String? = null): String {
+    val content = defaultNoteBody(body, strategyTitle)
     return noteMarkdownDocument(note, content)
 }
 

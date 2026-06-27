@@ -69,6 +69,7 @@ data class MarkdownNote(
     val id: String = "note_${UUID.randomUUID()}",
     val canonicalPath: String,
     val title: String,
+    val markdown: String = "",
     val status: String = "active",
     val createdAt: Instant = Instant.now(),
     val updatedAt: Instant = Instant.now(),
