@@ -847,6 +847,7 @@ export function App() {
   const [selectedStrategyTodoId, setSelectedStrategyTodoId] = useState<string | null>(null);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [noteContent, setNoteContent] = useState("");
+  const [noteContentNoteId, setNoteContentNoteId] = useState<string | null>(null);
   const [noteLoading, setNoteLoading] = useState(false);
   const [showCompleted, setShowCompleted] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
@@ -923,17 +924,25 @@ export function App() {
     async function loadSelectedNote() {
       if (!selectedNote) {
         setNoteContent("");
+        setNoteContentNoteId(null);
+        setNoteLoading(false);
         return;
       }
       setNoteLoading(true);
+      setNoteContent("");
+      setNoteContentNoteId(null);
       try {
         const file = await readNoteFile(selectedNote.meta.canonicalPath);
         if (!cancelled) {
           setNoteContent(stripNoteFrontmatter(file.content || noteMarkdownDocument(selectedNote, selectedNote.payload.markdown)));
+          setNoteContentNoteId(selectedNote.meta.id);
         }
       } catch (error) {
         console.warn("Could not read note file", error);
-        if (!cancelled) setNoteContent(stripNoteFrontmatter(noteMarkdownDocument(selectedNote, selectedNote.payload.markdown)));
+        if (!cancelled) {
+          setNoteContent(stripNoteFrontmatter(noteMarkdownDocument(selectedNote, selectedNote.payload.markdown)));
+          setNoteContentNoteId(selectedNote.meta.id);
+        }
       } finally {
         if (!cancelled) setNoteLoading(false);
       }
@@ -1271,12 +1280,18 @@ export function App() {
     });
     setSelectedNoteId(note.meta.id);
     setNoteContent(stripNoteFrontmatter(markdown));
+    setNoteContentNoteId(note.meta.id);
     setTab("vault");
     showToast("Note created");
   }
 
   async function saveSelectedNote() {
-    const note = selectedNote;
+    const currentNoteId = selectedNoteId;
+    if (!currentNoteId || noteLoading || noteContentNoteId !== currentNoteId) {
+      showToast("Note is still loading");
+      return;
+    }
+    const note = stateRef.current.notes.find((item) => item.meta.id === currentNoteId);
     if (!note) return;
     const timestamp = nowIso();
     const editableBody = stripNoteFrontmatter(noteContent);
@@ -1306,6 +1321,7 @@ export function App() {
       notes: stateRef.current.notes.map((item) => item.meta.id === nextNote.meta.id ? nextNote : item)
     });
     setNoteContent(editableBody);
+    setNoteContentNoteId(nextNote.meta.id);
     showToast("Note saved");
   }
 
@@ -2759,8 +2775,12 @@ export function App() {
               selectedNote={selectedNote}
               content={noteContent}
               loading={noteLoading}
+              canSave={Boolean(selectedNote && noteContentNoteId === selectedNote.meta.id && !noteLoading)}
               onSelectNote={openNote}
-              onContent={setNoteContent}
+              onContent={(content) => {
+                if (selectedNote) setNoteContentNoteId(selectedNote.meta.id);
+                setNoteContent(content);
+              }}
               onSave={() => void saveSelectedNote()}
               onArchive={archiveNote}
             />
@@ -4587,6 +4607,7 @@ function VaultView({
   selectedNote,
   content,
   loading,
+  canSave,
   onSelectNote,
   onContent,
   onSave,
@@ -4598,6 +4619,7 @@ function VaultView({
   selectedNote?: DecryptedNote;
   content: string;
   loading: boolean;
+  canSave: boolean;
   onSelectNote: (noteId: string) => void | Promise<void>;
   onContent: (content: string) => void;
   onSave: () => void;
@@ -4716,7 +4738,7 @@ function VaultView({
                 <p>{selectedNote.meta.canonicalPath}</p>
               </div>
               <div className="detail-head-actions">
-                <button className="secondary-button" onClick={onSave} disabled={loading}>
+                <button className="secondary-button" onClick={onSave} disabled={!canSave}>
                   <Send size={14} />
                   Save
                 </button>
