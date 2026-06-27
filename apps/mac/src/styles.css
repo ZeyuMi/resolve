@@ -9478,7 +9478,7 @@ body,
 }
 
 .theme-redesign.tab-calendar .calendar-cell.muted .calendar-date-number {
-  color: #8b95a5 !important;
+  color: #111827 !important;
 }
 
 .theme-redesign.tab-calendar .calendar-cell.today .calendar-date-number,
@@ -9535,6 +9535,17 @@ body,
 .theme-redesign.tab-calendar .calendar-cell.past .calendar-event-time,
 .theme-redesign.tab-calendar .calendar-cell.past .calendar-event-title {
   color: #8e97a6 !important;
+}
+
+.theme-redesign.tab-calendar .calendar-cell.muted:not(.past) .calendar-date-number,
+.theme-redesign.tab-calendar .calendar-cell.muted:not(.past) .calendar-event-time,
+.theme-redesign.tab-calendar .calendar-cell.muted:not(.past) .calendar-event-title,
+.theme-redesign.tab-calendar .calendar-cell.muted:not(.past) .calendar-more-label {
+  color: #3f4a5f !important;
+}
+
+.theme-redesign.tab-calendar .calendar-cell.muted:not(.past) .calendar-event-dot {
+  background: #3478f6 !important;
 }
 
 .theme-redesign.tab-calendar .calendar-cell:not(.past) .calendar-event-title {
