@@ -9466,9 +9466,21 @@ body,
 }
 
 .theme-redesign .markdown-editor-shell {
+  height: 100% !important;
   min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
   overflow: hidden !important;
   background: #ffffff !important;
+}
+
+.theme-redesign .resolve-mdx-editor {
+  min-height: 0 !important;
+  height: 100% !important;
+  flex: 1 1 auto !important;
+  display: grid !important;
+  grid-template-rows: auto minmax(0, 1fr) !important;
+  overflow: hidden !important;
 }
 
 .theme-redesign .resolve-mdx-editor [class*="_toolbarRoot"] {
@@ -9476,11 +9488,21 @@ body,
   padding: 6px 24px !important;
   border-bottom: 1px solid var(--divider) !important;
   background: #ffffff !important;
+  flex: 0 0 auto !important;
+}
+
+.theme-redesign .resolve-mdx-editor [class*="_rootContentEditableWrapper"] {
+  min-height: 0 !important;
+  height: 100% !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  overscroll-behavior: contain !important;
 }
 
 .theme-redesign .resolve-mdx-content {
-  height: 100% !important;
-  overflow: auto !important;
+  min-height: 100% !important;
+  height: auto !important;
+  overflow: visible !important;
   padding: 28px 36px 56px !important;
   color: var(--text) !important;
   font-size: 16px !important;
