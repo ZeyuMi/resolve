@@ -1221,6 +1221,9 @@ export function App() {
       showToast("Note not found");
       return;
     }
+    setNoteLoading(true);
+    setNoteContent("");
+    setNoteContentNoteId(null);
     const timestamp = nowIso();
     persist({
       ...stateRef.current,
@@ -2775,10 +2778,12 @@ export function App() {
               selectedNote={selectedNote}
               content={noteContent}
               loading={noteLoading}
+              loadedNoteId={noteContentNoteId}
               canSave={Boolean(selectedNote && noteContentNoteId === selectedNote.meta.id && !noteLoading)}
               onSelectNote={openNote}
-              onContent={(content) => {
-                if (selectedNote) setNoteContentNoteId(selectedNote.meta.id);
+              onContent={(noteId, content) => {
+                if (selectedNoteId !== noteId) return;
+                setNoteContentNoteId(noteId);
                 setNoteContent(content);
               }}
               onSave={() => void saveSelectedNote()}
@@ -4607,6 +4612,7 @@ function VaultView({
   selectedNote,
   content,
   loading,
+  loadedNoteId,
   canSave,
   onSelectNote,
   onContent,
@@ -4619,9 +4625,10 @@ function VaultView({
   selectedNote?: DecryptedNote;
   content: string;
   loading: boolean;
+  loadedNoteId: string | null;
   canSave: boolean;
   onSelectNote: (noteId: string) => void | Promise<void>;
-  onContent: (content: string) => void;
+  onContent: (noteId: string, content: string) => void;
   onSave: () => void;
   onArchive: (note: DecryptedNote) => void;
 }) {
@@ -4657,6 +4664,7 @@ function VaultView({
 
   const selectedTask = selectedNote?.meta.taskId ? todoById.get(selectedNote.meta.taskId) : undefined;
   const selectedThread = selectedNote?.meta.strategyThreadId ? threadById.get(selectedNote.meta.strategyThreadId) : undefined;
+  const editorReady = Boolean(selectedNote && loadedNoteId === selectedNote.meta.id && !loading);
 
   const editorPlugins = useMemo(() => [
     headingsPlugin(),
@@ -4755,15 +4763,18 @@ function VaultView({
               {!selectedTask && selectedNote.meta.taskId && <span>Orphan task link</span>}
             </div>
             <div className="markdown-editor-shell" data-color-mode="light">
-              <MDXEditor
-                key={selectedNote.meta.id}
-                markdown={loading ? "Loading Note..." : content}
-                onChange={onContent}
-                readOnly={loading}
-                className="resolve-mdx-editor"
-                contentEditableClassName="resolve-mdx-content"
-                plugins={editorPlugins}
-              />
+              {editorReady ? (
+                <MDXEditor
+                  key={`${selectedNote.meta.id}:${selectedNote.meta.contentHash ?? selectedNote.meta.updatedAt}`}
+                  markdown={content}
+                  onChange={(nextContent) => onContent(selectedNote.meta.id, nextContent)}
+                  className="resolve-mdx-editor"
+                  contentEditableClassName="resolve-mdx-content"
+                  plugins={editorPlugins}
+                />
+              ) : (
+                <div className="note-editor-loading">Loading Note...</div>
+              )}
             </div>
         </section>
       )}

@@ -7169,6 +7169,14 @@ body,
   background: transparent;
 }
 
+.note-editor-loading {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: var(--native-muted, var(--text-3));
+  font-size: 13px;
+}
+
 .resolve-mdx-editor {
   height: 100% !important;
   min-height: 0;
