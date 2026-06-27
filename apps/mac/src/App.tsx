@@ -16,6 +16,7 @@ import {
   Copy,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Clock3,
   ExternalLink,
   FileText,
@@ -2997,7 +2998,7 @@ function CaptureBox({
         />
         <button className="primary-button" onClick={onSave} disabled={disabled}>
           <Send size={16} />
-          Save
+          {variant === "todo-row" ? "Add Task" : "Save"}
         </button>
       </div>
     </section>
@@ -3523,18 +3524,27 @@ function TodoView({
           onSave={onCaptureSave}
           variant="todo-row"
         />
-        <div className="section-title-row">
-          <div>
-            <h2>Active</h2>
-            <p>主动推进、等待回应、战略子任务都在这里。</p>
+        <section className="todo-section-card todo-active-section">
+          <div className="section-title-row">
+            <div>
+              <h2>Active</h2>
+              <p>主动推进、等待回应、战略子任务都在这里。</p>
+            </div>
+            <div className="section-title-actions">
+              <span className="todo-section-count">{todos.length} tasks</span>
+              <ChevronUp size={16} />
+            </div>
           </div>
-          <div className="section-title-actions">
-            <StatusPill tone="success" label={`${todos.length} active`} />
+          <div className="todo-section-body">
+            {ungroupedRoots.length ? (
+              ungroupedRoots.map((root) => buildTodoTreeEntries([root], todos, collapsedTodoIds).map(renderEntry))
+            ) : (
+              <EmptyState label="没有未归属战略的任务" />
+            )}
           </div>
-        </div>
+        </section>
         {todos.length ? (
           <>
-            {ungroupedRoots.map((root) => buildTodoTreeEntries([root], todos, collapsedTodoIds).map(renderEntry))}
             {strategyGroups.map(({ thread, roots }) => (
               <div
                 className={`todo-strategy-group ${pointerDrag?.kind === "strategy" && pointerDrag.sourceId === thread.meta.id ? "dragging" : ""} ${
@@ -3562,6 +3572,16 @@ function TodoView({
                 </button>
                 {!collapsedStrategyIds.has(thread.meta.id) &&
                   buildTodoTreeEntries(roots, todos, collapsedTodoIds).map(renderEntry)}
+                {!collapsedStrategyIds.has(thread.meta.id) && (
+                  <button
+                    className="todo-section-add-row"
+                    onClick={() => onCaptureStrategy(thread.meta.id)}
+                    type="button"
+                  >
+                    <Plus size={14} />
+                    Add Task
+                  </button>
+                )}
               </div>
             ))}
             {orphanGroups.map(({ threadId, roots }) => (
@@ -3578,6 +3598,16 @@ function TodoView({
                 </button>
                 {!collapsedStrategyIds.has(threadId) &&
                   buildTodoTreeEntries(roots, todos, collapsedTodoIds).map(renderEntry)}
+                {!collapsedStrategyIds.has(threadId) && (
+                  <button
+                    className="todo-section-add-row"
+                    onClick={() => onCaptureStrategy(threadId)}
+                    type="button"
+                  >
+                    <Plus size={14} />
+                    Add Task
+                  </button>
+                )}
               </div>
             ))}
           </>
@@ -3719,18 +3749,24 @@ function TodoCard({
             {collapsed ? "Show" : "Hide"} {childCount} subtasks
           </button>
         )}
-        {todo.meta.dueAt && (
-          <div className="todo-date-pill">
-            <CalendarDays size={14} />
-            {todoDateLabel(todo.meta.dueAt)}
-          </div>
-        )}
         <div className="meta-row">
-          <span>{relativeAgeLabel(todo.meta.createdAt)}</span>
-          {calendarEvent && <span>Feishu: {calendarEvent.meta.status}</span>}
-          {thread && <span>Strategy: {thread.payload.title}</span>}
           {payload.attachments?.length ? <span>{payload.attachments.length} attachments</span> : null}
         </div>
+      </div>
+      <div className="todo-row-side">
+        {thread ? <span className="todo-strategy-tag">{thread.payload.title}</span> : <span className="todo-strategy-tag neutral">No strategy</span>}
+        {hasActiveNote ? (
+          <span className="todo-note-count">
+            <FileText size={13} />
+            1
+          </span>
+        ) : (
+          <span className="todo-note-count empty" />
+        )}
+        <span className="todo-row-time">{todo.meta.dueAt ? todoDateLabel(todo.meta.dueAt) : relativeAgeLabel(todo.meta.createdAt)}</span>
+        <span className={`todo-calendar-indicator ${calendarEvent ? "linked" : ""}`} title={calendarEvent ? `Feishu: ${calendarEvent.meta.status}` : "No calendar event"}>
+          <CalendarDays size={15} />
+        </span>
       </div>
     </article>
   );

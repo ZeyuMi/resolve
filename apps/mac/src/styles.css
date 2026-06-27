@@ -9040,3 +9040,255 @@ body,
     min-width: 320px !important;
   }
 }
+
+/* Todo exact-pass against the redesign reference. */
+.theme-redesign.tab-todo .top-bar {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  background: var(--app-bg) !important;
+}
+
+.theme-redesign.tab-todo .workspace {
+  padding-top: 26px !important;
+}
+
+.theme-redesign.tab-todo .todo-list-pane {
+  gap: 16px !important;
+}
+
+.theme-redesign .todo-capture-row .primary-button {
+  min-width: 144px !important;
+}
+
+.theme-redesign .todo-section-card {
+  border: 1px solid var(--line) !important;
+  border-radius: var(--radius-lg) !important;
+  background: #ffffff !important;
+  box-shadow: var(--shadow-card) !important;
+  overflow: hidden !important;
+}
+
+.theme-redesign .todo-section-card > .section-title-row {
+  min-height: 52px !important;
+  padding: 0 16px !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--divider) !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+.theme-redesign .todo-section-card .section-title-row h2 {
+  font-size: 16px !important;
+  line-height: 21px !important;
+  font-weight: 700 !important;
+}
+
+.theme-redesign .todo-section-card .section-title-row p {
+  font-size: 13px !important;
+  line-height: 17px !important;
+}
+
+.theme-redesign .section-title-actions {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  color: var(--text-3) !important;
+}
+
+.theme-redesign .todo-section-count {
+  color: var(--text-3) !important;
+  font-size: 12px !important;
+  line-height: 18px !important;
+  font-weight: 650 !important;
+}
+
+.theme-redesign .todo-section-body {
+  display: block !important;
+}
+
+.theme-redesign .todo-section-body .todo-card,
+.theme-redesign .todo-strategy-group .todo-card {
+  width: 100% !important;
+  min-height: 52px !important;
+  grid-template-columns: 32px minmax(260px, 1fr) minmax(390px, auto) !important;
+  padding: 0 16px !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--divider) !important;
+  background: #ffffff !important;
+}
+
+.theme-redesign .todo-section-body .todo-card:last-child,
+.theme-redesign .todo-strategy-group .todo-card:last-of-type {
+  border-bottom: 0 !important;
+}
+
+.theme-redesign .todo-card.child {
+  padding-left: calc(16px + (var(--todo-depth, 0) * 24px)) !important;
+}
+
+.theme-redesign .todo-card .completion-circle {
+  align-self: center !important;
+}
+
+.theme-redesign .todo-card .item-main {
+  min-width: 0 !important;
+  padding: 0 !important;
+}
+
+.theme-redesign .todo-title-row {
+  min-width: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+
+.theme-redesign .todo-title-note-link {
+  min-width: 0 !important;
+  max-width: 100% !important;
+  display: block !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  color: var(--text) !important;
+  font-size: 14px !important;
+  line-height: 20px !important;
+  font-weight: 600 !important;
+}
+
+.theme-redesign .todo-card .meta-row {
+  min-height: 0 !important;
+  margin: 1px 0 0 !important;
+  display: flex !important;
+  gap: 8px !important;
+}
+
+.theme-redesign .todo-card .meta-row:empty {
+  display: none !important;
+}
+
+.theme-redesign .todo-row-side {
+  min-width: 0 !important;
+  display: grid !important;
+  grid-template-columns: minmax(92px, 150px) 42px 112px 24px !important;
+  align-items: center !important;
+  justify-content: end !important;
+  gap: 10px !important;
+  color: var(--text-3) !important;
+}
+
+.theme-redesign .todo-strategy-tag {
+  min-width: 0 !important;
+  height: 22px !important;
+  padding: 0 8px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border-radius: 7px !important;
+  background: var(--accent-soft) !important;
+  color: var(--accent) !important;
+  font-size: 12px !important;
+  line-height: 22px !important;
+  font-weight: 600 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+.theme-redesign .todo-strategy-tag.neutral {
+  background: #f1f3f7 !important;
+  color: #667085 !important;
+}
+
+.theme-redesign .todo-note-count {
+  min-width: 0 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 4px !important;
+  color: var(--text-3) !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+}
+
+.theme-redesign .todo-note-count.empty {
+  visibility: hidden !important;
+}
+
+.theme-redesign .todo-row-time {
+  overflow: hidden !important;
+  text-align: right !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  color: var(--text-3) !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+}
+
+.theme-redesign .todo-calendar-indicator {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  color: var(--text-4) !important;
+}
+
+.theme-redesign .todo-calendar-indicator.linked {
+  color: var(--accent) !important;
+}
+
+.theme-redesign .todo-strategy-group {
+  display: block !important;
+  border: 1px solid var(--line) !important;
+  border-radius: var(--radius-lg) !important;
+  background: #ffffff !important;
+  box-shadow: var(--shadow-card) !important;
+  overflow: hidden !important;
+}
+
+.theme-redesign .todo-strategy-group-head {
+  min-height: 52px !important;
+  padding: 0 16px !important;
+  border-bottom: 1px solid var(--divider) !important;
+  font-size: 15px !important;
+}
+
+.theme-redesign .todo-strategy-group-head small {
+  margin-left: auto !important;
+  color: var(--text-3) !important;
+  font-size: 12px !important;
+}
+
+.theme-redesign .todo-section-add-row {
+  width: 100% !important;
+  min-height: 40px !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 0 16px 0 48px !important;
+  border: 0 !important;
+  border-top: 1px solid var(--divider) !important;
+  background: #ffffff !important;
+  color: var(--accent) !important;
+  font-size: 13px !important;
+  font-weight: 650 !important;
+  text-align: left !important;
+}
+
+.theme-redesign .todo-section-add-row:hover {
+  background: #f8fbff !important;
+}
+
+.theme-redesign .sidebar-nav button.active {
+  box-shadow: none !important;
+}
+
+@media (max-width: 1280px) {
+  .theme-redesign .todo-section-body .todo-card,
+  .theme-redesign .todo-strategy-group .todo-card {
+    grid-template-columns: 32px minmax(220px, 1fr) minmax(300px, auto) !important;
+  }
+
+  .theme-redesign .todo-row-side {
+    grid-template-columns: minmax(72px, 120px) 34px 86px 22px !important;
+    gap: 8px !important;
+  }
+}
