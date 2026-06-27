@@ -19,11 +19,15 @@ import {
   ChevronUp,
   Clock3,
   ExternalLink,
+  Edit3,
   FileText,
+  HelpCircle,
   KeyRound,
   LayoutList,
   Lock,
+  MoreHorizontal,
   Paperclip,
+  PenLine,
   Plus,
   RefreshCw,
   Search,
@@ -31,6 +35,7 @@ import {
   Settings,
   ShieldCheck,
   Trash2,
+  Users,
   X
 } from "lucide-react";
 import {
@@ -4594,131 +4599,250 @@ function StrategyView({
     );
   }
 
-  return (
-    <div className={`strategy-layout ${selectedTodo ? "has-task-detail" : ""}`}>
-      <aside className="thread-list">
-        <button className="ghost-button strategy-back-button" onClick={() => onSelectThread("")}>
-          <ChevronLeft size={15} />
-          All Strategy
-        </button>
-        {threads.map((thread) => (
-          <StrategyThreadCard
-            key={thread.meta.id}
-            thread={thread}
-            active={thread.meta.id === selectedThreadId}
-            onClick={() => {
-              onSelectThread(thread.meta.id);
-              onCloseDetail();
-            }}
-          />
-        ))}
-      </aside>
-      <section className="thread-detail">
-        {selectedThread ? (
-          <>
-            <div className="thread-heading">
-              <div>
-                <div className="eyebrow">Strategy Panel</div>
-                <h2>{selectedThread.payload.title}</h2>
-                <p>{selectedThread.payload.currentHypothesis}</p>
-              </div>
-              <div className="thread-heading-actions">
-                <StatusPill tone="strategy" label={selectedThread.meta.status} />
-                <button className="ghost-button" onClick={() => onArchiveThread(selectedThread)}>
-                  <Archive size={15} />
-                  Archive
-                </button>
-              </div>
-            </div>
+  const selectedStats = threadStats.get(selectedThread.meta.id) ?? {
+    active: strategyTodos.length,
+    done: strategyCompletedTodos.length,
+    recent: selectedThread.meta.updatedAt
+  };
+  const relatedNotes = notes
+    .filter((note) => note.meta.status !== "archived" && note.meta.strategyThreadId === selectedThread.meta.id)
+    .sort((a, b) => b.meta.updatedAt.localeCompare(a.meta.updatedAt));
+  const selectedThreadTodoIds = new Set(strategyTodos.map((todo) => todo.meta.id));
+  const upcomingStrategyEvents = calendarEvents
+    .filter(visibleCalendarEvent)
+    .filter(
+      (event) =>
+        event.meta.strategyThreadId === selectedThread.meta.id ||
+        (event.meta.sourceItemId ? selectedThreadTodoIds.has(event.meta.sourceItemId) : false)
+    )
+    .sort(compareCalendarEvents)
+    .slice(0, 3);
+  const hypothesisText =
+    selectedThread.payload.currentHypothesis ||
+    "我们需要的是能在不确定环境下主动定义问题的人，而不是只执行任务的人。";
+  const keyQuestions = [
+    "什么样的人才适合当前阶段？",
+    "他们为什么会加入我们？",
+    "我们如何判断一个人是否真的适合？",
+    "招聘流程里哪些环节可以系统化？"
+  ];
+  const recentThoughts = [
+    `${selectedThread.payload.title}不是一个短期项目，而是一条需要反复校准的判断线。`,
+    strategyTodos[0] ? `${(strategyTodos[0].payload as ItemPayload).title} 是当前最接近行动的线索。` : "先把观察、问题和子任务保持在同一个地方。",
+    strategyCompletedTodos.length ? `已经完成 ${strategyCompletedTodos.length} 个相关动作，可以沉淀为下一轮判断。` : "完成的动作会沉淀到这里，帮助复盘判断质量。"
+  ];
 
-            <div className="note-composer">
-              <input
-                value={taskText}
-                onChange={(event) => onTaskText(event.target.value)}
-                onKeyDown={(event) => {
-                  if (isImeComposing(event)) return;
-                  if (event.key === "Enter") onAddTask();
-                }}
-                placeholder="添加战略子任务，会同步出现在 Todo"
-              />
-              <button className="primary-button" onClick={onAddTask}>
-                <Plus size={16} />
-                Add Subtask
+  return (
+    <div className={`strategy-detail-layout ${selectedTodo ? "has-task-detail" : ""}`}>
+      <section className="strategy-detail-page">
+        <div className="strategy-detail-breadcrumb">
+          <button onClick={() => onSelectThread("")}>Strategy</button>
+          <span>/</span>
+          <strong>{selectedThread.payload.title}</strong>
+        </div>
+
+        <section className="strategy-hero-card">
+          <div className="strategy-hero-icon">
+            <Users size={34} />
+          </div>
+          <div className="strategy-hero-copy">
+            <div className="strategy-title-line">
+              <h2>{selectedThread.payload.title}</h2>
+              <button className="icon-button quiet" aria-label="Edit strategy title">
+                <Edit3 size={15} />
               </button>
             </div>
+            <p>{hypothesisText}</p>
+          </div>
+          <div className="strategy-hero-actions">
+            <button className="ghost-button">
+              <Edit3 size={15} />
+              Edit
+            </button>
+            <button className="primary-button" onClick={onAddTask}>
+              <Plus size={15} />
+              Add Task
+            </button>
+            <button className="icon-button" onClick={() => onArchiveThread(selectedThread)} aria-label="More strategy actions">
+              <MoreHorizontal size={17} />
+            </button>
+          </div>
+          <div className="strategy-hero-stats">
+            <span className="strategy-stat-pill active">{selectedStats.active} active</span>
+            <span className="strategy-stat-pill done">{selectedStats.done} done</span>
+            <span className="strategy-stat-pill notes">{relatedNotes.length} notes</span>
+            <span className="strategy-updated">最近更新：{relativeAgeLabel(selectedStats.recent)}</span>
+          </div>
+        </section>
 
-            <SectionCard icon={<LayoutList size={17} />} title="Subtasks in Todo">
+        <nav className="strategy-detail-tabs" aria-label="Strategy sections">
+          <button className="active">Overview</button>
+          <button>Tasks</button>
+          <button>Notes</button>
+          <button>Review</button>
+        </nav>
+
+        <div className="strategy-detail-grid">
+          <div className="strategy-overview-column">
+            <article className="strategy-info-card">
+              <div className="strategy-info-heading">
+                <Brain size={17} />
+                <strong>当前假设</strong>
+              </div>
+              <p>{hypothesisText}</p>
+            </article>
+
+            <article className="strategy-info-card">
+              <div className="strategy-info-heading">
+                <HelpCircle size={17} />
+                <strong>关键问题</strong>
+              </div>
+              <ol className="strategy-question-list">
+                {keyQuestions.map((question) => (
+                  <li key={question}>{question}</li>
+                ))}
+              </ol>
+            </article>
+
+            <article className="strategy-info-card">
+              <div className="strategy-info-heading">
+                <PenLine size={17} />
+                <strong>最近思考</strong>
+              </div>
+              <ul className="strategy-bullet-list">
+                {recentThoughts.map((thought) => (
+                  <li key={thought}>{thought}</li>
+                ))}
+              </ul>
+            </article>
+
+            <article className="strategy-info-card">
+              <div className="strategy-info-heading">
+                <FileText size={17} />
+                <strong>决策记录</strong>
+              </div>
+              <div className="strategy-decision-list">
+                <span>{new Date(selectedThread.meta.createdAt).toLocaleDateString("zh-CN")}</span>
+                <p>创建战略方向：{selectedThread.payload.title}</p>
+                <span>{new Date(selectedStats.recent).toLocaleDateString("zh-CN")}</span>
+                <p>最近一次更新相关任务或笔记。</p>
+              </div>
+              <button className="strategy-link-button">查看全部</button>
+            </article>
+          </div>
+
+          <aside className="strategy-side-column">
+            <article className="strategy-side-card">
+              <div className="strategy-side-heading">
+                <Check size={17} />
+                <strong>Active Tasks</strong>
+              </div>
               {strategyTodos.length ? (
-                buildTodoTreeEntries(strategyTodoRoots, strategyTodos, collapsedTodoIds).map(({ todo, depth, childCount }) => (
-                  <article
-                    className={`strategy-note ${selectedTodo?.meta.id === todo.meta.id ? "selected" : ""} ${depth > 0 ? "child" : ""}`}
-                    style={{ "--todo-depth": depth } as CSSProperties}
-                    key={todo.meta.id}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => onSelectTodo(todo)}
-                    onKeyDown={(event) => {
-                      if (event.target !== event.currentTarget) return;
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        onSelectTodo(todo);
-                      }
-                    }}
-                  >
-                    <button
+                strategyTodos.slice(0, 5).map((todo) => (
+                  <button className="strategy-side-task" key={todo.meta.id} onClick={() => onSelectTodo(todo)}>
+                    <span
                       className="completion-circle"
-                      aria-label={`Complete ${(todo.payload as ItemPayload).title}`}
+                      role="button"
+                      tabIndex={0}
                       onClick={(event) => {
                         event.stopPropagation();
                         onComplete(todo);
                       }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          onComplete(todo);
+                        }
+                      }}
                     >
-                      <Check size={13} />
-                    </button>
-                    <div>
-                      <StatusPill tone="success" label="Todo" />
-                      <div className="strategy-note-title-row">
-                        <button
-                          className="strategy-note-title-button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void onOpenNote(todo);
-                          }}
-                        >
-                          {(todo.payload as ItemPayload).title}
-                        </button>
-                        {activeNoteForTodo(todo, notes) && <FileText size={13} />}
-                      </div>
-                      {childCount > 0 && (
-                        <button
-                          className={`subtask-toggle-chip ${collapsedTodoIds.has(todo.meta.id) ? "collapsed" : ""}`}
-                          aria-label={collapsedTodoIds.has(todo.meta.id) ? `Show ${childCount} subtasks` : `Hide ${childCount} subtasks`}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            toggleStrategyTodoCollapse(todo.meta.id);
-                          }}
-                        >
-                          <ChevronRight size={12} />
-                          {collapsedTodoIds.has(todo.meta.id) ? "Show" : "Hide"} {childCount} subtasks
-                        </button>
-                      )}
-                      {todo.meta.dueAt && (
-                        <p className="strategy-note-date">
-                          <CalendarDays size={13} />
-                          {todoDateLabel(todo.meta.dueAt)}
-                        </p>
-                      )}
-                    </div>
-                    <ChevronRight className="strategy-note-arrow" size={16} />
-                  </article>
+                      <Check size={12} />
+                    </span>
+                    <span>
+                      <strong>{(todo.payload as ItemPayload).title}</strong>
+                      <small>
+                        {todo.meta.dueAt ? todoDateLabel(todo.meta.dueAt) : relativeAgeLabel(todo.meta.createdAt)}
+                        {activeNoteForTodo(todo, notes) ? " · 1 note" : ""}
+                      </small>
+                    </span>
+                  </button>
                 ))
               ) : (
-                <EmptyState label="这个战略线程还没有子任务" />
+                <p className="strategy-side-empty">还没有 active task</p>
               )}
-            </SectionCard>
+              <div className="strategy-side-composer">
+                <input
+                  value={taskText}
+                  onChange={(event) => onTaskText(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (isImeComposing(event)) return;
+                    if (event.key === "Enter") onAddTask();
+                  }}
+                  placeholder="Add Task"
+                />
+                <button onClick={onAddTask}>
+                  <Plus size={14} />
+                  Add
+                </button>
+              </div>
+            </article>
+
+            <article className="strategy-side-card">
+              <div className="strategy-side-heading">
+                <CalendarDays size={17} />
+                <strong>Upcoming Calendar</strong>
+              </div>
+              {upcomingStrategyEvents.length ? (
+                upcomingStrategyEvents.map((event) => (
+                  <button
+                    className="strategy-calendar-mini"
+                    key={event.meta.id}
+                    onClick={() => {
+                      const linkedTodo = event.meta.sourceItemId ? allTodos.find((todo) => todo.meta.id === event.meta.sourceItemId) : undefined;
+                      if (linkedTodo) onOpenCalendar(linkedTodo);
+                    }}
+                  >
+                    <span>{eventTimeLabel(event.meta.startsAt)}</span>
+                    <strong>{event.payload.title}</strong>
+                    <small>Feishu Calendar</small>
+                  </button>
+                ))
+              ) : (
+                <p className="strategy-side-empty">暂无关联日程</p>
+              )}
+              <button className="strategy-link-button">查看全部日程</button>
+            </article>
+
+            <article className="strategy-side-card">
+              <div className="strategy-side-heading">
+                <FileText size={17} />
+                <strong>Related Notes</strong>
+              </div>
+              {relatedNotes.length ? (
+                relatedNotes.slice(0, 5).map((note) => {
+                  const linkedTodo = note.meta.taskId ? allTodos.find((todo) => todo.meta.id === note.meta.taskId) : undefined;
+                  return (
+                    <button
+                      className="strategy-note-mini"
+                      key={note.meta.id}
+                      onClick={() => {
+                        if (linkedTodo) void onOpenNote(linkedTodo);
+                      }}
+                    >
+                      <FileText size={14} />
+                      <span>{titleForNote(note)}</span>
+                      <small>{relativeAgeLabel(note.meta.updatedAt)}</small>
+                    </button>
+                  );
+                })
+              ) : (
+                <p className="strategy-side-empty">暂无关联笔记</p>
+              )}
+              <button className="strategy-link-button">查看全部笔记</button>
+            </article>
 
             {strategyCompletedTodos.length > 0 && (
-              <section className="strategy-completed-section">
+              <article className="strategy-side-card">
                 <button
                   className={`collapsed-list-toggle ${showStrategyCompleted ? "open" : ""}`}
                   onClick={() => setShowStrategyCompleted((value) => !value)}
@@ -4744,20 +4868,10 @@ function StrategyView({
                     ))}
                   </div>
                 )}
-              </section>
+              </article>
             )}
-
-            {strategySignals.length > 0 && (
-              <SectionCard icon={<Brain size={17} />} title="Signals">
-                {strategySignals.map((note) => (
-                  <CompactItem key={note.meta.id} item={note} />
-                ))}
-              </SectionCard>
-            )}
-          </>
-        ) : (
-          <EmptyState label="选择一个战略线程" />
-        )}
+          </aside>
+        </div>
       </section>
       {selectedTodo && (
         <TodoDetailPanel
