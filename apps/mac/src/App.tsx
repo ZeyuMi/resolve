@@ -846,6 +846,7 @@ export function App() {
   const [selectedTodoId, setSelectedTodoId] = useState<string | null>(null);
   const [selectedStrategyTodoId, setSelectedStrategyTodoId] = useState<string | null>(null);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const [pendingNoteTodoId, setPendingNoteTodoId] = useState<string | null>(null);
   const [noteContent, setNoteContent] = useState("");
   const [noteContentNoteId, setNoteContentNoteId] = useState<string | null>(null);
   const [noteLoading, setNoteLoading] = useState(false);
@@ -896,6 +897,7 @@ export function App() {
     (item) => item.meta.id === selectedStrategyTodoId && item.meta.strategyThreadId === selectedThreadId
   );
   const selectedNote = state.notes.find((note) => note.meta.id === selectedNoteId);
+  const pendingNoteTodo = taskItems.find((item) => item.meta.id === pendingNoteTodoId);
   const selectedTodoSubtasks = useMemo(
     () => directTodoSubtasks(taskItems, selectedTodo?.meta.id),
     [taskItems, selectedTodo?.meta.id]
@@ -1237,20 +1239,18 @@ export function App() {
     setTab("vault");
   }
 
-  async function openNoteForTodo(todo: DecryptedItem) {
+  function requestNoteForTodo(todo: DecryptedItem) {
     const payload = todo.payload as ItemPayload;
     const linkedNoteId = payload.noteId ?? todo.meta.noteId;
     if (linkedNoteId && stateRef.current.notes.some((note) => note.meta.id === linkedNoteId)) {
-      await openNote(linkedNoteId);
+      void openNote(linkedNoteId);
       return;
     }
 
-    const confirmed = window.confirm("Create Note for this task?");
-    if (!confirmed) {
-      setSelectedTodoId(todo.meta.id);
-      return;
-    }
+    setPendingNoteTodoId(todo.meta.id);
+  }
 
+  async function createNoteForTodo(todo: DecryptedItem) {
     await ensureResolveVaultRoot().catch((error) => {
       console.warn("Could not prepare Resolve Vault", error);
     });
@@ -1284,6 +1284,7 @@ export function App() {
     setSelectedNoteId(note.meta.id);
     setNoteContent(stripNoteFrontmatter(markdown));
     setNoteContentNoteId(note.meta.id);
+    setPendingNoteTodoId(null);
     setTab("vault");
     showToast("Note created");
   }
@@ -2679,7 +2680,7 @@ export function App() {
               onCaptureChange={setCaptureText}
               onCaptureStrategy={setCaptureStrategyId}
               onCaptureSave={handleCapture}
-              onOpenNote={openNoteForTodo}
+              onOpenNote={requestNoteForTodo}
               onOpenCalendar={openCalendarDraft}
               onAttachStrategy={attachTodoToStrategy}
               onComplete={(todo) => {
@@ -2751,7 +2752,7 @@ export function App() {
               selectedTodoSubtasks={selectedStrategyTodoSubtasks}
               calendarEvents={state.calendarEvents}
               onSelectTodo={(todo) => setSelectedStrategyTodoId(todo.meta.id)}
-              onOpenNote={openNoteForTodo}
+              onOpenNote={requestNoteForTodo}
               onCloseDetail={() => setSelectedStrategyTodoId(null)}
               onOpenCalendar={openCalendarDraft}
               onComplete={(todo) => {
@@ -2834,6 +2835,11 @@ export function App() {
         onChange={setCaptureText}
         onSave={handleCapture}
         onClose={() => setQuickCaptureOpen(false)}
+      />
+      <CreateNoteDialog
+        todo={pendingNoteTodo}
+        onCancel={() => setPendingNoteTodoId(null)}
+        onCreate={(todo) => void createNoteForTodo(todo)}
       />
       {toast && <Toast message={toast} />}
     </div>
@@ -3060,6 +3066,46 @@ function QuickCaptureOverlay({
           </button>
           <button className="primary-button" onClick={onSave} aria-label="Save quick capture">
             <Send size={16} />
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function CreateNoteDialog({
+  todo,
+  onCancel,
+  onCreate
+}: {
+  todo?: DecryptedItem;
+  onCancel: () => void;
+  onCreate: (todo: DecryptedItem) => void;
+}) {
+  if (!todo) return null;
+  const payload = todo.payload as ItemPayload;
+
+  return (
+    <div className="confirm-backdrop" onClick={onCancel}>
+      <section
+        className="confirm-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Create Note"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="confirm-dialog-copy">
+          <span className="eyebrow">Create Note</span>
+          <h3>{payload.title}</h3>
+          <p>Create a Markdown Note for this task?</p>
+        </div>
+        <div className="confirm-dialog-actions">
+          <button className="ghost-button" onClick={onCancel}>
+            No
+          </button>
+          <button className="primary-button" onClick={() => onCreate(todo)}>
+            <FileText size={15} />
+            Yes, create
           </button>
         </div>
       </section>

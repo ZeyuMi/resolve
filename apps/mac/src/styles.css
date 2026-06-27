@@ -2549,6 +2549,52 @@ button:hover {
   animation: panelIn 140ms ease;
 }
 
+.confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(20, 26, 38, 0.18);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  animation: fadeIn 120ms ease;
+}
+
+.confirm-dialog {
+  width: min(420px, calc(100vw - 48px));
+  border: 1px solid rgba(255, 255, 255, 0.76);
+  border-radius: 20px;
+  padding: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.72)),
+    rgba(255, 255, 255, 0.66);
+  box-shadow:
+    0 28px 90px rgba(29, 42, 70, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.confirm-dialog-copy h3 {
+  margin: 4px 0 8px;
+  color: var(--native-text, var(--text));
+  font-size: 17px;
+  line-height: 1.35;
+}
+
+.confirm-dialog-copy p {
+  margin: 0;
+  color: var(--native-secondary, var(--text-2));
+  font-size: 13px;
+}
+
+.confirm-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
 .quick-capture-icon {
   margin-top: 9px;
   color: var(--text-3);
