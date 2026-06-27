@@ -9561,6 +9561,11 @@ body,
   font-weight: 600 !important;
 }
 
+.theme-redesign.tab-calendar .calendar-cell.muted:not(.past) .calendar-more-label,
+.theme-redesign.tab-calendar .calendar-cell.muted:not(.past) .calendar-more-label .calendar-more-full {
+  color: #2563eb !important;
+}
+
 .theme-redesign.tab-calendar .calendar-more-full {
   display: inline !important;
 }
