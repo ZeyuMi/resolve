@@ -2663,7 +2663,7 @@ export function App() {
   }
 
   return (
-    <div className={`app-shell tab-${tab} theme-feishu`}>
+    <div className={`app-shell tab-${tab} theme-apple`}>
       <aside className="focus-sidebar">
         <div className="sidebar-brand">
           <ResolveMark />

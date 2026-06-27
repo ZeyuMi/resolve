@@ -7721,3 +7721,475 @@ body,
   background: #ffffff;
   box-shadow: none;
 }
+
+/* Apple design analysis implementation */
+
+.app-shell.theme-apple {
+  --app-bg: #f5f5f7;
+  --sidebar-bg: #f5f5f7;
+  --sidebar-border: #e0e0e0;
+  --panel-bg: #ffffff;
+  --panel-soft: #fafafc;
+  --panel-pressed: #f5f5f7;
+  --line: #e0e0e0;
+  --line-soft: #f0f0f0;
+  --text: #1d1d1f;
+  --text-2: #333333;
+  --text-3: #7a7a7a;
+  --accent: #0066cc;
+  --accent-soft: #f5f5f7;
+  --accent-line: #0071e3;
+  --strategy: #0066cc;
+  --strategy-soft: #f5f5f7;
+  --success: #0066cc;
+  --success-soft: #f5f5f7;
+  --warning: #1d1d1f;
+  --warning-soft: #f5f5f7;
+  --danger: #b00020;
+  --danger-soft: #fff5f5;
+  --radius-sm: 8px;
+  --radius-md: 11px;
+  --radius-lg: 18px;
+  --shadow-panel: none;
+  --shadow-popover: 0 18px 48px rgba(0, 0, 0, 0.18);
+  min-height: 100vh;
+  grid-template-columns: 248px minmax(0, 1fr);
+  background: #f5f5f7;
+  color: #1d1d1f;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+    "Helvetica Neue", Arial, sans-serif;
+}
+
+.app-shell.theme-apple * {
+  letter-spacing: -0.224px;
+}
+
+.app-shell.theme-apple .focus-sidebar {
+  background: #f5f5f7;
+  border-right: 1px solid #e0e0e0;
+  backdrop-filter: none;
+}
+
+.app-shell.theme-apple .sidebar-brand {
+  min-height: 64px;
+  padding: 16px 18px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.app-shell.theme-apple .brand-mark {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.app-shell.theme-apple .brand-mark svg {
+  width: 32px;
+  height: 32px;
+}
+
+.app-shell.theme-apple .sidebar-brand strong {
+  color: #1d1d1f;
+  font-size: 17px;
+  line-height: 21px;
+  font-weight: 600;
+}
+
+.app-shell.theme-apple .sidebar-brand span {
+  margin-top: 2px;
+  color: #7a7a7a;
+  font-size: 12px;
+  line-height: 14px;
+}
+
+.app-shell.theme-apple .sidebar-scroll {
+  padding: 14px 12px;
+  gap: 16px;
+}
+
+.app-shell.theme-apple .sidebar-nav {
+  gap: 4px;
+}
+
+.app-shell.theme-apple .sidebar-nav button {
+  min-height: 40px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: #333333;
+  padding: 0 12px;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.app-shell.theme-apple .sidebar-nav button:hover {
+  background: #ffffff;
+}
+
+.app-shell.theme-apple .sidebar-nav button.active {
+  background: #ffffff;
+  color: #1d1d1f;
+  box-shadow: inset 0 0 0 1px #e0e0e0;
+}
+
+.app-shell.theme-apple .sidebar-nav button.active svg {
+  color: #0066cc;
+}
+
+.app-shell.theme-apple .sidebar-nav button small {
+  min-width: 24px;
+  height: 20px;
+  border-radius: 999px;
+  background: #fafafc;
+  color: #7a7a7a;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.app-shell.theme-apple .sync-panel {
+  margin-top: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 8px 6px 0;
+  box-shadow: none;
+}
+
+.app-shell.theme-apple .panel-head,
+.app-shell.theme-apple .sync-lines {
+  color: #7a7a7a;
+  font-size: 12px;
+}
+
+.app-shell.theme-apple .app-main {
+  background: #ffffff;
+}
+
+.app-shell.theme-apple .top-bar {
+  min-height: 44px;
+  padding: 0 24px;
+  border-bottom: 0;
+  background: #000000;
+  color: #ffffff;
+  backdrop-filter: none;
+}
+
+.app-shell.theme-apple .top-bar .eyebrow {
+  display: none;
+}
+
+.app-shell.theme-apple .top-bar h1 {
+  color: #ffffff;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
+  font-size: 21px;
+  line-height: 24px;
+  font-weight: 600;
+  letter-spacing: 0.231px;
+}
+
+.app-shell.theme-apple .top-actions {
+  gap: 10px;
+}
+
+.app-shell.theme-apple .top-actions .status-pill {
+  background: rgba(255, 255, 255, 0.16);
+  color: #cccccc;
+}
+
+.app-shell.theme-apple .workspace {
+  padding: 32px;
+  gap: 24px;
+  background: #f5f5f7;
+}
+
+.app-shell.theme-apple.tab-calendar .workspace {
+  padding: 0;
+  background: #ffffff;
+}
+
+.app-shell.theme-apple .capture-box,
+.app-shell.theme-apple .todo-list-pane,
+.app-shell.theme-apple .todo-detail-panel,
+.app-shell.theme-apple .section-card,
+.app-shell.theme-apple .thread-detail,
+.app-shell.theme-apple .vault-list-pane,
+.app-shell.theme-apple .vault-editor-pane,
+.app-shell.theme-apple .feishu-connect-card,
+.app-shell.theme-apple .calendar-popover .section-card {
+  border: 1px solid #e0e0e0;
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.app-shell.theme-apple .capture-box.todo-capture-row,
+.app-shell.theme-apple .capture-box {
+  padding: 16px;
+}
+
+.app-shell.theme-apple .capture-box.todo-capture-row textarea,
+.app-shell.theme-apple .capture-box textarea,
+.app-shell.theme-apple input,
+.app-shell.theme-apple textarea,
+.app-shell.theme-apple select {
+  min-height: 44px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 999px;
+  background: #ffffff;
+  color: #1d1d1f;
+  padding: 12px 20px;
+  font-size: 17px;
+  line-height: 25px;
+  font-weight: 400;
+}
+
+.app-shell.theme-apple textarea {
+  border-radius: 18px;
+}
+
+.app-shell.theme-apple .primary-button,
+.app-shell.theme-apple .secondary-button,
+.app-shell.theme-apple .calendar-new-button,
+.app-shell.theme-apple .top-sync-button,
+.app-shell.theme-apple .route-button {
+  min-height: 44px;
+  border-radius: 999px;
+  padding: 0 22px;
+  font-size: 17px;
+  line-height: 24px;
+  font-weight: 400;
+  box-shadow: none;
+  transition: transform 0.12s ease;
+}
+
+.app-shell.theme-apple .primary-button,
+.app-shell.theme-apple .calendar-new-button,
+.app-shell.theme-apple .top-sync-button,
+.app-shell.theme-apple .capture-actions button:last-child {
+  border-color: #0066cc;
+  background: #0066cc;
+  color: #ffffff;
+}
+
+.app-shell.theme-apple .secondary-button,
+.app-shell.theme-apple .route-button {
+  border: 1px solid #0066cc;
+  background: #ffffff;
+  color: #0066cc;
+}
+
+.app-shell.theme-apple button:active {
+  transform: scale(0.95);
+}
+
+.app-shell.theme-apple .section-card-head,
+.app-shell.theme-apple .section-title-row,
+.app-shell.theme-apple .vault-editor-head,
+.app-shell.theme-apple .vault-meta-strip {
+  min-height: 64px;
+  border-bottom: 1px solid #f0f0f0;
+  background: #ffffff;
+  padding: 18px 24px;
+}
+
+.app-shell.theme-apple .section-card-head span,
+.app-shell.theme-apple .section-title-row h2 {
+  color: #1d1d1f;
+  font-size: 21px;
+  line-height: 25px;
+  font-weight: 600;
+  letter-spacing: 0.231px;
+}
+
+.app-shell.theme-apple .section-card-body {
+  padding: 12px 0;
+}
+
+.app-shell.theme-apple .todo-row,
+.app-shell.theme-apple .strategy-row,
+.app-shell.theme-apple .vault-note-row,
+.app-shell.theme-apple .item-card,
+.app-shell.theme-apple .strategy-list-card {
+  min-height: 64px;
+  border: 0;
+  border-bottom: 1px solid #f0f0f0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 12px 24px;
+}
+
+.app-shell.theme-apple .todo-row:hover,
+.app-shell.theme-apple .strategy-row:hover,
+.app-shell.theme-apple .vault-note-row:hover,
+.app-shell.theme-apple .item-card:hover,
+.app-shell.theme-apple .strategy-list-card:hover {
+  background: #fafafc;
+}
+
+.app-shell.theme-apple .todo-title,
+.app-shell.theme-apple .item-card-title,
+.app-shell.theme-apple .strategy-row-title,
+.app-shell.theme-apple .strategy-list-card h3,
+.app-shell.theme-apple .vault-note-row span {
+  color: #1d1d1f;
+  font-size: 17px;
+  line-height: 25px;
+  font-weight: 400;
+}
+
+.app-shell.theme-apple .todo-meta,
+.app-shell.theme-apple .item-card-meta,
+.app-shell.theme-apple .strategy-row-meta,
+.app-shell.theme-apple .strategy-list-card p,
+.app-shell.theme-apple .vault-note-row small,
+.app-shell.theme-apple .empty-state {
+  color: #7a7a7a;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 400;
+}
+
+.app-shell.theme-apple .status-pill,
+.app-shell.theme-apple .meta-pill,
+.app-shell.theme-apple .tag-pill {
+  border: 0;
+  border-radius: 999px;
+  background: #fafafc;
+  color: #333333;
+  padding: 5px 10px;
+  font-size: 14px;
+  line-height: 18px;
+}
+
+.app-shell.theme-apple .todo-circle {
+  width: 22px;
+  height: 22px;
+  border-color: #7a7a7a;
+}
+
+.app-shell.theme-apple .todo-circle.checked {
+  border-color: #0066cc;
+  background: #0066cc;
+}
+
+.app-shell.theme-apple .calendar-layout,
+.app-shell.theme-apple .calendar-month {
+  border: 0;
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.app-shell.theme-apple .calendar-toolbar {
+  min-height: 64px;
+  border-bottom: 1px solid #e0e0e0;
+  background: rgba(245, 245, 247, 0.86);
+  padding: 10px 24px;
+  backdrop-filter: blur(16px);
+}
+
+.app-shell.theme-apple .calendar-toolbar h2 {
+  color: #1d1d1f;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
+  font-size: 34px;
+  line-height: 50px;
+  font-weight: 600;
+  letter-spacing: -0.374px;
+}
+
+.app-shell.theme-apple .weekday-row {
+  height: 36px;
+  border-bottom: 1px solid #e0e0e0;
+  background: #ffffff;
+}
+
+.app-shell.theme-apple .weekday-row span {
+  color: #333333;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+}
+
+.app-shell.theme-apple .calendar-cell {
+  border-color: #f0f0f0;
+  border-radius: 0;
+  background: #ffffff;
+  padding: 10px;
+}
+
+.app-shell.theme-apple .calendar-cell.past {
+  background: #fafafc;
+}
+
+.app-shell.theme-apple .calendar-cell.today {
+  background: #f5f5f7;
+}
+
+.app-shell.theme-apple .calendar-cell.selected {
+  background: #ffffff;
+  box-shadow: inset 0 0 0 2px #0071e3;
+}
+
+.app-shell.theme-apple .calendar-cell > span,
+.app-shell.theme-apple .calendar-date-number {
+  color: #1d1d1f;
+  font-size: 17px;
+  line-height: 25px;
+  font-weight: 600;
+}
+
+.app-shell.theme-apple .calendar-cell.today .calendar-date-number {
+  min-width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: #0066cc;
+  color: #ffffff;
+  text-align: center;
+}
+
+.app-shell.theme-apple .calendar-event-chip,
+.app-shell.theme-apple .calendar-more-label {
+  min-height: 21px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #333333;
+  padding: 0;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.app-shell.theme-apple .calendar-event-chip::before,
+.app-shell.theme-apple .calendar-more-label::before {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #0066cc;
+}
+
+.app-shell.theme-apple .calendar-more-label {
+  color: #0066cc;
+}
+
+.app-shell.theme-apple .detail-card,
+.app-shell.theme-apple .settings-card,
+.app-shell.theme-apple .calendar-day-list,
+.app-shell.theme-apple .event-detail-panel,
+.app-shell.theme-apple .calendar-draft-panel {
+  border: 1px solid #e0e0e0;
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.app-shell.theme-apple .resolve-mdx-content {
+  color: #1d1d1f;
+  font-size: 17px;
+  line-height: 1.47;
+  letter-spacing: -0.374px;
+}
