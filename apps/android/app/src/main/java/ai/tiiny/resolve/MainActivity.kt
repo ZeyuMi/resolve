@@ -248,6 +248,7 @@ private enum class Tab(
     Calendar("Calendar", Icons.Filled.CalendarMonth),
     Strategy("Strategy", Icons.Filled.Psychology),
     Vault("Vault", Icons.Filled.OpenInBrowser),
+    Lab("Lab", Icons.Filled.Settings),
     Settings("Settings", Icons.Filled.Settings)
 }
 
@@ -291,6 +292,7 @@ private fun ResolveAndroidApp(
     var todoReturnStrategyThreadId by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedNoteId by rememberSaveable { mutableStateOf<String?>(null) }
     var noteDraft by remember { mutableStateOf("") }
+    var uiStyle by rememberSaveable { mutableStateOf("Native") }
     var pendingNoteTask by remember { mutableStateOf<ResolveItem?>(null) }
     var pendingTodoArchive by remember { mutableStateOf<ResolveItem?>(null) }
     var pendingTodoDelete by remember { mutableStateOf<ResolveItem?>(null) }
@@ -1612,6 +1614,11 @@ private fun ResolveAndroidApp(
                             onSave = { saveSelectedNote(it) },
                             onArchive = { note -> archiveSelectedNote(note) },
                             onCloseNote = { selectedNoteId = null }
+                        )
+
+                        Tab.Lab -> UiLabScreen(
+                            style = uiStyle,
+                            onStyle = { uiStyle = it }
                         )
 
                         Tab.Settings -> SettingsScreen(
@@ -3659,6 +3666,171 @@ private fun StrategyScreen(
 }
 
 @Composable
+private fun UiLabScreen(style: String, onStyle: (String) -> Unit) {
+    val styles = listOf(
+        "Native" to "清爽、接近系统 app",
+        "Dense" to "更高信息密度",
+        "Soft" to "更柔和、压力更低"
+    )
+    LazyColumn(
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier.fillMaxSize()
+    ) {
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text("UI Lab", color = ResolveColors.Text, fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "先在这里试视觉方向。数据和同步不受影响。",
+                    color = ResolveColors.Secondary,
+                    fontSize = ResolveType.Body,
+                    lineHeight = 20.sp
+                )
+            }
+        }
+        item {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.horizontalScroll(rememberScrollState())
+            ) {
+                styles.forEach { (name, description) ->
+                    val selected = style == name
+                    Surface(
+                        color = if (selected) ResolveColors.Accent else ResolveColors.Surface,
+                        contentColor = if (selected) Color.White else ResolveColors.Text,
+                        shape = RoundedCornerShape(18.dp),
+                        tonalElevation = if (selected) 2.dp else 0.dp,
+                        modifier = Modifier
+                            .width(154.dp)
+                            .clickable { onStyle(name) }
+                    ) {
+                        Column(
+                            Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Text(name, fontSize = ResolveType.Body, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                description,
+                                color = if (selected) Color.White.copy(alpha = 0.78f) else ResolveColors.Secondary,
+                                fontSize = ResolveType.Caption,
+                                lineHeight = 15.sp
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            UiLabPreviewCard(title = "Todo") {
+                UiLabTaskPreview(title = "整理融资叙事 v2", meta = "融资策略 · 今天 · 2 subtasks")
+                UiLabTaskPreview(title = "同步飞书会议链接", meta = "Completed · 2 days ago", done = true)
+            }
+        }
+        item {
+            UiLabPreviewCard(title = "Calendar") {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    listOf("23", "24", "25").forEachIndexed { index, day ->
+                        Surface(
+                            color = if (index == 1) ResolveColors.GlassControl else ResolveColors.SurfaceHigh,
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(128.dp)
+                        ) {
+                            Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Text(day, color = ResolveColors.Text, fontSize = ResolveType.Body, fontWeight = FontWeight.SemiBold)
+                                UiLabEventLine("09:30 晨会")
+                                UiLabEventLine("13:30 Investor call")
+                                if (index == 1) {
+                                    Text("还有 3 项", color = ResolveColors.Accent, fontSize = ResolveType.Caption, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            UiLabPreviewCard(title = "Strategy") {
+                Text("产品方向 / PMF", color = ResolveColors.Text, fontSize = ResolveType.SectionTitle, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Hypothesis compact. Subtasks carry the motion.",
+                    color = ResolveColors.Secondary,
+                    fontSize = ResolveType.BodySmall,
+                    lineHeight = 18.sp
+                )
+                Spacer(Modifier.height(4.dp))
+                UiLabTaskPreview(title = "验证 enterprise workflow", meta = "Active")
+                UiLabTaskPreview(title = "整理 onboarding 卡点", meta = "Waiting")
+            }
+        }
+    }
+}
+
+@Composable
+private fun UiLabPreviewCard(title: String, content: @Composable () -> Unit) {
+    Surface(
+        color = ResolveColors.Surface,
+        shape = RoundedCornerShape(22.dp),
+        tonalElevation = 1.dp,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(title, color = ResolveColors.Secondary, fontSize = ResolveType.Caption, fontWeight = FontWeight.SemiBold)
+            content()
+        }
+    }
+}
+
+@Composable
+private fun UiLabTaskPreview(title: String, meta: String, done: Boolean = false) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Surface(
+            color = if (done) ResolveColors.Accent else Color.Transparent,
+            shape = CircleShape,
+            border = if (done) null else androidx.compose.foundation.BorderStroke(2.dp, ResolveColors.Muted),
+            modifier = Modifier.size(24.dp)
+        ) {
+            if (done) {
+                Icon(Icons.Filled.Check, contentDescription = null, tint = Color.White, modifier = Modifier.padding(5.dp))
+            }
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                color = if (done) ResolveColors.Muted else ResolveColors.Text,
+                fontSize = ResolveType.Body,
+                fontWeight = FontWeight.SemiBold,
+                textDecoration = if (done) TextDecoration.LineThrough else TextDecoration.None,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(meta, color = ResolveColors.Secondary, fontSize = ResolveType.Caption, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+@Composable
+private fun UiLabEventLine(label: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        Box(
+            Modifier
+                .size(5.dp)
+                .clip(CircleShape)
+                .background(ResolveColors.Accent)
+        )
+        Spacer(Modifier.width(5.dp))
+        Text(label, color = ResolveColors.Secondary, fontSize = ResolveType.Caption, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+@Composable
 private fun SettingsScreen(
     state: ResolveState,
     isConnecting: Boolean,
@@ -4316,7 +4488,7 @@ private fun BottomTabs(tab: Tab, onTab: (Tab) -> Unit) {
         containerColor = ResolveColors.NavBar,
         tonalElevation = 0.dp
     ) {
-        listOf(Tab.Todo, Tab.Calendar, Tab.Strategy, Tab.Vault, Tab.Settings).forEach { item ->
+        listOf(Tab.Todo, Tab.Calendar, Tab.Strategy, Tab.Vault, Tab.Lab, Tab.Settings).forEach { item ->
             val selected = tab == item
             NavigationBarItem(
                 selected = selected,

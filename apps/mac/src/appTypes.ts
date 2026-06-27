@@ -1,4 +1,6 @@
-export type Tab = "todo" | "calendar" | "strategy" | "vault" | "settings";
+export type Tab = "todo" | "calendar" | "strategy" | "vault" | "uiLab" | "settings";
+
+export type UiThemeId = "native" | "dense" | "soft";
 
 export type CalendarViewMode = "week" | "month" | "year";
 

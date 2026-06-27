@@ -23,6 +23,7 @@ import {
   LayoutList,
   Lock,
   Paperclip,
+  Palette,
   Plus,
   RefreshCw,
   Search,
@@ -87,7 +88,7 @@ import {
   type FeishuEvent,
   type TokenSet
 } from "@resolve/feishu";
-import type { CalendarDraft, CalendarEventEditDraft, CalendarViewMode, StrategyDraft, Tab } from "./appTypes";
+import type { CalendarDraft, CalendarEventEditDraft, CalendarViewMode, StrategyDraft, Tab, UiThemeId } from "./appTypes";
 import { createAppRepository } from "./data/appRepository";
 import {
   canUseFeishuConnection,
@@ -140,6 +141,22 @@ const feishuOAuthScopes = feishuCalendarScopes
 const appSyncCursorKey = "resolve:app-sync-cursor:v2";
 const appSyncCursorLookbackMs = 30 * 24 * 60 * 60 * 1000;
 const calendarReauthorizationMessage = "Feishu needs reauthorization.";
+const uiThemeKey = "resolve:ui-theme:v1";
+
+const uiThemes: Array<{ id: UiThemeId; label: string; description: string }> = [
+  { id: "native", label: "Native Minimal", description: "清爽、克制、接近 macOS app。" },
+  { id: "dense", label: "OmniFocus Dense", description: "更小字号和间距，信息密度最高。" },
+  { id: "soft", label: "Liquid Soft", description: "更柔和、留白多一点，视觉压力低。" }
+];
+
+function loadUiTheme(): UiThemeId {
+  const saved = localStorage.getItem(uiThemeKey);
+  return saved === "dense" || saved === "soft" || saved === "native" ? saved : "native";
+}
+
+function saveUiTheme(theme: UiThemeId) {
+  localStorage.setItem(uiThemeKey, theme);
+}
 
 function loadAppSyncCursor() {
   return localStorage.getItem(appSyncCursorKey) ?? undefined;
@@ -792,6 +809,7 @@ export function App() {
     return next;
   });
   const [tab, setTab] = useState<Tab>("todo");
+  const [uiTheme, setUiTheme] = useState<UiThemeId>(loadUiTheme);
   const [captureText, setCaptureText] = useState("");
   const [captureStrategyId, setCaptureStrategyId] = useState("");
   const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
@@ -2662,8 +2680,13 @@ export function App() {
     showToast("Feishu disconnected locally");
   }
 
+  function changeUiTheme(theme: UiThemeId) {
+    setUiTheme(theme);
+    saveUiTheme(theme);
+  }
+
   return (
-    <div className={`app-shell tab-${tab}`}>
+    <div className={`app-shell tab-${tab} theme-${uiTheme}`}>
       <aside className="focus-sidebar">
         <div className="sidebar-brand">
           <ResolveMark />
@@ -2692,9 +2715,11 @@ export function App() {
       <main className="app-main">
         <TopBar
           tab={tab}
+          theme={uiTheme}
           feishuSettings={feishuSettings}
           backendSettings={backendSettings}
           syncing={manualSyncing || syncInFlightRef.current}
+          onTheme={changeUiTheme}
           onSync={() => void manualSyncNow()}
         />
 
@@ -2830,6 +2855,9 @@ export function App() {
               onRequestDelete={(note) => setPendingDeleteNoteId(note.meta.id)}
             />
           )}
+          {tab === "uiLab" && (
+            <UiLabView theme={uiTheme} onTheme={changeUiTheme} />
+          )}
           {tab === "settings" && (
             <SettingsView
               settings={feishuSettings}
@@ -2892,15 +2920,19 @@ export function App() {
 
 function TopBar({
   tab,
+  theme,
   feishuSettings,
   backendSettings,
   syncing,
+  onTheme,
   onSync
 }: {
   tab: Tab;
+  theme: UiThemeId;
   feishuSettings: FeishuSettingsState;
   backendSettings: BackendSettingsState;
   syncing: boolean;
+  onTheme: (theme: UiThemeId) => void;
   onSync: () => void;
 }) {
   const title = {
@@ -2908,6 +2940,7 @@ function TopBar({
     calendar: "Calendar",
     strategy: "Strategy",
     vault: "Vault",
+    uiLab: "UI Lab",
     settings: "Settings"
   }[tab];
 
@@ -2918,6 +2951,16 @@ function TopBar({
         <h1>{title}</h1>
       </div>
       <div className="top-actions">
+        <label className="theme-switcher" title="Switch UI style">
+          <Palette size={14} />
+          <select value={theme} onChange={(event) => onTheme(event.target.value as UiThemeId)}>
+            {uiThemes.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <SyncStatusBadge feishuSettings={feishuSettings} backendSettings={backendSettings} />
         <button className="secondary-button top-sync-button" onClick={onSync} disabled={syncing}>
           <RefreshCw size={14} />
@@ -2925,6 +2968,102 @@ function TopBar({
         </button>
       </div>
     </header>
+  );
+}
+
+function UiLabView({ theme, onTheme }: { theme: UiThemeId; onTheme: (theme: UiThemeId) => void }) {
+  return (
+    <div className="ui-lab-view">
+      <section className="ui-lab-hero">
+        <div>
+          <div className="eyebrow">Experiment safely</div>
+          <h2>Style Lab</h2>
+          <p>先在这里切换整体气质和密度。数据、同步、飞书逻辑都不跟着动，方便之后大胆试 UI。</p>
+        </div>
+        <div className="ui-lab-current">
+          <Palette size={18} />
+          <span>{uiThemes.find((item) => item.id === theme)?.label}</span>
+        </div>
+      </section>
+
+      <section className="ui-theme-grid">
+        {uiThemes.map((item) => (
+          <button
+            key={item.id}
+            className={`ui-theme-card ${theme === item.id ? "selected" : ""}`}
+            onClick={() => onTheme(item.id)}
+          >
+            <span className="ui-theme-swatch" data-theme={item.id}>
+              <i />
+              <b />
+              <em />
+            </span>
+            <strong>{item.label}</strong>
+            <small>{item.description}</small>
+            {theme === item.id && (
+              <span className="ui-theme-check">
+                <Check size={14} />
+              </span>
+            )}
+          </button>
+        ))}
+      </section>
+
+      <section className="ui-preview-grid">
+        <div className="ui-preview-card">
+          <div className="ui-preview-head">
+            <LayoutList size={16} />
+            <strong>Todo row</strong>
+          </div>
+          <div className="ui-preview-task">
+            <span className="todo-circle" />
+            <div>
+              <b>整理融资叙事 v2</b>
+              <p>融资策略 · 今天 · 2 subtasks</p>
+            </div>
+          </div>
+          <div className="ui-preview-task done">
+            <span className="todo-circle checked">
+              <Check size={12} />
+            </span>
+            <div>
+              <b>同步飞书会议链接</b>
+              <p>Completed · 2 days ago</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="ui-preview-card">
+          <div className="ui-preview-head">
+            <CalendarDays size={16} />
+            <strong>Calendar density</strong>
+          </div>
+          <div className="ui-preview-calendar">
+            {["23", "24", "25"].map((day, index) => (
+              <div key={day} className={index === 1 ? "active" : ""}>
+                <strong>{day}</strong>
+                <span><i />09:30 晨会</span>
+                <span><i />13:30 Investor call</span>
+                {index === 1 && <small>还有 3 项</small>}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="ui-preview-card">
+          <div className="ui-preview-head">
+            <Brain size={16} />
+            <strong>Strategy outline</strong>
+          </div>
+          <div className="ui-preview-outline">
+            <h3>产品方向 / PMF</h3>
+            <p>Current hypothesis stays compact. Tasks carry the motion.</p>
+            <label><span className="todo-circle" />验证 enterprise workflow</label>
+            <label><span className="todo-circle" />整理用户 onboarding 卡点</label>
+          </div>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -5648,6 +5787,7 @@ function SidebarNav({
     { id: "calendar", label: "Calendar", icon: <CalendarDays size={18} />, count: calendarCount },
     { id: "strategy", label: "Strategy", icon: <Brain size={18} />, count: strategyCount },
     { id: "vault", label: "Vault", icon: <FileText size={18} />, count: noteCount },
+    { id: "uiLab", label: "UI Lab", icon: <Palette size={18} /> },
     { id: "settings", label: "Settings", icon: <Settings size={18} /> }
   ];
 
