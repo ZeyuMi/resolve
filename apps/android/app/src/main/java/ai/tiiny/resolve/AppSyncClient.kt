@@ -116,7 +116,10 @@ class AppSyncClient(
         val encrypted = encryptJson(
             JSONObject()
                 .put("title", thread.title)
+                .put("description", thread.description.takeIf { it.isNotBlank() })
                 .put("currentHypothesis", thread.currentHypothesis.takeIf { it.isNotBlank() })
+                .put("keyQuestions", JSONArray(thread.keyQuestions))
+                .put("recentThoughts", JSONArray(thread.recentThoughts))
                 .put("sortOrder", thread.sortOrder)
         )
         return JSONObject()
@@ -218,7 +221,10 @@ class AppSyncClient(
         return StrategyThread(
             id = row.optString("id"),
             title = payload.optString("title").ifBlank { "Untitled strategy" },
+            description = payload.optString("description"),
             currentHypothesis = payload.optString("currentHypothesis"),
+            keyQuestions = payload.optJSONArray("keyQuestions").orEmpty().mapStrings(),
+            recentThoughts = payload.optJSONArray("recentThoughts").orEmpty().mapStrings(),
             status = row.optString("status", "active"),
             createdAt = instantOrNow(row.optString("created_at")),
             updatedAt = instantOrNow(row.optString("updated_at")),
@@ -341,6 +347,7 @@ private fun mergeResolveItem(existing: ResolveItem?, candidate: ResolveItem): Re
     val newest = if (candidate.updatedAt >= existing.updatedAt) candidate else existing
     val statusWinner = if (candidate.statusChangedAt >= existing.statusChangedAt) candidate else existing
     return newest.copy(
+        strategyThreadId = newest.strategyThreadId ?: existing.strategyThreadId ?: candidate.strategyThreadId,
         status = statusWinner.status,
         statusChangedAt = statusWinner.statusChangedAt
     )
@@ -423,3 +430,8 @@ private fun JSONObject.optNullableString(key: String): String? =
 
 private fun JSONObject.optNullableDouble(key: String): Double? =
     if (has(key) && !isNull(key)) optDouble(key).takeIf { !it.isNaN() && !it.isInfinite() } else null
+
+private fun JSONArray.mapStrings(): List<String> =
+    (0 until length()).mapNotNull { index -> optString(index).trim().takeIf { it.isNotBlank() } }
+
+private fun JSONArray?.orEmpty() = this ?: JSONArray()

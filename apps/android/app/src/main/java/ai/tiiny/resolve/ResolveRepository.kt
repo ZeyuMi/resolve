@@ -303,7 +303,10 @@ class ResolveRepository(private val context: Context) {
     private fun encodeThread(thread: StrategyThread) = JSONObject()
         .put("id", thread.id)
         .put("title", thread.title)
+        .put("description", thread.description)
         .put("currentHypothesis", thread.currentHypothesis)
+        .put("keyQuestions", JSONArray(thread.keyQuestions))
+        .put("recentThoughts", JSONArray(thread.recentThoughts))
         .put("status", thread.status)
         .put("createdAt", thread.createdAt.toString())
         .put("updatedAt", thread.updatedAt.toString())
@@ -314,7 +317,10 @@ class ResolveRepository(private val context: Context) {
         return StrategyThread(
             id = json.optString("id"),
             title = json.optString("title"),
+            description = json.optString("description"),
             currentHypothesis = json.optString("currentHypothesis"),
+            keyQuestions = json.optJSONArray("keyQuestions").orEmpty().mapStrings(),
+            recentThoughts = json.optJSONArray("recentThoughts").orEmpty().mapStrings(),
             status = json.optString("status", "active"),
             createdAt = createdAt,
             updatedAt = instantOrNull(json.optString("updatedAt")) ?: createdAt,
@@ -524,6 +530,9 @@ private fun JSONArray?.orEmpty() = this ?: JSONArray()
 
 private fun <T> JSONArray.mapJson(transform: (JSONObject) -> T): List<T> =
     (0 until length()).mapNotNull { index -> optJSONObject(index)?.let(transform) }
+
+private fun JSONArray.mapStrings(): List<String> =
+    (0 until length()).mapNotNull { index -> optString(index).trim().takeIf { it.isNotBlank() } }
 
 private inline fun <reified T : Enum<T>> enumValueOrDefault(value: String, default: T): T =
     runCatching { enumValueOf<T>(value) }.getOrDefault(default)

@@ -98,6 +98,8 @@ export interface StrategyThreadPayload {
   title: string;
   description?: string;
   currentHypothesis?: string;
+  keyQuestions?: string[];
+  recentThoughts?: string[];
   sortOrder?: number;
 }
 

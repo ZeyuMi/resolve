@@ -40,7 +40,10 @@ fun fallbackStatusChangedAt(status: ItemStatus, createdAt: Instant, updatedAt: I
 data class StrategyThread(
     val id: String = "thread_${UUID.randomUUID()}",
     val title: String,
+    val description: String = "",
     val currentHypothesis: String = "",
+    val keyQuestions: List<String> = emptyList(),
+    val recentThoughts: List<String> = emptyList(),
     val status: String = "active",
     val createdAt: Instant = Instant.now(),
     val updatedAt: Instant = Instant.now(),

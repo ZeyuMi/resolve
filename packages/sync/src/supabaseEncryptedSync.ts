@@ -34,7 +34,9 @@ const forbiddenPlaintextKeys = new Set([
   "recurrence",
   "reminders",
   "feishuRaw",
-  "currentHypothesis"
+  "currentHypothesis",
+  "keyQuestions",
+  "recentThoughts"
 ]);
 
 function optional<T>(value: T | null | undefined): T | undefined {

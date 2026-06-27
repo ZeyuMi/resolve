@@ -56,7 +56,8 @@ function mergeItem(existing: DecryptedItem | undefined, candidate: DecryptedItem
     ...newest,
     meta: {
       ...newest.meta,
-      status: statusWinner.meta.status
+      status: statusWinner.meta.status,
+      strategyThreadId: newest.meta.strategyThreadId ?? existing.meta.strategyThreadId ?? candidate.meta.strategyThreadId
     },
     payload: {
       ...(newest.payload as ItemPayload),

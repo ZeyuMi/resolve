@@ -25,7 +25,6 @@ import {
   KeyRound,
   LayoutList,
   Lock,
-  MoreHorizontal,
   Paperclip,
   PenLine,
   Plus,
@@ -2251,6 +2250,30 @@ export function App() {
     });
   }
 
+  function updateStrategyThreadPayload(threadId: string, patch: Partial<DecryptedStrategyThread["payload"]>) {
+    const latest = stateRef.current;
+    const timestamp = nowIso();
+    persist({
+      ...latest,
+      strategyThreads: latest.strategyThreads.map((thread) =>
+        thread.meta.id === threadId
+          ? {
+              ...thread,
+              meta: {
+                ...thread.meta,
+                updatedAt: timestamp
+              },
+              payload: {
+                ...thread.payload,
+                ...patch
+              }
+            }
+          : thread
+      )
+    });
+    showToast("Strategy updated");
+  }
+
   function addStrategyThread() {
     const title = strategyDraft.title.trim();
     if (!title) return;
@@ -2688,6 +2711,10 @@ export function App() {
             noteCount={state.notes.filter((note) => note.meta.status !== "archived").length}
             onChange={(nextTab) => {
               if (nextTab === "vault") setSelectedNoteId(null);
+              if (nextTab === "strategy") {
+                setSelectedThreadId("");
+                setSelectedStrategyTodoId(null);
+              }
               setTab(nextTab);
             }}
           />
@@ -2791,6 +2818,7 @@ export function App() {
               onStrategyDraft={setStrategyDraft}
               onAddThread={addStrategyThread}
               onAddTask={addStrategyTask}
+              onUpdateThread={updateStrategyThreadPayload}
               selectedTodo={selectedStrategyTodo}
               selectedTodoSubtasks={selectedStrategyTodoSubtasks}
               calendarEvents={state.calendarEvents}
@@ -2806,7 +2834,6 @@ export function App() {
                 archiveTodoWithDescendants(todo);
                 if (selectedStrategyTodoId === todo.meta.id) setSelectedStrategyTodoId(null);
               }}
-              onArchiveThread={archiveStrategyWithTasks}
               onUpdateTodoMeta={updateTodo}
               onUpdateTodoPayload={updateTodoPayload}
               onSaveTodoDetail={updateTodoDetail}
@@ -4469,13 +4496,13 @@ function StrategyView({
   onStrategyDraft,
   onAddThread,
   onAddTask,
+  onUpdateThread,
   onSelectTodo,
   onOpenNote,
   onCloseDetail,
   onOpenCalendar,
   onComplete,
   onArchive,
-  onArchiveThread,
   onUpdateTodoMeta,
   onUpdateTodoPayload,
   onSaveTodoDetail,
@@ -4500,13 +4527,13 @@ function StrategyView({
   onStrategyDraft: (draft: StrategyDraft) => void;
   onAddThread: () => void;
   onAddTask: () => void;
+  onUpdateThread: (threadId: string, patch: Partial<DecryptedStrategyThread["payload"]>) => void;
   onSelectTodo: (todo: DecryptedItem) => void;
   onOpenNote: (todo: DecryptedItem) => void | Promise<void>;
   onCloseDetail: () => void;
   onOpenCalendar: (todo: DecryptedItem) => void;
   onComplete: (todo: DecryptedItem) => void;
   onArchive: (todo: DecryptedItem) => void;
-  onArchiveThread: (thread: DecryptedStrategyThread) => void;
   onUpdateTodoMeta: (itemId: string, patch: Partial<DecryptedItem["meta"]>) => void;
   onUpdateTodoPayload: (itemId: string, patch: Partial<ItemPayload>) => void;
   onSaveTodoDetail: (
@@ -4519,6 +4546,14 @@ function StrategyView({
 }) {
   const [collapsedTodoIds, setCollapsedTodoIds] = useState<Set<string>>(() => new Set());
   const [showStrategyCompleted, setShowStrategyCompleted] = useState(false);
+  const [isEditingStrategy, setIsEditingStrategy] = useState(false);
+  const [strategyEditDraft, setStrategyEditDraft] = useState({
+    title: "",
+    description: "",
+    currentHypothesis: "",
+    keyQuestions: "",
+    recentThoughts: ""
+  });
   const calendarByTodo = new Map(
     calendarEvents
       .filter((event) => event.meta.sourceItemId)
@@ -4545,6 +4580,18 @@ function StrategyView({
       return next;
     });
   };
+
+  useEffect(() => {
+    if (!selectedThread) return;
+    setIsEditingStrategy(false);
+    setStrategyEditDraft({
+      title: selectedThread.payload.title,
+      description: selectedThread.payload.description ?? "",
+      currentHypothesis: selectedThread.payload.currentHypothesis ?? "",
+      keyQuestions: (selectedThread.payload.keyQuestions ?? []).join("\n"),
+      recentThoughts: (selectedThread.payload.recentThoughts ?? []).join("\n")
+    });
+  }, [selectedThread?.meta.id]);
 
   if (!selectedThread) {
     return (
@@ -4620,17 +4667,47 @@ function StrategyView({
   const hypothesisText =
     selectedThread.payload.currentHypothesis ||
     "我们需要的是能在不确定环境下主动定义问题的人，而不是只执行任务的人。";
-  const keyQuestions = [
+  const heroDescription = selectedThread.payload.description || hypothesisText;
+  const defaultKeyQuestions = [
     "什么样的人才适合当前阶段？",
     "他们为什么会加入我们？",
     "我们如何判断一个人是否真的适合？",
     "招聘流程里哪些环节可以系统化？"
   ];
-  const recentThoughts = [
+  const keyQuestions = selectedThread.payload.keyQuestions?.filter((question) => question.trim()) ?? defaultKeyQuestions;
+  const defaultRecentThoughts = [
     `${selectedThread.payload.title}不是一个短期项目，而是一条需要反复校准的判断线。`,
     strategyTodos[0] ? `${(strategyTodos[0].payload as ItemPayload).title} 是当前最接近行动的线索。` : "先把观察、问题和子任务保持在同一个地方。",
     strategyCompletedTodos.length ? `已经完成 ${strategyCompletedTodos.length} 个相关动作，可以沉淀为下一轮判断。` : "完成的动作会沉淀到这里，帮助复盘判断质量。"
   ];
+  const recentThoughts = selectedThread.payload.recentThoughts?.filter((thought) => thought.trim()) ?? defaultRecentThoughts;
+  const parseMultiline = (value: string) =>
+    value
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+  const saveStrategyEdit = () => {
+    const title = strategyEditDraft.title.trim();
+    if (!title) return;
+    onUpdateThread(selectedThread.meta.id, {
+      title,
+      description: strategyEditDraft.description.trim() || undefined,
+      currentHypothesis: strategyEditDraft.currentHypothesis.trim() || undefined,
+      keyQuestions: parseMultiline(strategyEditDraft.keyQuestions),
+      recentThoughts: parseMultiline(strategyEditDraft.recentThoughts)
+    });
+    setIsEditingStrategy(false);
+  };
+  const cancelStrategyEdit = () => {
+    setStrategyEditDraft({
+      title: selectedThread.payload.title,
+      description: selectedThread.payload.description ?? "",
+      currentHypothesis: selectedThread.payload.currentHypothesis ?? "",
+      keyQuestions: (selectedThread.payload.keyQuestions ?? []).join("\n"),
+      recentThoughts: (selectedThread.payload.recentThoughts ?? []).join("\n")
+    });
+    setIsEditingStrategy(false);
+  };
 
   return (
     <div className={`strategy-detail-layout ${selectedTodo ? "has-task-detail" : ""}`}>
@@ -4647,25 +4724,49 @@ function StrategyView({
           </div>
           <div className="strategy-hero-copy">
             <div className="strategy-title-line">
-              <h2>{selectedThread.payload.title}</h2>
-              <button className="icon-button quiet" aria-label="Edit strategy title">
-                <Edit3 size={15} />
-              </button>
+              {isEditingStrategy ? (
+                <input
+                  className="strategy-edit-title"
+                  value={strategyEditDraft.title}
+                  onChange={(event) => setStrategyEditDraft((draft) => ({ ...draft, title: event.target.value }))}
+                  placeholder="战略标题"
+                />
+              ) : (
+                <>
+                  <h2>{selectedThread.payload.title}</h2>
+                  <button className="icon-button quiet" aria-label="Edit strategy" onClick={() => setIsEditingStrategy(true)}>
+                    <Edit3 size={15} />
+                  </button>
+                </>
+              )}
             </div>
-            <p>{hypothesisText}</p>
+            {isEditingStrategy ? (
+              <textarea
+                className="strategy-edit-description"
+                value={strategyEditDraft.description}
+                onChange={(event) => setStrategyEditDraft((draft) => ({ ...draft, description: event.target.value }))}
+                placeholder="标题下方的小字"
+              />
+            ) : (
+              <p>{heroDescription}</p>
+            )}
           </div>
           <div className="strategy-hero-actions">
-            <button className="ghost-button">
-              <Edit3 size={15} />
-              Edit
-            </button>
-            <button className="primary-button" onClick={onAddTask}>
-              <Plus size={15} />
-              Add Task
-            </button>
-            <button className="icon-button" onClick={() => onArchiveThread(selectedThread)} aria-label="More strategy actions">
-              <MoreHorizontal size={17} />
-            </button>
+            {isEditingStrategy ? (
+              <>
+                <button className="ghost-button" onClick={cancelStrategyEdit}>
+                  Cancel
+                </button>
+                <button className="primary-button" onClick={saveStrategyEdit}>
+                  Save
+                </button>
+              </>
+            ) : (
+              <button className="ghost-button" onClick={() => setIsEditingStrategy(true)}>
+                <Edit3 size={15} />
+                Edit
+              </button>
+            )}
           </div>
           <div className="strategy-hero-stats">
             <span className="strategy-stat-pill active">{selectedStats.active} active</span>
@@ -4689,7 +4790,16 @@ function StrategyView({
                 <Brain size={17} />
                 <strong>当前假设</strong>
               </div>
-              <p>{hypothesisText}</p>
+              {isEditingStrategy ? (
+                <textarea
+                  className="strategy-edit-textarea compact"
+                  value={strategyEditDraft.currentHypothesis}
+                  onChange={(event) => setStrategyEditDraft((draft) => ({ ...draft, currentHypothesis: event.target.value }))}
+                  placeholder="当前假设"
+                />
+              ) : (
+                <p>{hypothesisText}</p>
+              )}
             </article>
 
             <article className="strategy-info-card">
@@ -4697,11 +4807,20 @@ function StrategyView({
                 <HelpCircle size={17} />
                 <strong>关键问题</strong>
               </div>
-              <ol className="strategy-question-list">
-                {keyQuestions.map((question) => (
-                  <li key={question}>{question}</li>
-                ))}
-              </ol>
+              {isEditingStrategy ? (
+                <textarea
+                  className="strategy-edit-textarea"
+                  value={strategyEditDraft.keyQuestions}
+                  onChange={(event) => setStrategyEditDraft((draft) => ({ ...draft, keyQuestions: event.target.value }))}
+                  placeholder="每行一个关键问题"
+                />
+              ) : (
+                <ol className="strategy-question-list">
+                  {keyQuestions.map((question) => (
+                    <li key={question}>{question}</li>
+                  ))}
+                </ol>
+              )}
             </article>
 
             <article className="strategy-info-card">
@@ -4709,11 +4828,20 @@ function StrategyView({
                 <PenLine size={17} />
                 <strong>最近思考</strong>
               </div>
-              <ul className="strategy-bullet-list">
-                {recentThoughts.map((thought) => (
-                  <li key={thought}>{thought}</li>
-                ))}
-              </ul>
+              {isEditingStrategy ? (
+                <textarea
+                  className="strategy-edit-textarea"
+                  value={strategyEditDraft.recentThoughts}
+                  onChange={(event) => setStrategyEditDraft((draft) => ({ ...draft, recentThoughts: event.target.value }))}
+                  placeholder="每行一条最近思考"
+                />
+              ) : (
+                <ul className="strategy-bullet-list">
+                  {recentThoughts.map((thought) => (
+                    <li key={thought}>{thought}</li>
+                  ))}
+                </ul>
+              )}
             </article>
 
             <article className="strategy-info-card">

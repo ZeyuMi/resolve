@@ -8876,6 +8876,58 @@ body,
   line-height: 22px !important;
 }
 
+.theme-redesign .strategy-edit-title {
+  width: min(560px, 100%) !important;
+  height: 36px !important;
+  padding: 0 10px !important;
+  border: 1px solid var(--accent-border) !important;
+  border-radius: 8px !important;
+  background: #fbfdff !important;
+  color: var(--text) !important;
+  font-size: 25px !important;
+  line-height: 32px !important;
+  font-weight: 750 !important;
+  letter-spacing: 0 !important;
+  outline: none !important;
+}
+
+.theme-redesign .strategy-edit-description,
+.theme-redesign .strategy-edit-textarea {
+  width: 100% !important;
+  resize: vertical !important;
+  border: 1px solid var(--line) !important;
+  border-radius: 10px !important;
+  background: #fbfdff !important;
+  color: var(--text) !important;
+  outline: none !important;
+  font-family: var(--font) !important;
+  font-size: 14px !important;
+  line-height: 21px !important;
+}
+
+.theme-redesign .strategy-edit-description {
+  min-height: 58px !important;
+  margin-top: 8px !important;
+  padding: 8px 10px !important;
+}
+
+.theme-redesign .strategy-edit-textarea {
+  min-height: 116px !important;
+  margin-top: 12px !important;
+  padding: 10px 12px !important;
+}
+
+.theme-redesign .strategy-edit-textarea.compact {
+  min-height: 74px !important;
+}
+
+.theme-redesign .strategy-edit-title:focus,
+.theme-redesign .strategy-edit-description:focus,
+.theme-redesign .strategy-edit-textarea:focus {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.10) !important;
+}
+
 .theme-redesign .strategy-hero-actions {
   grid-area: actions !important;
   display: flex !important;
