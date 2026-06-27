@@ -4881,47 +4881,47 @@ private fun relativeTime(instant: Instant): String {
 }
 
 private object ResolveColors {
-    val Bg = Color(0xFFF5F5F7)
+    val Bg = Color(0xFFF5F7FA)
     val Backdrop = Brush.linearGradient(
         listOf(
-            Color(0xFFFFFFFF),
-            Color(0xFFF5F5F7),
+            Color(0xFFF8FAFD),
+            Color(0xFFF1F5FA),
             Color(0xFFFFFFFF)
         )
     )
     val Surface = Color(0xFFFFFFFF)
-    val SurfaceHigh = Color(0xFFFAFAFC)
+    val SurfaceHigh = Color(0xFFF2F6FC)
     val Glass = Color(0xFFFFFFFF)
     val GlassStrong = Color(0xFFFFFFFF)
-    val GlassSoft = Color(0xFFFAFAFC)
-    val GlassMuted = Color(0xFFF5F5F7)
-    val GlassControl = Color(0xFFFAFAFC)
-    val GlassStroke = Color(0xFFE0E0E0)
-    val GlassStrokeSoft = Color(0xFFF0F0F0)
+    val GlassSoft = Color(0xFFF7FAFD)
+    val GlassMuted = Color(0xFFF0F3F8)
+    val GlassControl = Color(0xFFEAF2FF)
+    val GlassStroke = Color(0xFFE4EAF2)
+    val GlassStrokeSoft = Color(0xFFDDE5EF)
     val NavBar = Color(0xFFFFFFFF)
-    val Pill = Color(0xFFFAFAFC)
-    val InkSoft = Color(0xFFF5F5F7)
-    val AccentGlass = Color(0xFFEAF4FF)
+    val Pill = Color(0xFFF0F4FA)
+    val InkSoft = Color(0xFFE8F1FF)
+    val AccentGlass = Color(0xFFE6F0FF)
     val DangerGlass = Color(0xFFFFF0EF)
-    val WarningGlass = Color(0xFFFAFAFC)
-    val WarningStroke = Color(0xFFE0E0E0)
-    val Line = Color(0xFFE0E0E0)
-    val Text = Color(0xFF1D1D1F)
-    val Secondary = Color(0xFF333333)
-    val Muted = Color(0xFF7A7A7A)
-    val Accent = Color(0xFF0066CC)
-    val Strategy = Color(0xFF0066CC)
+    val WarningGlass = Color(0xFFFFF7E8)
+    val WarningStroke = Color(0x66E6B45B)
+    val Line = Color(0x26516178)
+    val Text = Color(0xFF1F2329)
+    val Secondary = Color(0xFF646A73)
+    val Muted = Color(0xFF8F959E)
+    val Accent = Color(0xFF3370FF)
+    val Strategy = Color(0xFF6B5CFF)
     val Danger = Color(0xFFD83931)
 }
 
 private object ResolveType {
-    val PageTitle = 34.sp
-    val DetailTitle = 28.sp
-    val SectionTitle = 21.sp
-    val CardTitle = 17.sp
-    val Body = 17.sp
-    val BodySmall = 14.sp
-    val Caption = 14.sp
-    val Pill = 12.sp
+    val PageTitle = 24.sp
+    val DetailTitle = 20.sp
+    val SectionTitle = 17.sp
+    val CardTitle = 16.sp
+    val Body = 14.sp
+    val BodySmall = 13.sp
+    val Caption = 12.sp
+    val Pill = 11.sp
     val Micro = 10.sp
 }
