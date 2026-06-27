@@ -7225,6 +7225,26 @@ body,
   line-height: 25px;
 }
 
+.vault-title-input {
+  width: min(520px, 100%);
+  border: 0;
+  border-radius: 8px;
+  padding: 2px 4px;
+  margin: -2px -4px 0;
+  background: transparent;
+  color: var(--native-text, var(--text-1));
+  font: inherit;
+  font-size: 20px;
+  line-height: 25px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.vault-title-input:focus {
+  outline: none;
+  background: rgba(0, 0, 0, 0.04);
+}
+
 .vault-editor-head p {
   margin: 4px 0 0;
   color: var(--native-muted, var(--text-3));

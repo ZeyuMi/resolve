@@ -130,16 +130,15 @@ class ResolveRepository(private val context: Context) {
         writeNote(note, noteMarkdownDocument(note, body))
     }
 
-    fun canonicalizeNoteForTask(note: MarkdownNote, item: ResolveItem): MarkdownNote {
-        val title = item.title.trim().ifBlank { note.title.ifBlank { "Untitled Note" } }
+    fun renameNote(note: MarkdownNote, title: String, body: String): MarkdownNote {
+        val title = title.trim().ifBlank { "Untitled Note" }
         val canonicalPath = notePath(note.id, title, note.createdAt)
         if (note.title == title && note.canonicalPath == canonicalPath) return note
 
         val oldPath = note.canonicalPath
-        val body = runCatching { stripGeneratedNoteTitle(readNote(note), note.title) }
-            .getOrElse { "" }
+        val cleanBody = stripGeneratedNoteTitle(body, note.title)
         val next = note.copy(title = title, canonicalPath = canonicalPath, updatedAt = Instant.now())
-        val markdown = noteMarkdownDocument(next, body)
+        val markdown = noteMarkdownDocument(next, cleanBody)
         writeNote(next, markdown)
         if (oldPath != canonicalPath) {
             context.filesDir.resolve("resolve-vault").resolve(oldPath).delete()

@@ -350,24 +350,14 @@ private fun ResolveAndroidApp(
         todoScrollToTopSignal += 1
     }
 
-    fun normalizedNote(note: MarkdownNote): MarkdownNote {
-        val task = note.taskId?.let { taskId -> state.items.find { it.id == taskId } } ?: return note
-        val next = repository.canonicalizeNoteForTask(note, task)
-        if (next != note) {
-            persist(state.copy(notes = state.notes.map { if (it.id == note.id) next else it }))
-        }
-        return next
-    }
-
     fun openNote(note: MarkdownNote) {
-        val nextNote = normalizedNote(note)
-        selectedNoteId = nextNote.id
-        noteDraft = repository.readNoteBody(nextNote)
+        selectedNoteId = note.id
+        noteDraft = repository.readNoteBody(note)
         tab = Tab.Vault
     }
 
     fun openNoteForTask(item: ResolveItem) {
-        val existing = item.noteId?.let { noteId -> state.notes.find { it.id == noteId } }
+        val existing = item.noteId?.let { noteId -> state.notes.find { it.id == noteId && it.status != "archived" } }
         if (existing != null) {
             openNote(existing)
         } else {
@@ -393,12 +383,18 @@ private fun ResolveAndroidApp(
         tab = Tab.Vault
     }
 
-    fun saveSelectedNote() {
+    fun saveSelectedNote(title: String? = null) {
         val note = state.notes.find { it.id == selectedNoteId } ?: return
         val now = Instant.now()
-        val canonicalNote = normalizedNote(note)
-        val nextNote = canonicalNote.copy(updatedAt = now)
+        val renamedNote = title?.let { repository.renameNote(note, it, noteDraft) } ?: note
+        val nextNote = renamedNote.copy(updatedAt = now)
         repository.writeNoteBody(nextNote, noteDraft)
+        persist(state.copy(notes = state.notes.map { if (it.id == note.id) nextNote else it }))
+    }
+
+    fun renameSelectedNote(title: String) {
+        val note = state.notes.find { it.id == selectedNoteId } ?: return
+        val nextNote = repository.renameNote(note, title, noteDraft)
         persist(state.copy(notes = state.notes.map { if (it.id == note.id) nextNote else it }))
     }
 
@@ -1610,7 +1606,7 @@ private fun ResolveAndroidApp(
                             noteDraft = noteDraft,
                             onSelectNote = { openNote(it) },
                             onNoteDraft = { noteDraft = it },
-                            onSave = { saveSelectedNote() },
+                            onSave = { saveSelectedNote(it) },
                             onArchive = { note -> archiveSelectedNote(note) },
                             onCloseNote = { selectedNoteId = null }
                         )
@@ -4025,7 +4021,7 @@ private fun VaultScreen(
     noteDraft: String,
     onSelectNote: (MarkdownNote) -> Unit,
     onNoteDraft: (String) -> Unit,
-    onSave: () -> Unit,
+    onSave: (String) -> Unit,
     onArchive: (MarkdownNote) -> Unit,
     onCloseNote: () -> Unit
 ) {
@@ -4120,8 +4116,6 @@ private fun VaultScreen(
 @Composable
 private fun NoteListRow(note: MarkdownNote, state: ResolveState, onClick: () -> Unit) {
     val thread = note.strategyThreadId?.let { id -> state.threads.find { it.id == id } }
-    val task = note.taskId?.let { id -> state.items.find { it.id == id } }
-    val displayTitle = task?.title?.takeIf { it.isNotBlank() } ?: note.title
     val taskMissing = note.taskId != null && state.items.none { it.id == note.taskId }
     Surface(
         modifier = Modifier
@@ -4136,7 +4130,7 @@ private fun NoteListRow(note: MarkdownNote, state: ResolveState, onClick: () -> 
             Icon(Icons.Filled.OpenInBrowser, contentDescription = null, tint = ResolveColors.Accent, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(displayTitle, color = ResolveColors.Text, fontSize = ResolveType.Body, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(note.title, color = ResolveColors.Text, fontSize = ResolveType.Body, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
                     MetaPill("note_id ${note.id.takeLast(6)}")
                     thread?.let { MetaPill(it.title, tone = "strategy") }
@@ -4155,12 +4149,12 @@ private fun NoteEditorPage(
     threads: List<StrategyThread>,
     task: ResolveItem?,
     onMarkdown: (String) -> Unit,
-    onSave: () -> Unit,
+    onSave: (String) -> Unit,
     onArchive: () -> Unit,
     onClose: () -> Unit
 ) {
     val thread = note.strategyThreadId?.let { id -> threads.find { it.id == id } }
-    val displayTitle = task?.title?.takeIf { it.isNotBlank() } ?: note.title
+    var titleDraft by remember(note.id, note.title) { mutableStateOf(note.title) }
     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
             DetailPageHeader(title = "Note", onClose = onClose)
@@ -4168,7 +4162,19 @@ private fun NoteEditorPage(
         item {
             Surface(color = ResolveColors.Surface, shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(displayTitle, color = ResolveColors.Text, fontSize = ResolveType.CardTitle, fontWeight = FontWeight.SemiBold)
+                    CompactInputField(
+                        value = titleDraft,
+                        onValueChange = { titleDraft = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = "Note title",
+                        singleLine = true,
+                        textStyle = TextStyle(
+                            color = ResolveColors.Text,
+                            fontSize = ResolveType.CardTitle,
+                            fontWeight = FontWeight.SemiBold,
+                            platformStyle = PlatformTextStyle(includeFontPadding = false)
+                        )
+                    )
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
                         MetaPill("note_id ${note.id.takeLast(6)}")
                         task?.let { MetaPill("Task") }
@@ -4201,7 +4207,7 @@ private fun NoteEditorPage(
         }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
-                Button(onClick = onSave, colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.Accent), modifier = Modifier.height(38.dp)) {
+                Button(onClick = { onSave(titleDraft) }, colors = ButtonDefaults.buttonColors(containerColor = ResolveColors.Accent), modifier = Modifier.height(38.dp)) {
                     Text("Save", fontSize = ResolveType.BodySmall)
                 }
                 TextButton(onClick = onArchive, colors = ButtonDefaults.textButtonColors(contentColor = ResolveColors.Muted)) {

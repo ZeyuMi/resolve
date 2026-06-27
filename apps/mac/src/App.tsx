@@ -174,9 +174,8 @@ function notePathFor(noteId: string, title: string, createdAt = nowIso()) {
   return `Notes/${year}/${month}/${noteId}-${slugifyNoteTitle(title)}.md`;
 }
 
-function titleForNote(note: DecryptedNote, todo?: DecryptedItem) {
-  const todoTitle = todo ? (todo.payload as ItemPayload).title?.trim() : "";
-  return todoTitle || note.meta.title || note.payload.title || "Untitled Note";
+function titleForNote(note: DecryptedNote) {
+  return note.meta.title || note.payload.title || "Untitled Note";
 }
 
 function noteWithTitle(note: DecryptedNote, title: string, updatedAt = note.meta.updatedAt): DecryptedNote {
@@ -236,6 +235,12 @@ function noteMarkdownDocument(note: DecryptedNote, body = "") {
   const title = note.meta.title || note.payload.title || "Untitled Note";
   const content = stripGeneratedNoteTitle(body, title).trim();
   return `${noteFrontmatter(note)}${content}`;
+}
+
+function activeNoteForTodo(todo: DecryptedItem, notes: DecryptedNote[]) {
+  const noteId = (todo.payload as ItemPayload).noteId ?? todo.meta.noteId;
+  if (!noteId) return undefined;
+  return notes.find((note) => note.meta.id === noteId && note.meta.status !== "archived");
 }
 
 function createNoteForTodoModel(todo: DecryptedItem, strategyTitle?: string): DecryptedNote {
@@ -1258,57 +1263,12 @@ export function App() {
     window.setTimeout(() => setToast(null), 2200);
   }
 
-  async function normalizeNoteIdentity(note: DecryptedNote) {
-    const task = note.meta.taskId
-      ? stateRef.current.items.find((item) => item.meta.id === note.meta.taskId)
-      : undefined;
-    if (!task) return note;
-
-    const title = titleForNote(note, task);
-    const normalizedNote = noteWithTitle(note, title);
-    if (normalizedNote.meta.title === note.meta.title && normalizedNote.meta.canonicalPath === note.meta.canonicalPath) {
-      return note;
-    }
-
-    let body = note.payload.markdown ?? "";
-    try {
-      const existingFile = await readNoteFile(note.meta.canonicalPath);
-      body = stripGeneratedNoteTitle(existingFile.content || body, note.meta.title);
-    } catch (error) {
-      console.warn("Could not read note before identity migration", error);
-      body = stripGeneratedNoteTitle(body, note.meta.title);
-    }
-
-    const markdown = noteMarkdownDocument(normalizedNote, body);
-    await writeNoteFile(normalizedNote.meta.canonicalPath, markdown);
-    if (normalizedNote.meta.canonicalPath !== note.meta.canonicalPath) {
-      await deleteNoteFile(note.meta.canonicalPath).catch((error) => {
-        console.warn("Could not remove old note file after identity migration", error);
-      });
-    }
-
-    return {
-      ...normalizedNote,
-      meta: {
-        ...normalizedNote.meta,
-        contentHash: noteContentHash(markdown),
-        frontmatterHash: noteContentHash(noteFrontmatter(normalizedNote))
-      },
-      payload: {
-        ...normalizedNote.payload,
-        markdown: body,
-        excerpt: stripGeneratedNoteTitle(body, normalizedNote.meta.title).replace(/^#.*$/m, "").trim().slice(0, 180)
-      }
-    };
-  }
-
   async function openNote(noteId: string) {
     const note = stateRef.current.notes.find((item) => item.meta.id === noteId);
     if (!note) {
       showToast("Note not found");
       return;
     }
-    const normalizedNote = await normalizeNoteIdentity(note);
     setNoteLoading(true);
     setNoteContent("");
     setNoteContentNoteId(null);
@@ -1317,7 +1277,7 @@ export function App() {
       ...stateRef.current,
       notes: stateRef.current.notes.map((item) =>
         item.meta.id === noteId
-          ? { ...normalizedNote, meta: { ...normalizedNote.meta, lastOpenedAt: timestamp } }
+          ? { ...item, meta: { ...item.meta, lastOpenedAt: timestamp } }
           : item
       )
     });
@@ -1326,10 +1286,9 @@ export function App() {
   }
 
   function requestNoteForTodo(todo: DecryptedItem) {
-    const payload = todo.payload as ItemPayload;
-    const linkedNoteId = payload.noteId ?? todo.meta.noteId;
-    if (linkedNoteId && stateRef.current.notes.some((note) => note.meta.id === linkedNoteId)) {
-      void openNote(linkedNoteId);
+    const activeNote = activeNoteForTodo(todo, stateRef.current.notes);
+    if (activeNote) {
+      void openNote(activeNote.meta.id);
       return;
     }
 
@@ -1383,20 +1342,19 @@ export function App() {
     }
     const note = stateRef.current.notes.find((item) => item.meta.id === currentNoteId);
     if (!note) return;
-    const canonicalNote = await normalizeNoteIdentity(note);
     const timestamp = nowIso();
-    const editableBody = stripGeneratedNoteTitle(noteContent, canonicalNote.meta.title);
-    const nextFrontmatterNote = { ...canonicalNote, meta: { ...canonicalNote.meta, updatedAt: timestamp } };
+    const editableBody = stripGeneratedNoteTitle(noteContent, note.meta.title);
+    const nextFrontmatterNote = { ...note, meta: { ...note.meta, updatedAt: timestamp } };
     const nextNote: DecryptedNote = {
-      ...canonicalNote,
+      ...note,
       meta: {
-        ...canonicalNote.meta,
+        ...note.meta,
         updatedAt: timestamp,
         contentHash: noteContentHash(editableBody),
         frontmatterHash: noteContentHash(noteFrontmatter(nextFrontmatterNote))
       },
       payload: {
-        ...canonicalNote.payload,
+        ...note.payload,
         markdown: editableBody,
         excerpt: editableBody.replace(/^#.*$/m, "").trim().slice(0, 180)
       }
@@ -1410,6 +1368,52 @@ export function App() {
     setNoteContent(editableBody);
     setNoteContentNoteId(nextNote.meta.id);
     showToast("Note saved");
+  }
+
+  async function renameNote(note: DecryptedNote, nextTitle: string) {
+    const title = nextTitle.trim() || "Untitled Note";
+    if (title === note.meta.title) return;
+
+    let body = noteContentNoteId === note.meta.id ? noteContent : note.payload.markdown ?? "";
+    try {
+      const existingFile = await readNoteFile(note.meta.canonicalPath);
+      body = stripGeneratedNoteTitle(existingFile.content || body, note.meta.title);
+    } catch (error) {
+      console.warn("Could not read note before rename", error);
+      body = stripGeneratedNoteTitle(body, note.meta.title);
+    }
+
+    const timestamp = nowIso();
+    const nextNoteBase = noteWithTitle(note, title, timestamp);
+    const markdown = noteMarkdownDocument(nextNoteBase, body);
+    const nextNote: DecryptedNote = {
+      ...nextNoteBase,
+      meta: {
+        ...nextNoteBase.meta,
+        contentHash: noteContentHash(markdown),
+        frontmatterHash: noteContentHash(noteFrontmatter(nextNoteBase))
+      },
+      payload: {
+        ...nextNoteBase.payload,
+        markdown: body,
+        excerpt: body.replace(/^#.*$/m, "").trim().slice(0, 180)
+      }
+    };
+
+    await writeNoteFile(nextNote.meta.canonicalPath, markdown);
+    if (nextNote.meta.canonicalPath !== note.meta.canonicalPath) {
+      await deleteNoteFile(note.meta.canonicalPath).catch((error) => {
+        console.warn("Could not remove old note file after rename", error);
+      });
+    }
+    persist({
+      ...stateRef.current,
+      notes: stateRef.current.notes.map((item) => item.meta.id === nextNote.meta.id ? nextNote : item)
+    });
+    if (selectedNoteId === nextNote.meta.id) {
+      setNoteContent(body);
+      setNoteContentNoteId(nextNote.meta.id);
+    }
   }
 
   function archiveNote(note: DecryptedNote) {
@@ -2779,6 +2783,7 @@ export function App() {
               completedTodos={completedTodos}
               archivedTodos={archivedTodos}
               threads={strategyThreads}
+              notes={state.notes}
               calendarEvents={state.calendarEvents}
               selectedTodo={selectedTodo}
               selectedTodoSubtasks={selectedTodoSubtasks}
@@ -2844,6 +2849,7 @@ export function App() {
           {tab === "strategy" && (
             <StrategyView
               threads={strategyThreads}
+              notes={state.notes}
               selectedThreadId={selectedThreadId}
               selectedThread={selectedThread}
               strategyTodos={strategyTodos}
@@ -2897,6 +2903,7 @@ export function App() {
                 setNoteContent(content);
               }}
               onSave={() => void saveSelectedNote()}
+              onRename={(note, title) => void renameNote(note, title)}
               onArchive={archiveNote}
               onRequestDelete={(note) => setPendingDeleteNoteId(note.meta.id)}
             />
@@ -3383,6 +3390,7 @@ function TodoView({
   completedTodos,
   archivedTodos,
   threads,
+  notes,
   calendarEvents,
   selectedTodo,
   selectedTodoSubtasks,
@@ -3417,6 +3425,7 @@ function TodoView({
   completedTodos: DecryptedItem[];
   archivedTodos: DecryptedItem[];
   threads: DecryptedStrategyThread[];
+  notes: DecryptedNote[];
   calendarEvents: DecryptedCalendarEvent[];
   selectedTodo?: DecryptedItem;
   selectedTodoSubtasks: DecryptedItem[];
@@ -3561,6 +3570,7 @@ function TodoView({
       key={entry.todo.meta.id}
       todo={entry.todo}
       threads={threads}
+      hasActiveNote={Boolean(activeNoteForTodo(entry.todo, notes))}
       calendarEvent={calendarByTodo.get(entry.todo.meta.id)}
       selected={selectedTodo?.meta.id === entry.todo.meta.id}
       dragging={pointerDrag?.kind === "todo" && pointerDrag.sourceId === entry.todo.meta.id}
@@ -3697,6 +3707,7 @@ function TodoCard({
   todo,
   threads,
   calendarEvent,
+  hasActiveNote,
   selected,
   dragging,
   dragOver,
@@ -3713,6 +3724,7 @@ function TodoCard({
   todo: DecryptedItem;
   threads: DecryptedStrategyThread[];
   calendarEvent?: DecryptedCalendarEvent;
+  hasActiveNote?: boolean;
   selected?: boolean;
   dragging?: boolean;
   dragOver?: boolean;
@@ -3770,7 +3782,7 @@ function TodoCard({
           >
             {payload.title}
           </button>
-          {(payload.noteId ?? todo.meta.noteId) && <FileText size={13} className="todo-note-indicator" />}
+          {hasActiveNote && <FileText size={13} className="todo-note-indicator" />}
         </div>
         {childCount > 0 && (
           <button
@@ -4476,6 +4488,7 @@ function CalendarView({
 
 function StrategyView({
   threads,
+  notes,
   selectedThreadId,
   selectedThread,
   strategyTodos,
@@ -4506,6 +4519,7 @@ function StrategyView({
   onToggleSubtask
 }: {
   threads: DecryptedStrategyThread[];
+  notes: DecryptedNote[];
   selectedThreadId: string;
   selectedThread?: DecryptedStrategyThread;
   strategyTodos: DecryptedItem[];
@@ -4714,7 +4728,7 @@ function StrategyView({
                         >
                           {(todo.payload as ItemPayload).title}
                         </button>
-                        {((todo.payload as ItemPayload).noteId ?? todo.meta.noteId) && <FileText size={13} />}
+                        {activeNoteForTodo(todo, notes) && <FileText size={13} />}
                       </div>
                       {childCount > 0 && (
                         <button
@@ -4817,6 +4831,7 @@ function VaultView({
   onSelectNote,
   onContent,
   onSave,
+  onRename,
   onArchive,
   onRequestDelete
 }: {
@@ -4831,6 +4846,7 @@ function VaultView({
   onSelectNote: (noteId: string) => void | Promise<void>;
   onContent: (noteId: string, content: string) => void;
   onSave: () => void;
+  onRename: (note: DecryptedNote, title: string) => void;
   onArchive: (note: DecryptedNote) => void;
   onRequestDelete: (note: DecryptedNote) => void;
 }) {
@@ -4919,8 +4935,6 @@ function VaultView({
               <h3>{group.title}</h3>
               {group.notes.length ? group.notes.map((note) => {
                 const taskExists = !note.meta.taskId || todoById.has(note.meta.taskId);
-                const task = note.meta.taskId ? todoById.get(note.meta.taskId) : undefined;
-                const displayTitle = titleForNote(note, task);
                 const thread = note.meta.strategyThreadId ? threadById.get(note.meta.strategyThreadId) : undefined;
                 return (
                   <div className="vault-note-row-wrap" key={note.meta.id}>
@@ -4929,7 +4943,7 @@ function VaultView({
                       onClick={() => void onSelectNote(note.meta.id)}
                     >
                       <FileText size={15} />
-                      <span>{displayTitle}</span>
+                      <span>{titleForNote(note)}</span>
                       <small>
                         {thread?.payload.title ?? (taskExists ? relativeAgeLabel(note.meta.updatedAt) : "Orphan")}
                       </small>
@@ -4952,7 +4966,19 @@ function VaultView({
             <div className="vault-editor-head">
               <div>
                 <div className="eyebrow">Note</div>
-                <h2>{titleForNote(selectedNote, selectedTask)}</h2>
+                <input
+                  className="vault-title-input"
+                  defaultValue={titleForNote(selectedNote)}
+                  key={selectedNote.meta.id}
+                  onBlur={(event) => onRename(selectedNote, event.currentTarget.value)}
+                  onKeyDown={(event) => {
+                    if (isImeComposing(event)) return;
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      event.currentTarget.blur();
+                    }
+                  }}
+                />
                 <p>{selectedNote.meta.canonicalPath}</p>
               </div>
               <div className="detail-head-actions">
