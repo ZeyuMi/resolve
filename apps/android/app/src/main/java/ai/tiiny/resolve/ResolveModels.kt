@@ -44,6 +44,7 @@ data class StrategyThread(
     val currentHypothesis: String = "",
     val keyQuestions: List<String> = emptyList(),
     val recentThoughts: List<String> = emptyList(),
+    val decisionRecords: List<String> = emptyList(),
     val status: String = "active",
     val createdAt: Instant = Instant.now(),
     val updatedAt: Instant = Instant.now(),

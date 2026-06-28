@@ -3569,6 +3569,16 @@ private fun StrategyScreen(
                 }
             }
         }
+        if (
+            opened.currentHypothesis.isNotBlank() ||
+            opened.keyQuestions.isNotEmpty() ||
+            opened.recentThoughts.isNotEmpty() ||
+            opened.decisionRecords.isNotEmpty()
+        ) {
+            item {
+                StrategyMemoSection(opened)
+            }
+        }
         item { DetailSectionTitle("Subtasks", "${subtasks.size}") }
         item {
             Surface(color = ResolveColors.Surface, shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
@@ -3654,6 +3664,47 @@ private fun StrategyScreen(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun StrategyMemoSection(thread: StrategyThread) {
+    Surface(color = ResolveColors.Surface, shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (thread.currentHypothesis.isNotBlank()) {
+                StrategyMemoBlock("当前假设", listOf(thread.currentHypothesis))
+            }
+            if (thread.keyQuestions.isNotEmpty()) {
+                StrategyMemoBlock("关键问题", thread.keyQuestions)
+            }
+            if (thread.recentThoughts.isNotEmpty()) {
+                StrategyMemoBlock("最近思考", thread.recentThoughts)
+            }
+            if (thread.decisionRecords.isNotEmpty()) {
+                StrategyMemoBlock("决策记录", thread.decisionRecords)
+            }
+        }
+    }
+}
+
+@Composable
+private fun StrategyMemoBlock(title: String, lines: List<String>) {
+    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        Text(
+            title,
+            color = ResolveColors.Secondary,
+            fontSize = ResolveType.Caption,
+            lineHeight = 14.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+        lines.filter { it.isNotBlank() }.forEach { line ->
+            Text(
+                line,
+                color = ResolveColors.Text,
+                fontSize = ResolveType.BodySmall,
+                lineHeight = 17.sp
+            )
         }
     }
 }

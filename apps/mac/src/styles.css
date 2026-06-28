@@ -9073,8 +9073,8 @@ body,
 
 .theme-redesign .strategy-decision-list {
   display: grid !important;
-  grid-template-columns: 88px minmax(0, 1fr) !important;
-  gap: 8px 14px !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  gap: 8px !important;
   margin-top: 13px !important;
   color: var(--text-1) !important;
   font-size: 13px !important;

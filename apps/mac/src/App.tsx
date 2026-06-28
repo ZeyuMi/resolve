@@ -4552,7 +4552,8 @@ function StrategyView({
     description: "",
     currentHypothesis: "",
     keyQuestions: "",
-    recentThoughts: ""
+    recentThoughts: "",
+    decisionRecords: ""
   });
   const calendarByTodo = new Map(
     calendarEvents
@@ -4589,7 +4590,8 @@ function StrategyView({
       description: selectedThread.payload.description ?? "",
       currentHypothesis: selectedThread.payload.currentHypothesis ?? "",
       keyQuestions: (selectedThread.payload.keyQuestions ?? []).join("\n"),
-      recentThoughts: (selectedThread.payload.recentThoughts ?? []).join("\n")
+      recentThoughts: (selectedThread.payload.recentThoughts ?? []).join("\n"),
+      decisionRecords: (selectedThread.payload.decisionRecords ?? []).join("\n")
     });
   }, [selectedThread?.meta.id]);
 
@@ -4681,6 +4683,11 @@ function StrategyView({
     strategyCompletedTodos.length ? `已经完成 ${strategyCompletedTodos.length} 个相关动作，可以沉淀为下一轮判断。` : "完成的动作会沉淀到这里，帮助复盘判断质量。"
   ];
   const recentThoughts = selectedThread.payload.recentThoughts?.filter((thought) => thought.trim()) ?? defaultRecentThoughts;
+  const defaultDecisionRecords = [
+    `${new Date(selectedThread.meta.createdAt).toLocaleDateString("zh-CN")} 创建战略方向：${selectedThread.payload.title}`,
+    `${new Date(selectedStats.recent).toLocaleDateString("zh-CN")} 最近一次更新相关任务或笔记。`
+  ];
+  const decisionRecords = selectedThread.payload.decisionRecords?.filter((record) => record.trim()) ?? defaultDecisionRecords;
   const parseMultiline = (value: string) =>
     value
       .split("\n")
@@ -4694,7 +4701,8 @@ function StrategyView({
       description: strategyEditDraft.description.trim() || undefined,
       currentHypothesis: strategyEditDraft.currentHypothesis.trim() || undefined,
       keyQuestions: parseMultiline(strategyEditDraft.keyQuestions),
-      recentThoughts: parseMultiline(strategyEditDraft.recentThoughts)
+      recentThoughts: parseMultiline(strategyEditDraft.recentThoughts),
+      decisionRecords: parseMultiline(strategyEditDraft.decisionRecords)
     });
     setIsEditingStrategy(false);
   };
@@ -4704,7 +4712,8 @@ function StrategyView({
       description: selectedThread.payload.description ?? "",
       currentHypothesis: selectedThread.payload.currentHypothesis ?? "",
       keyQuestions: (selectedThread.payload.keyQuestions ?? []).join("\n"),
-      recentThoughts: (selectedThread.payload.recentThoughts ?? []).join("\n")
+      recentThoughts: (selectedThread.payload.recentThoughts ?? []).join("\n"),
+      decisionRecords: (selectedThread.payload.decisionRecords ?? []).join("\n")
     });
     setIsEditingStrategy(false);
   };
@@ -4849,13 +4858,20 @@ function StrategyView({
                 <FileText size={17} />
                 <strong>决策记录</strong>
               </div>
-              <div className="strategy-decision-list">
-                <span>{new Date(selectedThread.meta.createdAt).toLocaleDateString("zh-CN")}</span>
-                <p>创建战略方向：{selectedThread.payload.title}</p>
-                <span>{new Date(selectedStats.recent).toLocaleDateString("zh-CN")}</span>
-                <p>最近一次更新相关任务或笔记。</p>
-              </div>
-              <button className="strategy-link-button">查看全部</button>
+              {isEditingStrategy ? (
+                <textarea
+                  className="strategy-edit-textarea"
+                  value={strategyEditDraft.decisionRecords}
+                  onChange={(event) => setStrategyEditDraft((draft) => ({ ...draft, decisionRecords: event.target.value }))}
+                  placeholder="每行一条决策记录"
+                />
+              ) : (
+                <div className="strategy-decision-list">
+                  {decisionRecords.map((record) => (
+                    <p key={record}>{record}</p>
+                  ))}
+                </div>
+              )}
             </article>
           </div>
 

@@ -307,6 +307,7 @@ class ResolveRepository(private val context: Context) {
         .put("currentHypothesis", thread.currentHypothesis)
         .put("keyQuestions", JSONArray(thread.keyQuestions))
         .put("recentThoughts", JSONArray(thread.recentThoughts))
+        .put("decisionRecords", JSONArray(thread.decisionRecords))
         .put("status", thread.status)
         .put("createdAt", thread.createdAt.toString())
         .put("updatedAt", thread.updatedAt.toString())
@@ -321,6 +322,7 @@ class ResolveRepository(private val context: Context) {
             currentHypothesis = json.optString("currentHypothesis"),
             keyQuestions = json.optJSONArray("keyQuestions").orEmpty().mapStrings(),
             recentThoughts = json.optJSONArray("recentThoughts").orEmpty().mapStrings(),
+            decisionRecords = json.optJSONArray("decisionRecords").orEmpty().mapStrings(),
             status = json.optString("status", "active"),
             createdAt = createdAt,
             updatedAt = instantOrNull(json.optString("updatedAt")) ?: createdAt,

@@ -100,6 +100,7 @@ export interface StrategyThreadPayload {
   currentHypothesis?: string;
   keyQuestions?: string[];
   recentThoughts?: string[];
+  decisionRecords?: string[];
   sortOrder?: number;
 }
 

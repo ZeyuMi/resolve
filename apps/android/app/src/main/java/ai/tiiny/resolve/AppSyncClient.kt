@@ -120,6 +120,7 @@ class AppSyncClient(
                 .put("currentHypothesis", thread.currentHypothesis.takeIf { it.isNotBlank() })
                 .put("keyQuestions", JSONArray(thread.keyQuestions))
                 .put("recentThoughts", JSONArray(thread.recentThoughts))
+                .put("decisionRecords", JSONArray(thread.decisionRecords))
                 .put("sortOrder", thread.sortOrder)
         )
         return JSONObject()
@@ -225,6 +226,7 @@ class AppSyncClient(
             currentHypothesis = payload.optString("currentHypothesis"),
             keyQuestions = payload.optJSONArray("keyQuestions").orEmpty().mapStrings(),
             recentThoughts = payload.optJSONArray("recentThoughts").orEmpty().mapStrings(),
+            decisionRecords = payload.optJSONArray("decisionRecords").orEmpty().mapStrings(),
             status = row.optString("status", "active"),
             createdAt = instantOrNow(row.optString("created_at")),
             updatedAt = instantOrNow(row.optString("updated_at")),
