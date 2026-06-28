@@ -37,26 +37,11 @@ import {
   Users,
   X
 } from "lucide-react";
-import {
-  BlockTypeSelect,
-  BoldItalicUnderlineToggles,
-  CreateLink,
-  InsertTable,
-  ListsToggle,
-  MDXEditor,
-  Separator,
-  UndoRedo,
-  codeBlockPlugin,
-  headingsPlugin,
-  linkPlugin,
-  listsPlugin,
-  markdownShortcutPlugin,
-  quotePlugin,
-  tablePlugin,
-  thematicBreakPlugin,
-  toolbarPlugin
-} from "@mdxeditor/editor";
-import "@mdxeditor/editor/style.css";
+import { basicSetup, EditorView } from "codemirror";
+import { EditorState } from "@codemirror/state";
+import { markdown } from "@codemirror/lang-markdown";
+import { indentWithTab } from "@codemirror/commands";
+import { keymap } from "@codemirror/view";
 import {
   emptyEncryptedFields,
   activeNoteForTodo,
@@ -5121,6 +5106,65 @@ function StrategyView({
   );
 }
 
+function MarkdownEditor({
+  noteId,
+  value,
+  onChange
+}: {
+  noteId: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const viewRef = useRef<EditorView | null>(null);
+  const onChangeRef = useRef(onChange);
+
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
+
+  useEffect(() => {
+    if (!hostRef.current) return;
+    const state = EditorState.create({
+      doc: value,
+      extensions: [
+        basicSetup,
+        markdown(),
+        keymap.of([indentWithTab]),
+        EditorView.lineWrapping,
+        EditorView.updateListener.of((update) => {
+          if (update.docChanged) {
+            onChangeRef.current(update.state.doc.toString());
+          }
+        })
+      ]
+    });
+    const view = new EditorView({
+      state,
+      parent: hostRef.current
+    });
+    viewRef.current = view;
+    view.focus();
+
+    return () => {
+      view.destroy();
+      if (viewRef.current === view) viewRef.current = null;
+    };
+  }, [noteId]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    const current = view.state.doc.toString();
+    if (current === value) return;
+    view.dispatch({
+      changes: { from: 0, to: current.length, insert: value }
+    });
+  }, [noteId, value]);
+
+  return <div ref={hostRef} className="resolve-cm-editor" />;
+}
+
 function VaultView({
   notes,
   todos,
@@ -5185,31 +5229,6 @@ function VaultView({
   const selectedTask = selectedNote?.meta.taskId ? todoById.get(selectedNote.meta.taskId) : undefined;
   const selectedThread = selectedNote?.meta.strategyThreadId ? threadById.get(selectedNote.meta.strategyThreadId) : undefined;
   const editorReady = Boolean(selectedNote && loadedNoteId === selectedNote.meta.id && !loading);
-
-  const editorPlugins = useMemo(() => [
-    headingsPlugin(),
-    listsPlugin(),
-    quotePlugin(),
-    thematicBreakPlugin(),
-    linkPlugin(),
-    tablePlugin(),
-    codeBlockPlugin(),
-    markdownShortcutPlugin(),
-    toolbarPlugin({
-      toolbarContents: () => (
-        <>
-          <UndoRedo />
-          <Separator />
-          <BlockTypeSelect />
-          <BoldItalicUnderlineToggles />
-          <ListsToggle />
-          <Separator />
-          <CreateLink />
-          <InsertTable />
-        </>
-      )
-    })
-  ], []);
 
   return (
     <div className={`vault-layout ${selectedNote ? "has-editor" : "list-only"}`}>
@@ -5302,13 +5321,11 @@ function VaultView({
             </div>
             <div className="markdown-editor-shell" data-color-mode="light">
               {editorReady ? (
-                <MDXEditor
-                  key={`${selectedNote.meta.id}:${selectedNote.meta.contentHash ?? selectedNote.meta.updatedAt}`}
-                  markdown={content}
+                <MarkdownEditor
+                  key={selectedNote.meta.id}
+                  noteId={selectedNote.meta.id}
+                  value={content}
                   onChange={(nextContent) => onContent(selectedNote.meta.id, nextContent)}
-                  className="resolve-mdx-editor"
-                  contentEditableClassName="resolve-mdx-content"
-                  plugins={editorPlugins}
                 />
               ) : (
                 <div className="note-editor-loading">Loading Note...</div>
