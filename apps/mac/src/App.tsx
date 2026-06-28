@@ -5166,39 +5166,28 @@ function MarkdownEditor({
   const applyingExternalRef = useRef(false);
   const repairingImeRef = useRef(false);
 
-  const repairImeSplitListItem = (markdown: string) => {
-    const lines = markdown.replace(/\r\n/g, "\n").split("\n");
-    const repaired: string[] = [];
-    let changed = false;
-
-    const parseListLine = (line: string) => {
-      const match = line.match(/^(\s*)((?:[-*+]|\d+[.)])\s+)(.*)$/);
-      if (!match) return null;
-      return {
-        indent: match[1],
-        marker: match[2],
-        body: match[3]
-      };
-    };
-
-    for (let index = 0; index < lines.length; index += 1) {
-      const current = parseListLine(lines[index]);
-      const next = index + 1 < lines.length ? parseListLine(lines[index + 1]) : null;
-      if (current && next && current.indent === next.indent) {
-        const pinyinTail = current.body.match(/^(.*?)([A-Za-z]{1,32})$/);
-        const committedCandidate = next.body.trim();
-        if (pinyinTail && /^[\u3400-\u9fff\u3000-\u303f\uff00-\uffef]{1,8}$/.test(committedCandidate)) {
-          repaired.push(`${current.indent}${current.marker}${pinyinTail[1]}${committedCandidate}`);
-          index += 1;
-          changed = true;
-          continue;
-        }
-      }
-      repaired.push(lines[index]);
-    }
-
-    return changed ? repaired.join("\n") : markdown;
+  const inlineText = (content: unknown): string => {
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    return content
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (!item || typeof item !== "object") return "";
+        const inline = item as { type?: string; text?: string; content?: unknown };
+        if (inline.type === "text") return inline.text ?? "";
+        if (inline.type === "link") return inlineText(inline.content);
+        return "";
+      })
+      .join("");
   };
+
+  const repairCommittedChineseText = (text: string) =>
+    text.replace(/(^|[\s([{（])(?:[a-z]{1,32}(?:'[a-z]{0,16})?)(?=[\u3400-\u9fff])/g, "$1");
+
+  const isOnlyCommittedChinese = (text: string) =>
+    /^[\u3400-\u9fff\u3000-\u303f\uff00-\uffef]{1,12}$/.test(text.trim());
+
+  const pinyinTailMatch = (text: string) => text.match(/^(.*?)([a-z]{1,32}(?:'[a-z]{0,16})?)$/);
 
   const emitCurrentMarkdown = () => {
     if (applyingExternalRef.current) return;
@@ -5254,24 +5243,45 @@ function MarkdownEditor({
 
   const repairImeIfNeeded = () => {
     if (repairingImeRef.current) return;
-    const current = editor.blocksToMarkdownLossy(editor.document);
-    const repaired = repairImeSplitListItem(current);
-    if (repaired === current) {
-      emitCurrentMarkdown();
+    const cursor = editor.getTextCursorPosition();
+    const currentBlock = cursor.block as { id: string; content?: unknown };
+    const previousBlock = cursor.prevBlock as { id: string; content?: unknown } | undefined;
+    const currentText = inlineText(currentBlock.content);
+    const repairedCurrentText = repairCommittedChineseText(currentText);
+
+    if (repairedCurrentText !== currentText) {
+      repairingImeRef.current = true;
+      try {
+        editor.updateBlock(currentBlock.id, { content: repairedCurrentText });
+        editor.setTextCursorPosition(currentBlock.id, "end");
+        window.setTimeout(emitCurrentMarkdown, 0);
+      } finally {
+        queueMicrotask(() => {
+          repairingImeRef.current = false;
+        });
+      }
       return;
     }
-    repairingImeRef.current = true;
-    applyingExternalRef.current = true;
-    try {
-      const blocks = editor.tryParseMarkdownToBlocks(repaired || "");
-      editor.replaceBlocks(editor.document, blocks.length ? blocks : [{ type: "paragraph", content: "" }]);
-      lastExternalValueRef.current = repaired;
-      onChangeRef.current(repaired);
-    } finally {
-      queueMicrotask(() => {
-        applyingExternalRef.current = false;
-        repairingImeRef.current = false;
-      });
+
+    const previousText = previousBlock ? inlineText(previousBlock.content) : "";
+    const previousPinyin = previousBlock ? pinyinTailMatch(previousText) : null;
+    if (previousBlock && previousPinyin && isOnlyCommittedChinese(currentText)) {
+      repairingImeRef.current = true;
+      try {
+        editor.updateBlock(previousBlock.id, { content: `${previousPinyin[1]}${currentText.trim()}` });
+        editor.removeBlocks([currentBlock.id]);
+        editor.setTextCursorPosition(previousBlock.id, "end");
+        window.setTimeout(emitCurrentMarkdown, 0);
+      } finally {
+        queueMicrotask(() => {
+          repairingImeRef.current = false;
+        });
+      }
+      return;
+    }
+
+    if (editor.blocksToMarkdownLossy(editor.document) !== lastExternalValueRef.current) {
+      emitCurrentMarkdown();
     }
   };
 
