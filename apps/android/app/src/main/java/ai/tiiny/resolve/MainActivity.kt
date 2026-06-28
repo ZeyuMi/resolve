@@ -1672,10 +1672,10 @@ private fun ResolveAndroidApp(
         }
         pendingStrategyArchive?.let { thread ->
             ConfirmActionDialog(
-                title = "Archive strategy?",
-                message = "This will also archive its subtasks.",
-                confirmLabel = "Archive",
-                danger = false,
+                title = "Delete strategy?",
+                message = "This will remove the strategy from the list and archive its subtasks.",
+                confirmLabel = "Delete",
+                danger = true,
                 onDismiss = { pendingStrategyArchive = null },
                 onConfirm = {
                     archiveStrategyThread(thread)
@@ -3398,7 +3398,7 @@ private fun StrategyOverviewCard(
                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = ResolveColors.Muted, modifier = Modifier.size(18.dp))
             }
             Text(
-                thread.currentHypothesis.ifBlank { "No brief yet." },
+                thread.currentHypothesis.ifBlank { "补充当前假设或简要说明" },
                 color = ResolveColors.Secondary,
                 fontSize = ResolveType.BodySmall,
                 lineHeight = 16.sp,
@@ -3559,9 +3559,9 @@ private fun StrategyScreen(
                         }
                         AssistChip(
                             onClick = { onArchiveThread(opened) },
-                            label = { Text("Archive", fontSize = ResolveType.Caption) },
+                            label = { Text("Delete", fontSize = ResolveType.Caption) },
                             leadingIcon = {
-                                Icon(Icons.Filled.Archive, contentDescription = null, modifier = Modifier.size(13.dp))
+                                Icon(Icons.Filled.Delete, contentDescription = null, modifier = Modifier.size(13.dp))
                             }
                         )
                     }

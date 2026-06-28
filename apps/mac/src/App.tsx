@@ -2832,6 +2832,7 @@ export function App() {
               onAddThread={addStrategyThread}
               onAddTask={addStrategyTask}
               onUpdateThread={updateStrategyThreadPayload}
+              onDeleteThread={archiveStrategyWithTasks}
               selectedTodo={selectedStrategyTodo}
               selectedTodoSubtasks={selectedStrategyTodoSubtasks}
               calendarEvents={state.calendarEvents}
@@ -4547,6 +4548,7 @@ function StrategyView({
   onAddThread,
   onAddTask,
   onUpdateThread,
+  onDeleteThread,
   onSelectTodo,
   onOpenNote,
   onCloseDetail,
@@ -4578,6 +4580,7 @@ function StrategyView({
   onAddThread: () => void;
   onAddTask: () => void;
   onUpdateThread: (threadId: string, patch: Partial<DecryptedStrategyThread["payload"]>) => void;
+  onDeleteThread: (thread: DecryptedStrategyThread) => void;
   onSelectTodo: (todo: DecryptedItem) => void;
   onOpenNote: (todo: DecryptedItem) => void | Promise<void>;
   onCloseDetail: () => void;
@@ -4681,7 +4684,7 @@ function StrategyView({
                 <button className="strategy-overview-card" key={thread.meta.id} onClick={() => onSelectThread(thread.meta.id)}>
                   <div>
                     <strong>{thread.payload.title}</strong>
-                    <span>{thread.payload.currentHypothesis || "No hypothesis yet"}</span>
+                    <span>{thread.payload.currentHypothesis || "补充当前假设或简要说明"}</span>
                   </div>
                   <div className="strategy-overview-meta">
                     <small>{stats.active} active</small>
@@ -4716,28 +4719,11 @@ function StrategyView({
     )
     .sort(compareCalendarEvents)
     .slice(0, 3);
-  const hypothesisText =
-    selectedThread.payload.currentHypothesis ||
-    "我们需要的是能在不确定环境下主动定义问题的人，而不是只执行任务的人。";
-  const heroDescription = selectedThread.payload.description || hypothesisText;
-  const defaultKeyQuestions = [
-    "什么样的人才适合当前阶段？",
-    "他们为什么会加入我们？",
-    "我们如何判断一个人是否真的适合？",
-    "招聘流程里哪些环节可以系统化？"
-  ];
-  const keyQuestions = selectedThread.payload.keyQuestions?.filter((question) => question.trim()) ?? defaultKeyQuestions;
-  const defaultRecentThoughts = [
-    `${selectedThread.payload.title}不是一个短期项目，而是一条需要反复校准的判断线。`,
-    strategyTodos[0] ? `${(strategyTodos[0].payload as ItemPayload).title} 是当前最接近行动的线索。` : "先把观察、问题和子任务保持在同一个地方。",
-    strategyCompletedTodos.length ? `已经完成 ${strategyCompletedTodos.length} 个相关动作，可以沉淀为下一轮判断。` : "完成的动作会沉淀到这里，帮助复盘判断质量。"
-  ];
-  const recentThoughts = selectedThread.payload.recentThoughts?.filter((thought) => thought.trim()) ?? defaultRecentThoughts;
-  const defaultDecisionRecords = [
-    `${new Date(selectedThread.meta.createdAt).toLocaleDateString("zh-CN")} 创建战略方向：${selectedThread.payload.title}`,
-    `${new Date(selectedStats.recent).toLocaleDateString("zh-CN")} 最近一次更新相关任务或笔记。`
-  ];
-  const decisionRecords = selectedThread.payload.decisionRecords?.filter((record) => record.trim()) ?? defaultDecisionRecords;
+  const hypothesisText = selectedThread.payload.currentHypothesis?.trim() ?? "";
+  const heroDescription = selectedThread.payload.description?.trim() ?? "";
+  const keyQuestions = selectedThread.payload.keyQuestions?.filter((question) => question.trim()) ?? [];
+  const recentThoughts = selectedThread.payload.recentThoughts?.filter((thought) => thought.trim()) ?? [];
+  const decisionRecords = selectedThread.payload.decisionRecords?.filter((record) => record.trim()) ?? [];
   const parseMultiline = (value: string) =>
     value
       .split("\n")
@@ -4807,12 +4793,18 @@ function StrategyView({
                 placeholder="标题下方的小字"
               />
             ) : (
-              <p>{heroDescription}</p>
+              <p className={!heroDescription ? "strategy-empty-copy" : undefined}>
+                {heroDescription || "补充这个战略方向的简要说明。"}
+              </p>
             )}
           </div>
           <div className="strategy-hero-actions">
             {isEditingStrategy ? (
               <>
+                <button className="danger-button" onClick={() => onDeleteThread(selectedThread)}>
+                  <Trash2 size={15} />
+                  Delete
+                </button>
                 <button className="ghost-button" onClick={cancelStrategyEdit}>
                   Cancel
                 </button>
@@ -4821,10 +4813,16 @@ function StrategyView({
                 </button>
               </>
             ) : (
-              <button className="ghost-button" onClick={() => setIsEditingStrategy(true)}>
-                <Edit3 size={15} />
-                Edit
-              </button>
+              <>
+                <button className="ghost-button" onClick={() => setIsEditingStrategy(true)}>
+                  <Edit3 size={15} />
+                  Edit
+                </button>
+                <button className="danger-button" onClick={() => onDeleteThread(selectedThread)}>
+                  <Trash2 size={15} />
+                  Delete
+                </button>
+              </>
             )}
           </div>
           <div className="strategy-hero-stats">
@@ -4854,10 +4852,12 @@ function StrategyView({
                   className="strategy-edit-textarea compact"
                   value={strategyEditDraft.currentHypothesis}
                   onChange={(event) => setStrategyEditDraft((draft) => ({ ...draft, currentHypothesis: event.target.value }))}
-                  placeholder="当前假设"
+                  placeholder="这里写当前你对这个方向的判断或假设"
                 />
               ) : (
-                <p>{hypothesisText}</p>
+                <p className={!hypothesisText ? "strategy-empty-copy" : undefined}>
+                  {hypothesisText || "用于记录你现在对这个方向的核心判断。"}
+                </p>
               )}
             </article>
 
@@ -4871,14 +4871,16 @@ function StrategyView({
                   className="strategy-edit-textarea"
                   value={strategyEditDraft.keyQuestions}
                   onChange={(event) => setStrategyEditDraft((draft) => ({ ...draft, keyQuestions: event.target.value }))}
-                  placeholder="每行一个关键问题"
+                  placeholder="每行一个需要持续回答的问题"
                 />
-              ) : (
+              ) : keyQuestions.length ? (
                 <ol className="strategy-question-list">
                   {keyQuestions.map((question) => (
                     <li key={question}>{question}</li>
                   ))}
                 </ol>
+              ) : (
+                <p className="strategy-empty-copy">用于放需要持续追问、验证、复盘的问题。</p>
               )}
             </article>
 
@@ -4892,14 +4894,16 @@ function StrategyView({
                   className="strategy-edit-textarea"
                   value={strategyEditDraft.recentThoughts}
                   onChange={(event) => setStrategyEditDraft((draft) => ({ ...draft, recentThoughts: event.target.value }))}
-                  placeholder="每行一条最近思考"
+                  placeholder="每行一条最近观察、想法或信号"
                 />
-              ) : (
+              ) : recentThoughts.length ? (
                 <ul className="strategy-bullet-list">
                   {recentThoughts.map((thought) => (
                     <li key={thought}>{thought}</li>
                   ))}
                 </ul>
+              ) : (
+                <p className="strategy-empty-copy">用于沉淀最近出现的新信号、新判断或新疑问。</p>
               )}
             </article>
 
@@ -4913,14 +4917,16 @@ function StrategyView({
                   className="strategy-edit-textarea"
                   value={strategyEditDraft.decisionRecords}
                   onChange={(event) => setStrategyEditDraft((draft) => ({ ...draft, decisionRecords: event.target.value }))}
-                  placeholder="每行一条决策记录"
+                  placeholder="每行一条已经做出的判断或决定"
                 />
-              ) : (
+              ) : decisionRecords.length ? (
                 <div className="strategy-decision-list">
                   {decisionRecords.map((record) => (
                     <p key={record}>{record}</p>
                   ))}
                 </div>
+              ) : (
+                <p className="strategy-empty-copy">用于记录已经决定的事情，方便之后回看为什么这么判断。</p>
               )}
             </article>
           </div>

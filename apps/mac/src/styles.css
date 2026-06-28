@@ -9062,6 +9062,10 @@ body,
   line-height: 22px !important;
 }
 
+.theme-redesign .strategy-empty-copy {
+  color: var(--text-3) !important;
+}
+
 .theme-redesign .strategy-question-list,
 .theme-redesign .strategy-bullet-list {
   margin: 12px 0 0 !important;
