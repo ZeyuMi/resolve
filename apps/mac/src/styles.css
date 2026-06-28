@@ -9756,6 +9756,50 @@ body,
   background: #f8fbff !important;
 }
 
+.theme-redesign .todo-strategy-add-composer {
+  min-height: 42px !important;
+  display: grid !important;
+  grid-template-columns: 16px minmax(0, 1fr) 28px !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 6px 14px 6px 48px !important;
+  border-top: 1px solid var(--divider) !important;
+  background: #ffffff !important;
+  color: var(--accent) !important;
+}
+
+.theme-redesign .todo-strategy-add-composer input {
+  width: 100% !important;
+  height: 30px !important;
+  border: 0 !important;
+  outline: 0 !important;
+  background: transparent !important;
+  color: var(--text) !important;
+  font: inherit !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+}
+
+.theme-redesign .todo-strategy-add-composer input::placeholder {
+  color: var(--text-3) !important;
+}
+
+.theme-redesign .todo-strategy-add-submit {
+  width: 28px !important;
+  height: 28px !important;
+  display: grid !important;
+  place-items: center !important;
+  border: 0 !important;
+  border-radius: 999px !important;
+  background: var(--accent) !important;
+  color: #ffffff !important;
+}
+
+.theme-redesign .todo-strategy-add-submit:disabled {
+  background: #eef2f7 !important;
+  color: var(--text-3) !important;
+}
+
 .theme-redesign .sidebar-nav button.active {
   box-shadow: none !important;
 }

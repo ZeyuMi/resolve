@@ -2132,6 +2132,18 @@ export function App() {
     showToast("Subtask added to Todo");
   }
 
+  function addTodoForStrategy(threadId: string, title: string) {
+    const cleanTitle = title.trim();
+    if (!cleanTitle) return;
+    const todo = createTodoItem({ title: cleanTitle, strategyThreadId: threadId });
+    const latest = stateRef.current;
+    persist({
+      ...latest,
+      items: [todo, ...latest.items]
+    });
+    showToast("Task added");
+  }
+
   function addTodoSubtask(parentTodo: DecryptedItem, title: string) {
     const cleanTitle = title.trim();
     if (!cleanTitle) return;
@@ -2767,6 +2779,7 @@ export function App() {
               onUpdateTodoPayload={updateTodoPayload}
               onSaveTodoDetail={updateTodoDetail}
               onAddSubtask={addTodoSubtask}
+              onAddStrategyTodo={addTodoForStrategy}
               onToggleSubtask={(todo) => updateTodo(todo.meta.id, { status: todo.meta.status === "done" ? "active" : "done" })}
               onReorderTodo={reorderTodo}
               onReorderStrategyThread={reorderStrategyThread}
@@ -3368,6 +3381,7 @@ function TodoView({
   onUpdateTodoPayload,
   onSaveTodoDetail,
   onAddSubtask,
+  onAddStrategyTodo,
   onToggleSubtask,
   onReorderTodo,
   onReorderStrategyThread,
@@ -3407,6 +3421,7 @@ function TodoView({
     payloadPatch: Partial<ItemPayload>
   ) => void;
   onAddSubtask: (parentTodo: DecryptedItem, title: string) => void;
+  onAddStrategyTodo: (threadId: string, title: string) => void;
   onToggleSubtask: (todo: DecryptedItem) => void;
   onReorderTodo: (sourceId: string, targetId: string, placement?: ReorderPlacement) => void;
   onReorderStrategyThread: (sourceId: string, targetId: string, placement?: ReorderPlacement) => void;
@@ -3417,6 +3432,8 @@ function TodoView({
 }) {
   const [collapsedTodoIds, setCollapsedTodoIds] = useState<Set<string>>(() => new Set());
   const [collapsedStrategyIds, setCollapsedStrategyIds] = useState<Set<string>>(() => new Set());
+  const [strategyComposerId, setStrategyComposerId] = useState<string | null>(null);
+  const [strategyComposerText, setStrategyComposerText] = useState("");
   const [pointerDrag, setPointerDrag] = useState<{
     kind: "todo" | "strategy";
     sourceId: string;
@@ -3543,6 +3560,57 @@ function TodoView({
       }}
     />
   );
+  const submitStrategyTodo = (threadId: string) => {
+    const title = strategyComposerText.trim();
+    if (!title) return;
+    onAddStrategyTodo(threadId, title);
+    setStrategyComposerText("");
+    setStrategyComposerId(null);
+  };
+  const renderStrategyAddRow = (threadId: string) =>
+    strategyComposerId === threadId ? (
+      <div className="todo-strategy-add-composer">
+        <Plus size={14} />
+        <input
+          autoFocus
+          value={strategyComposerText}
+          onChange={(event) => setStrategyComposerText(event.target.value)}
+          onKeyDown={(event) => {
+            if (isImeComposing(event)) return;
+            if (event.key === "Enter") {
+              event.preventDefault();
+              submitStrategyTodo(threadId);
+            }
+            if (event.key === "Escape") {
+              setStrategyComposerText("");
+              setStrategyComposerId(null);
+            }
+          }}
+          placeholder="Add task..."
+        />
+        <button
+          className="todo-strategy-add-submit"
+          type="button"
+          disabled={!strategyComposerText.trim()}
+          onClick={() => submitStrategyTodo(threadId)}
+          aria-label="Add task"
+        >
+          <ChevronRight size={16} />
+        </button>
+      </div>
+    ) : (
+      <button
+        className="todo-section-add-row"
+        onClick={() => {
+          setStrategyComposerId(threadId);
+          setStrategyComposerText("");
+        }}
+        type="button"
+      >
+        <Plus size={14} />
+        Add Task
+      </button>
+    );
 
   return (
     <div className={`todo-workspace ${selectedTodo ? "has-detail" : ""}`}>
@@ -3604,16 +3672,7 @@ function TodoView({
                 </button>
                 {!collapsedStrategyIds.has(thread.meta.id) &&
                   buildTodoTreeEntries(roots, todos, collapsedTodoIds).map(renderEntry)}
-                {!collapsedStrategyIds.has(thread.meta.id) && (
-                  <button
-                    className="todo-section-add-row"
-                    onClick={() => onCaptureStrategy(thread.meta.id)}
-                    type="button"
-                  >
-                    <Plus size={14} />
-                    Add Task
-                  </button>
-                )}
+                {!collapsedStrategyIds.has(thread.meta.id) && renderStrategyAddRow(thread.meta.id)}
               </div>
             ))}
             {orphanGroups.map(({ threadId, roots }) => (
@@ -3630,16 +3689,7 @@ function TodoView({
                 </button>
                 {!collapsedStrategyIds.has(threadId) &&
                   buildTodoTreeEntries(roots, todos, collapsedTodoIds).map(renderEntry)}
-                {!collapsedStrategyIds.has(threadId) && (
-                  <button
-                    className="todo-section-add-row"
-                    onClick={() => onCaptureStrategy(threadId)}
-                    type="button"
-                  >
-                    <Plus size={14} />
-                    Add Task
-                  </button>
-                )}
+                {!collapsedStrategyIds.has(threadId) && renderStrategyAddRow(threadId)}
               </div>
             ))}
           </>
