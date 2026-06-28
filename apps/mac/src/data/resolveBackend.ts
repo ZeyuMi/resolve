@@ -5,9 +5,10 @@ import {
   type CalendarEventSyncState,
   type DecryptedCalendarEvent
 } from "@resolve/core";
+import { isNativeSecureStoreAvailable, secureStoreDelete, secureStoreGet, secureStoreSet } from "../platform/secureStore";
 
-export const resolveSupabaseUrl = "https://pfghmlcstwhykexuaimj.supabase.co";
-export const resolveSupabasePublishableKey = "sb_publishable_xtXt5sDwIUNF_8BzaEnFiQ_-OodpdLq";
+export const resolveSupabaseUrl = (import.meta.env.VITE_RESOLVE_SUPABASE_URL ?? "").trim();
+export const resolveSupabasePublishableKey = (import.meta.env.VITE_RESOLVE_SUPABASE_PUBLISHABLE_KEY ?? "").trim();
 
 export interface BackendSettingsState {
   supabaseUrl: string;
@@ -74,6 +75,12 @@ export function isBackendJwtExpired(error: unknown) {
 
 const backendSettingsKey = "resolve:backend-settings:v1";
 const backendSessionKey = "resolve:backend-session:v1";
+const secureBackendSessionKey = {
+  service: "ai.tiiny.resolve.backend",
+  account: "backend_session"
+};
+
+let backendSessionCache: BackendSession | null | undefined;
 
 export function defaultBackendSettings(): BackendSettingsState {
   return {
@@ -103,21 +110,69 @@ export function saveBackendSettings(settings: BackendSettingsState) {
 }
 
 export function loadBackendSession(): BackendSession | null {
+  if (backendSessionCache !== undefined) return backendSessionCache;
   const raw = localStorage.getItem(backendSessionKey);
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as BackendSession;
+    backendSessionCache = JSON.parse(raw) as BackendSession;
+    return backendSessionCache;
   } catch {
+    backendSessionCache = null;
     return null;
   }
 }
 
 export function saveBackendSession(session: BackendSession) {
-  localStorage.setItem(backendSessionKey, JSON.stringify(session));
+  backendSessionCache = session;
+  const serialized = JSON.stringify(session);
+  if (!isNativeSecureStoreAvailable()) {
+    localStorage.setItem(backendSessionKey, serialized);
+    return;
+  }
+  localStorage.removeItem(backendSessionKey);
+  void secureStoreSet(secureBackendSessionKey, serialized).catch((error) => {
+    console.warn("Could not save backend session to Keychain", error);
+  });
 }
 
 export function clearBackendSession() {
+  backendSessionCache = null;
   localStorage.removeItem(backendSessionKey);
+  if (isNativeSecureStoreAvailable()) {
+    void secureStoreDelete(secureBackendSessionKey).catch((error) => {
+      console.warn("Could not clear backend session from Keychain", error);
+    });
+  }
+}
+
+export async function hydrateBackendSessionFromSecureStore() {
+  if (!isNativeSecureStoreAvailable()) {
+    backendSessionCache = loadBackendSession();
+    return backendSessionCache;
+  }
+
+  const legacyRaw = localStorage.getItem(backendSessionKey);
+  const secureRaw = await secureStoreGet(secureBackendSessionKey);
+  const raw = secureRaw || legacyRaw;
+  if (!raw) {
+    backendSessionCache = null;
+    return null;
+  }
+
+  try {
+    const session = JSON.parse(raw) as BackendSession;
+    backendSessionCache = session;
+    if (!secureRaw) {
+      await secureStoreSet(secureBackendSessionKey, JSON.stringify(session));
+    }
+    localStorage.removeItem(backendSessionKey);
+    return session;
+  } catch {
+    backendSessionCache = null;
+    localStorage.removeItem(backendSessionKey);
+    await secureStoreDelete(secureBackendSessionKey);
+    return null;
+  }
 }
 
 export function shouldRefreshBackendSession(session: BackendSession) {

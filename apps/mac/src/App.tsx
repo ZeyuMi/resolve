@@ -98,6 +98,7 @@ import {
   canUseFeishuConnection,
   clearFeishuToken,
   feishuConfig,
+  hydrateFeishuTokenFromSecureStore,
   isTauriRuntime,
   isTokenExpired,
   loadFeishuSettings,
@@ -110,6 +111,7 @@ import {
 } from "./data/feishuLocalStore";
 import {
   clearBackendSession,
+  hydrateBackendSessionFromSecureStore,
   isBackendJwtExpired,
   loadBackendSession,
   loadBackendSettings,
@@ -833,6 +835,7 @@ export function App() {
   const localSaveTimerRef = useRef<number | null>(null);
   const applyingRemoteStateRef = useRef(false);
   const [syncSecretReady, setSyncSecretReady] = useState(false);
+  const [backendSessionHydrated, setBackendSessionHydrated] = useState(!isTauriRuntime());
 
   const taskItems = useMemo(
     () =>
@@ -887,6 +890,28 @@ export function App() {
     void installNativeHttpBridge().catch((error) => {
       console.warn("Could not install native HTTP bridge", error);
     });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function hydrateSecureLocalState() {
+      try {
+        await Promise.all([
+          hydrateBackendSessionFromSecureStore(),
+          hydrateFeishuTokenFromSecureStore()
+        ]);
+      } catch (error) {
+        console.warn("Could not hydrate secure local state", error);
+      } finally {
+        if (!cancelled) setBackendSessionHydrated(true);
+      }
+    }
+
+    void hydrateSecureLocalState();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -1024,6 +1049,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (!backendSessionHydrated) return;
     let disposed = false;
 
     async function connectAppSync() {
@@ -1047,9 +1073,10 @@ export function App() {
       appSyncRef.current = null;
       void sync?.dispose();
     };
-  }, [backendSettings.status, backendSettings.email, syncSecretReady]);
+  }, [backendSettings.status, backendSettings.email, syncSecretReady, backendSessionHydrated]);
 
   useEffect(() => {
+    if (!backendSessionHydrated) return;
     if (backendStatusHydratedRef.current || !loadBackendSession()) return;
     backendStatusHydratedRef.current = true;
     let cancelled = false;
@@ -1079,7 +1106,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [backendSessionHydrated]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);

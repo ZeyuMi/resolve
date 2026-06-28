@@ -1,8 +1,26 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) {
+        file.inputStream().use { load(it) }
+    }
+}
+
+fun resolveBuildValue(name: String): String =
+    localProperties.getProperty(name)
+        ?: providers.gradleProperty(name).orNull
+        ?: System.getenv(name)
+        ?: ""
+
+fun quotedBuildString(value: String): String =
+    "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
 android {
     namespace = "ai.tiiny.resolve"
@@ -14,10 +32,13 @@ android {
         targetSdk = 35
         versionCode = 20
         versionName = "0.1.20"
+        buildConfigField("String", "RESOLVE_SUPABASE_URL", quotedBuildString(resolveBuildValue("RESOLVE_SUPABASE_URL")))
+        buildConfigField("String", "RESOLVE_SUPABASE_PUBLISHABLE_KEY", quotedBuildString(resolveBuildValue("RESOLVE_SUPABASE_PUBLISHABLE_KEY")))
     }
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     compileOptions {

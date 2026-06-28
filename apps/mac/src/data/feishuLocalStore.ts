@@ -1,4 +1,5 @@
 import type { FeishuConfig, TokenSet } from "@resolve/feishu";
+import { isNativeSecureStoreAvailable, secureStoreDelete, secureStoreGet, secureStoreSet } from "../platform/secureStore";
 
 export interface FeishuSettingsState {
   appId: string;
@@ -14,6 +15,11 @@ export interface FeishuSettingsState {
 
 const feishuSettingsKey = "resolve:feishu-settings:v1";
 const feishuTokenKey = "resolve:feishu-token:v1";
+const secureFeishuTokenKey = {
+  service: "ai.tiiny.resolve.feishu",
+  account: "token_set"
+};
+let feishuTokenCache: TokenSet | null | undefined;
 export const nativeFeishuRedirectUri = "http://127.0.0.1:36321/oauth/feishu/callback";
 
 export function loadFeishuSettings(): FeishuSettingsState {
@@ -79,21 +85,69 @@ export function feishuConfig(settings: FeishuSettingsState): FeishuConfig {
 }
 
 export function loadFeishuToken(): TokenSet | null {
+  if (feishuTokenCache !== undefined) return feishuTokenCache;
   const raw = localStorage.getItem(feishuTokenKey);
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as TokenSet;
+    feishuTokenCache = JSON.parse(raw) as TokenSet;
+    return feishuTokenCache;
   } catch {
+    feishuTokenCache = null;
     return null;
   }
 }
 
 export function saveFeishuToken(tokenSet: TokenSet) {
-  localStorage.setItem(feishuTokenKey, JSON.stringify(tokenSet));
+  feishuTokenCache = tokenSet;
+  const serialized = JSON.stringify(tokenSet);
+  if (!isNativeSecureStoreAvailable()) {
+    localStorage.setItem(feishuTokenKey, serialized);
+    return;
+  }
+  localStorage.removeItem(feishuTokenKey);
+  void secureStoreSet(secureFeishuTokenKey, serialized).catch((error) => {
+    console.warn("Could not save Feishu token to Keychain", error);
+  });
 }
 
 export function clearFeishuToken() {
+  feishuTokenCache = null;
   localStorage.removeItem(feishuTokenKey);
+  if (isNativeSecureStoreAvailable()) {
+    void secureStoreDelete(secureFeishuTokenKey).catch((error) => {
+      console.warn("Could not clear Feishu token from Keychain", error);
+    });
+  }
+}
+
+export async function hydrateFeishuTokenFromSecureStore() {
+  if (!isNativeSecureStoreAvailable()) {
+    feishuTokenCache = loadFeishuToken();
+    return feishuTokenCache;
+  }
+
+  const legacyRaw = localStorage.getItem(feishuTokenKey);
+  const secureRaw = await secureStoreGet(secureFeishuTokenKey);
+  const raw = secureRaw || legacyRaw;
+  if (!raw) {
+    feishuTokenCache = null;
+    return null;
+  }
+
+  try {
+    const tokenSet = JSON.parse(raw) as TokenSet;
+    feishuTokenCache = tokenSet;
+    if (!secureRaw) {
+      await secureStoreSet(secureFeishuTokenKey, JSON.stringify(tokenSet));
+    }
+    localStorage.removeItem(feishuTokenKey);
+    return tokenSet;
+  } catch {
+    feishuTokenCache = null;
+    localStorage.removeItem(feishuTokenKey);
+    await secureStoreDelete(secureFeishuTokenKey);
+    return null;
+  }
 }
 
 export function isTokenExpired(tokenSet: TokenSet) {

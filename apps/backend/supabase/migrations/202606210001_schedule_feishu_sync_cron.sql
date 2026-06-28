@@ -17,7 +17,7 @@ select cron.schedule(
   '*/5 * * * *',
   $$
     select net.http_post(
-      url := 'https://pfghmlcstwhykexuaimj.supabase.co/functions/v1/feishu-sync-cron',
+      url := current_setting('app.resolve_supabase_url', true) || '/functions/v1/feishu-sync-cron',
       headers := '{"Content-Type":"application/json"}'::jsonb,
       body := '{}'::jsonb
     );
