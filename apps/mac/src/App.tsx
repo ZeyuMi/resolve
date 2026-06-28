@@ -5282,8 +5282,8 @@ function MarkdownEditor({
   const editorRef = useRef<HTMLDivElement | null>(null);
   const onChangeRef = useRef(onChange);
   const onSaveRef = useRef(onSave);
-  const lastRenderedNoteIdRef = useRef(noteId);
-  const lastEmittedValueRef = useRef(value);
+  const lastRenderedNoteIdRef = useRef<string | null>(null);
+  const lastEmittedValueRef = useRef<string | null>(null);
   const composingRef = useRef(false);
 
   useEffect(() => {
