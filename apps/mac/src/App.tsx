@@ -816,6 +816,7 @@ export function App() {
   const backendStatusHydratedRef = useRef(false);
   const appSyncRef = useRef<ResolveAppEncryptedSync | null>(null);
   const localSaveTimerRef = useRef<number | null>(null);
+  const noteAutoSaveTimerRef = useRef<number | null>(null);
   const applyingRemoteStateRef = useRef(false);
   const [syncSecretReady, setSyncSecretReady] = useState(false);
   const [backendSessionHydrated, setBackendSessionHydrated] = useState(!isTauriRuntime());
@@ -1009,6 +1010,48 @@ export function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
+
+  useEffect(() => {
+    if (tab !== "vault" || !selectedNoteId) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        void saveSelectedNote();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [noteContent, noteContentNoteId, noteLoading, selectedNoteId, state.notes, tab]);
+
+  useEffect(() => {
+    return () => {
+      if (noteAutoSaveTimerRef.current) {
+        window.clearTimeout(noteAutoSaveTimerRef.current);
+        noteAutoSaveTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (noteAutoSaveTimerRef.current) {
+      window.clearTimeout(noteAutoSaveTimerRef.current);
+      noteAutoSaveTimerRef.current = null;
+    }
+    const note = selectedNoteId ? state.notes.find((item) => item.meta.id === selectedNoteId) : undefined;
+    if (!note || noteLoading || noteContentNoteId !== note.meta.id) return;
+    const editableBody = stripGeneratedNoteTitle(noteContent, note.meta.title);
+    if (editableBody === (note.payload.markdown ?? "")) return;
+    noteAutoSaveTimerRef.current = window.setTimeout(() => {
+      noteAutoSaveTimerRef.current = null;
+      void saveSelectedNote({ silent: true });
+    }, 1000);
+    return () => {
+      if (noteAutoSaveTimerRef.current) {
+        window.clearTimeout(noteAutoSaveTimerRef.current);
+        noteAutoSaveTimerRef.current = null;
+      }
+    };
+  }, [noteContent, noteContentNoteId, noteLoading, selectedNoteId, state.notes]);
 
   useEffect(() => {
     let cleanup = () => {};
@@ -1271,10 +1314,11 @@ export function App() {
     showToast("Note created");
   }
 
-  async function saveSelectedNote() {
+  async function saveSelectedNote(options: { silent?: boolean } = {}) {
+    const { silent = false } = options;
     const currentNoteId = selectedNoteId;
     if (!currentNoteId || noteLoading || noteContentNoteId !== currentNoteId) {
-      showToast("Note is still loading");
+      if (!silent) showToast("Note is still loading");
       return;
     }
     const note = stateRef.current.notes.find((item) => item.meta.id === currentNoteId);
@@ -1304,7 +1348,7 @@ export function App() {
     });
     setNoteContent(editableBody);
     setNoteContentNoteId(nextNote.meta.id);
-    showToast("Note saved");
+    if (!silent) showToast("Note saved");
   }
 
   async function renameNote(note: DecryptedNote, nextTitle: string) {
@@ -5107,20 +5151,28 @@ function StrategyView({
 function MarkdownEditor({
   noteId,
   value,
-  onChange
+  onChange,
+  onSave
 }: {
   noteId: string;
   value: string;
   onChange: (value: string) => void;
+  onSave: () => void;
 }) {
   const editor = useCreateBlockNote({}, [noteId]);
   const onChangeRef = useRef(onChange);
+  const onSaveRef = useRef(onSave);
   const lastExternalValueRef = useRef(value);
   const applyingExternalRef = useRef(false);
+  const composingRef = useRef(false);
 
   useEffect(() => {
     onChangeRef.current = onChange;
   }, [onChange]);
+
+  useEffect(() => {
+    onSaveRef.current = onSave;
+  }, [onSave]);
 
   useEffect(() => {
     applyingExternalRef.current = true;
@@ -5160,7 +5212,27 @@ function MarkdownEditor({
   }, [editor, noteId, value]);
 
   return (
-    <div className="resolve-blocknote-editor">
+    <div
+      className="resolve-blocknote-editor"
+      onCompositionStart={() => {
+        composingRef.current = true;
+      }}
+      onCompositionEnd={() => {
+        composingRef.current = false;
+      }}
+      onKeyDownCapture={(event) => {
+        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+          event.preventDefault();
+          event.stopPropagation();
+          onSaveRef.current();
+          return;
+        }
+        if (event.key === "Enter" && (composingRef.current || isImeComposing(event))) {
+          event.stopPropagation();
+          event.nativeEvent.stopImmediatePropagation();
+        }
+      }}
+    >
       <BlockNoteViewRaw
         editor={editor}
         theme="light"
@@ -5336,12 +5408,13 @@ function VaultView({
                   noteId={selectedNote.meta.id}
                   value={content}
                   onChange={(nextContent) => onContent(selectedNote.meta.id, nextContent)}
+                  onSave={onSave}
                 />
               ) : (
                 <div className="note-editor-loading">Loading Note...</div>
               )}
             </div>
-        </section>
+          </section>
       )}
     </div>
   );
