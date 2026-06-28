@@ -12,8 +12,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@blocknote/core": "^0.51.4",
-    "@blocknote/react": "^0.51.4",
     "@resolve/core": "0.1.0",
     "@resolve/crypto": "0.1.0",
     "@resolve/feishu": "0.1.0",

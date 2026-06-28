@@ -37,9 +37,6 @@ import {
   Users,
   X
 } from "lucide-react";
-import { BlockNoteViewRaw, useCreateBlockNote } from "@blocknote/react";
-import "@blocknote/core/fonts/inter.css";
-import "@blocknote/react/style.css";
 import {
   emptyEncryptedFields,
   activeNoteForTodo,
@@ -5148,6 +5145,129 @@ function StrategyView({
   );
 }
 
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function renderMarkdownInline(value: string) {
+  const codeTokens: string[] = [];
+  let html = escapeHtml(value).replace(/`([^`]+)`/g, (_, code: string) => {
+    const token = `\u0000${codeTokens.length}\u0000`;
+    codeTokens.push(`<code>${code}</code>`);
+    return token;
+  });
+  html = html
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[\s([{])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+  codeTokens.forEach((token, index) => {
+    html = html.replace(`\u0000${index}\u0000`, token);
+  });
+  return html || "<br>";
+}
+
+function markdownToEditorHtml(markdown: string) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const html: string[] = [];
+  let listType: "ul" | "ol" | null = null;
+
+  const closeList = () => {
+    if (!listType) return;
+    html.push(`</${listType}>`);
+    listType = null;
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    const unordered = line.match(/^\s*[-*+]\s+(.+)$/);
+    const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+
+    if (!line.trim()) {
+      closeList();
+      html.push("<p><br></p>");
+      continue;
+    }
+    if (heading) {
+      closeList();
+      const level = heading[1].length;
+      html.push(`<h${level}>${renderMarkdownInline(heading[2])}</h${level}>`);
+      continue;
+    }
+    if (unordered) {
+      if (listType !== "ul") {
+        closeList();
+        html.push("<ul>");
+        listType = "ul";
+      }
+      html.push(`<li>${renderMarkdownInline(unordered[1])}</li>`);
+      continue;
+    }
+    if (ordered) {
+      if (listType !== "ol") {
+        closeList();
+        html.push("<ol>");
+        listType = "ol";
+      }
+      html.push(`<li>${renderMarkdownInline(ordered[1])}</li>`);
+      continue;
+    }
+
+    closeList();
+    html.push(`<p>${renderMarkdownInline(line)}</p>`);
+  }
+
+  closeList();
+  return html.join("");
+}
+
+function inlineMarkdownFromNode(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
+  if (!(node instanceof HTMLElement)) return Array.from(node.childNodes).map(inlineMarkdownFromNode).join("");
+  const content = Array.from(node.childNodes).map(inlineMarkdownFromNode).join("");
+  const tag = node.tagName.toLowerCase();
+  if (tag === "br") return "\n";
+  if (tag === "strong" || tag === "b") return `**${content}**`;
+  if (tag === "em" || tag === "i") return `*${content}*`;
+  if (tag === "code") return `\`${content}\``;
+  if (tag === "a") {
+    const href = node.getAttribute("href");
+    return href ? `[${content}](${href})` : content;
+  }
+  return content;
+}
+
+function editorElementToMarkdown(root: HTMLElement) {
+  const lines: string[] = [];
+  const appendBlock = (element: Element) => {
+    const tag = element.tagName.toLowerCase();
+    if (tag === "h1" || tag === "h2" || tag === "h3") {
+      lines.push(`${"#".repeat(Number(tag[1]))} ${inlineMarkdownFromNode(element).trim()}`);
+      return;
+    }
+    if (tag === "ul" || tag === "ol") {
+      Array.from(element.children).forEach((child, index) => {
+        if (child.tagName.toLowerCase() !== "li") return;
+        const marker = tag === "ol" ? `${index + 1}.` : "-";
+        lines.push(`${marker} ${inlineMarkdownFromNode(child).trim()}`);
+      });
+      return;
+    }
+    const text = inlineMarkdownFromNode(element).replace(/\n+$/g, "").trim();
+    lines.push(text);
+  };
+
+  Array.from(root.children).forEach((child) => appendBlock(child));
+  return lines
+    .join("\n\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trimEnd();
+}
+
 function MarkdownEditor({
   noteId,
   value,
@@ -5159,11 +5279,11 @@ function MarkdownEditor({
   onChange: (value: string) => void;
   onSave: () => void;
 }) {
-  const editor = useCreateBlockNote({}, [noteId]);
+  const editorRef = useRef<HTMLDivElement | null>(null);
   const onChangeRef = useRef(onChange);
   const onSaveRef = useRef(onSave);
-  const lastExternalValueRef = useRef(value);
-  const applyingExternalRef = useRef(false);
+  const lastRenderedNoteIdRef = useRef(noteId);
+  const lastEmittedValueRef = useRef(value);
   const composingRef = useRef(false);
 
   useEffect(() => {
@@ -5174,74 +5294,53 @@ function MarkdownEditor({
     onSaveRef.current = onSave;
   }, [onSave]);
 
-  useEffect(() => {
-    applyingExternalRef.current = true;
-    lastExternalValueRef.current = value;
-    try {
-      const blocks = editor.tryParseMarkdownToBlocks(value || "");
-      editor.replaceBlocks(editor.document, blocks.length ? blocks : [{ type: "paragraph", content: "" }]);
-    } catch (error) {
-      console.warn("Could not parse note markdown into blocks", error);
-      editor.replaceBlocks(editor.document, [{ type: "paragraph", content: value || "" }]);
-    } finally {
-      queueMicrotask(() => {
-        applyingExternalRef.current = false;
-      });
-    }
-  }, [editor, noteId]);
+  const emitChange = () => {
+    const root = editorRef.current;
+    if (!root) return;
+    const next = editorElementToMarkdown(root);
+    lastEmittedValueRef.current = next;
+    onChangeRef.current(next);
+  };
 
   useEffect(() => {
-    if (lastExternalValueRef.current === value) return;
-    const current = editor.blocksToMarkdownLossy(editor.document);
-    if (current === value) {
-      lastExternalValueRef.current = value;
-      return;
-    }
-    applyingExternalRef.current = true;
-    lastExternalValueRef.current = value;
-    try {
-      const blocks = editor.tryParseMarkdownToBlocks(value || "");
-      editor.replaceBlocks(editor.document, blocks.length ? blocks : [{ type: "paragraph", content: "" }]);
-    } catch (error) {
-      console.warn("Could not apply external note markdown", error);
-    } finally {
-      queueMicrotask(() => {
-        applyingExternalRef.current = false;
-      });
-    }
-  }, [editor, noteId, value]);
+    const root = editorRef.current;
+    if (!root) return;
+    const noteChanged = lastRenderedNoteIdRef.current !== noteId;
+    if (!noteChanged && lastEmittedValueRef.current === value) return;
+    root.innerHTML = markdownToEditorHtml(value || "");
+    lastRenderedNoteIdRef.current = noteId;
+    lastEmittedValueRef.current = value;
+  }, [noteId, value]);
 
   return (
     <div
-      className="resolve-blocknote-editor"
+      className="resolve-markdown-editor"
       onCompositionStart={() => {
         composingRef.current = true;
       }}
       onCompositionEnd={() => {
         composingRef.current = false;
+        queueMicrotask(emitChange);
       }}
       onKeyDownCapture={(event) => {
         if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
           event.preventDefault();
           event.stopPropagation();
           onSaveRef.current();
-          return;
-        }
-        if (event.key === "Enter" && (composingRef.current || isImeComposing(event))) {
-          event.stopPropagation();
-          event.nativeEvent.stopImmediatePropagation();
         }
       }}
+      onInput={() => {
+        if (composingRef.current) return;
+        emitChange();
+      }}
     >
-      <BlockNoteViewRaw
-        editor={editor}
-        theme="light"
-        onChange={() => {
-          if (applyingExternalRef.current) return;
-          const next = editor.blocksToMarkdownLossy(editor.document);
-          lastExternalValueRef.current = next;
-          onChangeRef.current(next);
-        }}
+      <div
+        ref={editorRef}
+        className="resolve-markdown-editor-content"
+        contentEditable
+        suppressContentEditableWarning
+        spellCheck
+        data-placeholder="Start writing..."
       />
     </div>
   );
