@@ -1501,6 +1501,7 @@ private fun ResolveAndroidApp(
                                     onRestore = { item -> updateItem(item.copy(status = ItemStatus.Active)) },
                                     onArchive = { pendingTodoArchive = it },
                                     onSelect = { selectedTodoId = it.id },
+                                    onNote = { openNoteForTask(it) },
                                     onShowCompleted = { showCompleted = !showCompleted },
                                     onShowArchived = { showArchived = !showArchived },
                                     onDeleteArchived = { pendingTodoDelete = it },
@@ -1596,6 +1597,7 @@ private fun ResolveAndroidApp(
                                 todoReturnStrategyThreadId = openedStrategyThreadId ?: selectedThreadId
                                 tab = Tab.Todo
                             },
+                            onNoteTodo = { openNoteForTask(it) },
                             onToggleDone = { item ->
                                 updateItem(item.copy(status = if (item.status == ItemStatus.Done) ItemStatus.Active else ItemStatus.Done))
                             },
@@ -2068,6 +2070,7 @@ private fun TodoScreen(
     onRestore: (ResolveItem) -> Unit,
     onArchive: (ResolveItem) -> Unit,
     onSelect: (ResolveItem) -> Unit,
+    onNote: (ResolveItem) -> Unit,
     onShowCompleted: () -> Unit,
     onShowArchived: () -> Unit,
     onDeleteArchived: (ResolveItem) -> Unit,
@@ -2153,6 +2156,7 @@ private fun TodoScreen(
             onToggleDone = { onToggleDone(item) },
             onArchive = { onArchive(item) },
             onSelect = { onSelect(item) },
+            onNote = { onNote(item) },
             onDragReorder = { direction -> moveTodo(item, direction) }
         )
     }
@@ -2206,7 +2210,8 @@ private fun TodoScreen(
                     onToggleCollapse = {},
                     onToggleDone = { onRestore(item) },
                     onArchive = { onArchive(item) },
-                    onSelect = { onSelect(item) }
+                    onSelect = { onSelect(item) },
+                    onNote = { onNote(item) }
                 )
             }
         }
@@ -2256,6 +2261,7 @@ private fun TodoRow(
     onToggleDone: () -> Unit,
     onArchive: () -> Unit,
     onSelect: () -> Unit,
+    onNote: () -> Unit,
     onDragReorder: ((Int) -> Unit)? = null
 ) {
     val isChild = depth > 0
@@ -2375,6 +2381,17 @@ private fun TodoRow(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
+                }
+                IconButton(
+                    onClick = onNote,
+                    modifier = Modifier.size(if (isChild) 32.dp else 34.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.OpenInBrowser,
+                        contentDescription = if (item.noteId.isNullOrBlank()) "Create note" else "Open note",
+                        tint = if (item.noteId.isNullOrBlank()) ResolveColors.Muted else ResolveColors.Accent,
+                        modifier = Modifier.size(if (isChild) 17.dp else 18.dp)
+                    )
                 }
             }
         }
@@ -3480,6 +3497,7 @@ private fun StrategyScreen(
     onAddThread: (String, String) -> Unit,
     onAddTask: (String, String) -> Unit,
     onSelectTodo: (ResolveItem) -> Unit,
+    onNoteTodo: (ResolveItem) -> Unit,
     onToggleDone: (ResolveItem) -> Unit,
     onArchiveTodo: (ResolveItem) -> Unit,
     onArchiveThread: (StrategyThread) -> Unit
@@ -3625,7 +3643,8 @@ private fun StrategyScreen(
                 },
                 onToggleDone = { onToggleDone(item) },
                 onArchive = { onArchiveTodo(item) },
-                onSelect = { onSelectTodo(item) }
+                onSelect = { onSelectTodo(item) },
+                onNote = { onNoteTodo(item) }
             )
         }
         if (completedSubtasks.isNotEmpty()) {
@@ -3653,7 +3672,8 @@ private fun StrategyScreen(
                         },
                         onToggleDone = { onToggleDone(item) },
                         onArchive = { onArchiveTodo(item) },
-                        onSelect = { onSelectTodo(item) }
+                        onSelect = { onSelectTodo(item) },
+                        onNote = { onNoteTodo(item) }
                     )
                 }
             }
