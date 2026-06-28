@@ -2344,8 +2344,8 @@ export function App() {
   function handleSaveBackend(next: BackendSettingsState) {
     const normalized = {
       ...next,
-      supabaseUrl: next.supabaseUrl || resolveSupabaseUrl,
-      publishableKey: next.publishableKey || resolveSupabasePublishableKey
+      supabaseUrl: resolveSupabaseUrl || next.supabaseUrl,
+      publishableKey: resolveSupabasePublishableKey || next.publishableKey
     };
     backendSettingsRef.current = normalized;
     setBackendSettings(normalized);

@@ -388,8 +388,8 @@ class ResolveRepository(private val context: Context) {
     )
 
     private fun encodeBackendSettings(settings: BackendSettings) = JSONObject()
-        .put("supabaseUrl", settings.supabaseUrl)
-        .put("anonKey", settings.anonKey)
+        .put("supabaseUrl", ResolveSupabaseUrl.ifBlank { settings.supabaseUrl })
+        .put("anonKey", ResolveSupabasePublishableKey.ifBlank { settings.anonKey })
         .put("email", settings.email)
         .put("status", settings.status.name)
         .put("feishuConnected", settings.feishuConnected)
@@ -397,8 +397,8 @@ class ResolveRepository(private val context: Context) {
         .putOpt("lastError", settings.lastError)
 
     private fun decodeBackendSettings(json: JSONObject) = BackendSettings(
-        supabaseUrl = json.optString("supabaseUrl", ResolveSupabaseUrl).ifBlank { ResolveSupabaseUrl },
-        anonKey = json.optString("anonKey", ResolveSupabasePublishableKey).ifBlank { ResolveSupabasePublishableKey },
+        supabaseUrl = ResolveSupabaseUrl.ifBlank { json.optString("supabaseUrl") },
+        anonKey = ResolveSupabasePublishableKey.ifBlank { json.optString("anonKey") },
         email = json.optString("email"),
         status = enumValueOrDefault(json.optString("status"), BackendStatus.NotConfigured),
         feishuConnected = json.optBoolean("feishuConnected", false),

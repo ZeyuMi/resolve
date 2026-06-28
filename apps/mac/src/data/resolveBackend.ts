@@ -100,8 +100,8 @@ export function loadBackendSettings(): BackendSettingsState {
   return {
     ...defaults,
     ...parsed,
-    supabaseUrl: parsed.supabaseUrl || defaults.supabaseUrl,
-    publishableKey: parsed.publishableKey || defaults.publishableKey
+    supabaseUrl: resolveSupabaseUrl || parsed.supabaseUrl || defaults.supabaseUrl,
+    publishableKey: resolveSupabasePublishableKey || parsed.publishableKey || defaults.publishableKey
   };
 }
 
@@ -187,8 +187,8 @@ export class ResolveBackendClient {
     private readonly settings: BackendSettingsState,
     private readonly session?: BackendSession | null
   ) {
-    this.baseUrl = (settings.supabaseUrl || resolveSupabaseUrl).replace(/\/$/, "");
-    this.publishableKey = settings.publishableKey || resolveSupabasePublishableKey;
+    this.baseUrl = (resolveSupabaseUrl || settings.supabaseUrl).replace(/\/$/, "");
+    this.publishableKey = resolveSupabasePublishableKey || settings.publishableKey;
   }
 
   async signInWithPassword(password: string) {
