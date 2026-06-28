@@ -2092,6 +2092,10 @@ private fun TodoScreen(
     var collapsedTodoIds by remember { mutableStateOf(setOf<String>()) }
     var collapsedStrategyIds by remember { mutableStateOf(setOf<String>()) }
     val completedTree = flattenTodoTree(completed, tasks.filter { it.status == ItemStatus.Done })
+    val activeNoteIds = state.notes
+        .filter { it.status != "archived" }
+        .map { it.id }
+        .toSet()
     val calendarByTodo = state.calendarEvents
         .filter { calendarEventVisible(it) && it.sourceItemId != null }
         .groupBy { it.sourceItemId.orEmpty() }
@@ -2150,6 +2154,7 @@ private fun TodoScreen(
             calendarEvent = calendarByTodo[item.id],
             depth = entry.depth,
             collapsed = collapsed,
+            hasNote = item.noteId?.let { it in activeNoteIds } == true,
             onToggleCollapse = {
                 collapsedTodoIds = if (collapsed) collapsedTodoIds - item.id else collapsedTodoIds + item.id
             },
@@ -2207,6 +2212,7 @@ private fun TodoScreen(
                     calendarEvent = calendarByTodo[item.id],
                     depth = entry.depth,
                     collapsed = false,
+                    hasNote = item.noteId?.let { it in activeNoteIds } == true,
                     onToggleCollapse = {},
                     onToggleDone = { onRestore(item) },
                     onArchive = { onArchive(item) },
@@ -2257,6 +2263,7 @@ private fun TodoRow(
     calendarEvent: CalendarEvent?,
     depth: Int = 0,
     collapsed: Boolean = false,
+    hasNote: Boolean = false,
     onToggleCollapse: () -> Unit = {},
     onToggleDone: () -> Unit,
     onArchive: () -> Unit,
@@ -2382,16 +2389,18 @@ private fun TodoRow(
                         )
                     }
                 }
-                IconButton(
-                    onClick = onNote,
-                    modifier = Modifier.size(if (isChild) 32.dp else 34.dp)
-                ) {
-                    Icon(
-                        Icons.Filled.OpenInBrowser,
-                        contentDescription = if (item.noteId.isNullOrBlank()) "Create note" else "Open note",
-                        tint = if (item.noteId.isNullOrBlank()) ResolveColors.Muted else ResolveColors.Accent,
-                        modifier = Modifier.size(if (isChild) 17.dp else 18.dp)
-                    )
+                if (hasNote) {
+                    IconButton(
+                        onClick = onNote,
+                        modifier = Modifier.size(if (isChild) 32.dp else 34.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.OpenInBrowser,
+                            contentDescription = "Open note",
+                            tint = ResolveColors.Accent,
+                            modifier = Modifier.size(if (isChild) 17.dp else 18.dp)
+                        )
+                    }
                 }
             }
         }
@@ -3550,6 +3559,10 @@ private fun StrategyScreen(
     val completedSubtasks = strategyTasks.filter { it.status == ItemStatus.Done }
     val subtaskRoots = subtasks.filter { task -> task.parentItemId == null || subtasks.none { it.id == task.parentItemId } }
     val completedRoots = completedSubtasks.filter { task -> task.parentItemId == null || completedSubtasks.none { it.id == task.parentItemId } }
+    val activeNoteIds = state.notes
+        .filter { it.status != "archived" }
+        .map { it.id }
+        .toSet()
     LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         item { DetailPageHeader(title = "Strategy", onClose = onCloseThread) }
         item {
@@ -3638,6 +3651,7 @@ private fun StrategyScreen(
                 calendarEvent = null,
                 depth = entry.depth,
                 collapsed = collapsed,
+                hasNote = item.noteId?.let { it in activeNoteIds } == true,
                 onToggleCollapse = {
                     collapsedTodoIds = if (collapsed) collapsedTodoIds - item.id else collapsedTodoIds + item.id
                 },
@@ -3667,6 +3681,7 @@ private fun StrategyScreen(
                         calendarEvent = null,
                         depth = entry.depth,
                         collapsed = collapsed,
+                        hasNote = item.noteId?.let { it in activeNoteIds } == true,
                         onToggleCollapse = {
                             collapsedTodoIds = if (collapsed) collapsedTodoIds - item.id else collapsedTodoIds + item.id
                         },
