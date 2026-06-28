@@ -5164,23 +5164,47 @@ function MarkdownEditor({
   const onSaveRef = useRef(onSave);
   const lastExternalValueRef = useRef(value);
   const applyingExternalRef = useRef(false);
-  const composingRef = useRef(false);
+  const repairingImeRef = useRef(false);
+
+  const repairImeSplitListItem = (markdown: string) => {
+    const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+    const repaired: string[] = [];
+    let changed = false;
+
+    const parseListLine = (line: string) => {
+      const match = line.match(/^(\s*)((?:[-*+]|\d+[.)])\s+)(.*)$/);
+      if (!match) return null;
+      return {
+        indent: match[1],
+        marker: match[2],
+        body: match[3]
+      };
+    };
+
+    for (let index = 0; index < lines.length; index += 1) {
+      const current = parseListLine(lines[index]);
+      const next = index + 1 < lines.length ? parseListLine(lines[index + 1]) : null;
+      if (current && next && current.indent === next.indent) {
+        const pinyinTail = current.body.match(/^(.*?)([A-Za-z]{1,32})$/);
+        const committedCandidate = next.body.trim();
+        if (pinyinTail && /^[\u3400-\u9fff\u3000-\u303f\uff00-\uffef]{1,8}$/.test(committedCandidate)) {
+          repaired.push(`${current.indent}${current.marker}${pinyinTail[1]}${committedCandidate}`);
+          index += 1;
+          changed = true;
+          continue;
+        }
+      }
+      repaired.push(lines[index]);
+    }
+
+    return changed ? repaired.join("\n") : markdown;
+  };
 
   const emitCurrentMarkdown = () => {
     if (applyingExternalRef.current) return;
     const next = editor.blocksToMarkdownLossy(editor.document);
     lastExternalValueRef.current = next;
     onChangeRef.current(next);
-  };
-
-  const stopEditorImeHandling = (event: {
-    stopPropagation: () => void;
-    nativeEvent?: {
-      stopImmediatePropagation?: () => void;
-    };
-  }) => {
-    event.stopPropagation();
-    event.nativeEvent?.stopImmediatePropagation?.();
   };
 
   useEffect(() => {
@@ -5228,30 +5252,40 @@ function MarkdownEditor({
     }
   }, [editor, noteId, value]);
 
+  const repairImeIfNeeded = () => {
+    if (repairingImeRef.current) return;
+    const current = editor.blocksToMarkdownLossy(editor.document);
+    const repaired = repairImeSplitListItem(current);
+    if (repaired === current) {
+      emitCurrentMarkdown();
+      return;
+    }
+    repairingImeRef.current = true;
+    applyingExternalRef.current = true;
+    try {
+      const blocks = editor.tryParseMarkdownToBlocks(repaired || "");
+      editor.replaceBlocks(editor.document, blocks.length ? blocks : [{ type: "paragraph", content: "" }]);
+      lastExternalValueRef.current = repaired;
+      onChangeRef.current(repaired);
+    } finally {
+      queueMicrotask(() => {
+        applyingExternalRef.current = false;
+        repairingImeRef.current = false;
+      });
+    }
+  };
+
   return (
     <div
       className="resolve-blocknote-editor"
-      onCompositionStart={() => {
-        composingRef.current = true;
-      }}
       onCompositionEnd={() => {
-        composingRef.current = false;
-        window.setTimeout(emitCurrentMarkdown, 0);
-      }}
-      onBeforeInputCapture={(event) => {
-        if (composingRef.current || (event.nativeEvent as InputEvent).isComposing) {
-          stopEditorImeHandling(event);
-        }
+        window.setTimeout(repairImeIfNeeded, 0);
       }}
       onKeyDownCapture={(event) => {
         if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
           event.preventDefault();
           event.stopPropagation();
           onSaveRef.current();
-          return;
-        }
-        if (composingRef.current || isImeComposing(event)) {
-          stopEditorImeHandling(event);
         }
       }}
     >
