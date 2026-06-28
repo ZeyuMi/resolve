@@ -37,11 +37,9 @@ import {
   Users,
   X
 } from "lucide-react";
-import { basicSetup, EditorView } from "codemirror";
-import { EditorState } from "@codemirror/state";
-import { markdown } from "@codemirror/lang-markdown";
-import { indentWithTab } from "@codemirror/commands";
-import { keymap } from "@codemirror/view";
+import { BlockNoteViewRaw, useCreateBlockNote } from "@blocknote/react";
+import "@blocknote/core/fonts/inter.css";
+import "@blocknote/react/style.css";
 import {
   emptyEncryptedFields,
   activeNoteForTodo,
@@ -5115,54 +5113,66 @@ function MarkdownEditor({
   value: string;
   onChange: (value: string) => void;
 }) {
-  const hostRef = useRef<HTMLDivElement | null>(null);
-  const viewRef = useRef<EditorView | null>(null);
+  const editor = useCreateBlockNote({}, [noteId]);
   const onChangeRef = useRef(onChange);
+  const lastExternalValueRef = useRef(value);
+  const applyingExternalRef = useRef(false);
 
   useEffect(() => {
     onChangeRef.current = onChange;
   }, [onChange]);
 
   useEffect(() => {
-    if (!hostRef.current) return;
-    const state = EditorState.create({
-      doc: value,
-      extensions: [
-        basicSetup,
-        markdown(),
-        keymap.of([indentWithTab]),
-        EditorView.lineWrapping,
-        EditorView.updateListener.of((update) => {
-          if (update.docChanged) {
-            onChangeRef.current(update.state.doc.toString());
-          }
-        })
-      ]
-    });
-    const view = new EditorView({
-      state,
-      parent: hostRef.current
-    });
-    viewRef.current = view;
-    view.focus();
-
-    return () => {
-      view.destroy();
-      if (viewRef.current === view) viewRef.current = null;
-    };
-  }, [noteId]);
+    applyingExternalRef.current = true;
+    lastExternalValueRef.current = value;
+    try {
+      const blocks = editor.tryParseMarkdownToBlocks(value || "");
+      editor.replaceBlocks(editor.document, blocks.length ? blocks : [{ type: "paragraph", content: "" }]);
+    } catch (error) {
+      console.warn("Could not parse note markdown into blocks", error);
+      editor.replaceBlocks(editor.document, [{ type: "paragraph", content: value || "" }]);
+    } finally {
+      queueMicrotask(() => {
+        applyingExternalRef.current = false;
+      });
+    }
+  }, [editor, noteId]);
 
   useEffect(() => {
-    const view = viewRef.current;
-    if (!view) return;
-    const current = view.state.doc.toString();
-    if (current === value) return;
-    view.dispatch({
-      changes: { from: 0, to: current.length, insert: value }
-    });
-  }, [noteId, value]);
+    if (lastExternalValueRef.current === value) return;
+    const current = editor.blocksToMarkdownLossy(editor.document);
+    if (current === value) {
+      lastExternalValueRef.current = value;
+      return;
+    }
+    applyingExternalRef.current = true;
+    lastExternalValueRef.current = value;
+    try {
+      const blocks = editor.tryParseMarkdownToBlocks(value || "");
+      editor.replaceBlocks(editor.document, blocks.length ? blocks : [{ type: "paragraph", content: "" }]);
+    } catch (error) {
+      console.warn("Could not apply external note markdown", error);
+    } finally {
+      queueMicrotask(() => {
+        applyingExternalRef.current = false;
+      });
+    }
+  }, [editor, noteId, value]);
 
-  return <div ref={hostRef} className="resolve-cm-editor" />;
+  return (
+    <div className="resolve-blocknote-editor">
+      <BlockNoteViewRaw
+        editor={editor}
+        theme="light"
+        onChange={() => {
+          if (applyingExternalRef.current) return;
+          const next = editor.blocksToMarkdownLossy(editor.document);
+          lastExternalValueRef.current = next;
+          onChangeRef.current(next);
+        }}
+      />
+    </div>
+  );
 }
 
 function VaultView({
