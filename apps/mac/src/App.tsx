@@ -4696,7 +4696,7 @@ function StrategyView({
             <input
               value={strategyDraft.currentHypothesis}
               onChange={(event) => onStrategyDraft({ ...strategyDraft, currentHypothesis: event.target.value })}
-              placeholder="当前假设（可选）"
+              placeholder="当前假设，可留空"
             />
             <button className="primary-button" onClick={onAddThread}>
               <Plus size={15} />
@@ -4711,7 +4711,9 @@ function StrategyView({
                 <button className="strategy-overview-card" key={thread.meta.id} onClick={() => onSelectThread(thread.meta.id)}>
                   <div>
                     <strong>{thread.payload.title}</strong>
-                    <span>{thread.payload.currentHypothesis || "补充当前假设或简要说明"}</span>
+                    <span className={!thread.payload.currentHypothesis?.trim() ? "strategy-empty-copy" : undefined}>
+                      {thread.payload.currentHypothesis || "还没有当前假设"}
+                    </span>
                   </div>
                   <div className="strategy-overview-meta">
                     <small>{stats.active} active</small>
