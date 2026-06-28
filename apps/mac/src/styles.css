@@ -7275,77 +7275,46 @@ body,
   background: transparent;
 }
 
-.resolve-markdown-editor {
+.resolve-blocknote-editor {
   height: 100%;
   min-height: 0;
   color: var(--native-text, var(--text));
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
 }
 
-.resolve-markdown-editor-content {
+.resolve-blocknote-editor .bn-container {
   height: 100%;
   min-height: 0;
-  box-sizing: border-box;
+  background: transparent;
+  color: var(--native-text, var(--text));
+  --bn-colors-editor-background: transparent;
+  --bn-colors-menu-background: #ffffff;
+  --bn-colors-tooltip-background: #1f2937;
+  --bn-colors-hovered-background: rgba(47, 102, 221, 0.06);
+  --bn-colors-selected-background: rgba(47, 102, 221, 0.1);
+  --bn-colors-border: var(--native-line-soft, var(--line-soft));
+  --bn-colors-text: var(--native-text, var(--text));
+  --bn-font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+}
+
+.resolve-blocknote-editor .bn-editor {
+  height: 100%;
+  min-height: 0;
   overflow: auto;
   padding: 22px 28px 46px;
   background: transparent;
-  outline: none;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-  font-size: 15px;
-  line-height: 1.76;
-  color: var(--native-text, var(--text));
-  caret-color: var(--accent);
-  white-space: normal;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif !important;
+  font-size: 15px !important;
+  line-height: 1.76 !important;
+  color: var(--native-text, var(--text)) !important;
 }
 
-.resolve-markdown-editor-content:empty::before {
-  content: attr(data-placeholder);
-  color: var(--native-muted, var(--text-3));
-  pointer-events: none;
+.resolve-blocknote-editor .ProseMirror {
+  outline: none !important;
 }
 
-.resolve-markdown-editor-content h1,
-.resolve-markdown-editor-content h2,
-.resolve-markdown-editor-content h3 {
-  margin: 0 0 12px;
-  color: var(--native-text, var(--text));
-  font-weight: 700;
-  line-height: 1.25;
-}
-
-.resolve-markdown-editor-content h1 {
-  font-size: 24px;
-}
-
-.resolve-markdown-editor-content h2 {
-  font-size: 20px;
-}
-
-.resolve-markdown-editor-content h3 {
-  font-size: 17px;
-}
-
-.resolve-markdown-editor-content p {
-  margin: 0 0 12px;
-}
-
-.resolve-markdown-editor-content ul,
-.resolve-markdown-editor-content ol {
-  margin: 0 0 12px;
-  padding-left: 24px;
-}
-
-.resolve-markdown-editor-content li {
-  margin: 3px 0;
-  padding-left: 2px;
-}
-
-.resolve-markdown-editor-content code {
-  padding: 1px 5px;
-  border-radius: 5px;
-  background: rgba(15, 23, 42, 0.06);
-  font-family: "SF Mono", ui-monospace, Menlo, monospace;
-  font-size: 0.92em;
+.resolve-blocknote-editor .ProseMirror-selectednode {
+  outline: 2px solid rgba(47, 102, 221, 0.2) !important;
 }
 
 .note-editor-loading {
@@ -9458,20 +9427,32 @@ body,
   background: #ffffff !important;
 }
 
-.theme-redesign .resolve-markdown-editor {
+.theme-redesign .resolve-blocknote-editor {
   height: 100% !important;
   min-height: 0 !important;
   width: 100% !important;
 }
 
-.theme-redesign .resolve-markdown-editor-content {
+.theme-redesign .resolve-blocknote-editor .bn-container {
+  height: 100% !important;
+  min-height: 0 !important;
+  background: #ffffff !important;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif !important;
+  --bn-colors-editor-background: #ffffff;
+  --bn-colors-menu-background: #ffffff;
+  --bn-colors-hovered-background: rgba(37, 99, 235, 0.06);
+  --bn-colors-selected-background: rgba(37, 99, 235, 0.1);
+  --bn-colors-border: var(--divider);
+  --bn-colors-text: var(--text);
+}
+
+.theme-redesign .resolve-blocknote-editor .bn-editor {
   height: 100% !important;
   min-height: 0 !important;
   overflow: auto !important;
   padding: 28px 36px 56px !important;
   background: #ffffff !important;
   color: var(--text) !important;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif !important;
   font-size: 15px !important;
   line-height: 1.78 !important;
 }
