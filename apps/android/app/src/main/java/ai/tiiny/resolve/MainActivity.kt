@@ -3569,15 +3569,8 @@ private fun StrategyScreen(
                 }
             }
         }
-        if (
-            opened.currentHypothesis.isNotBlank() ||
-            opened.keyQuestions.isNotEmpty() ||
-            opened.recentThoughts.isNotEmpty() ||
-            opened.decisionRecords.isNotEmpty()
-        ) {
-            item {
-                StrategyMemoSection(opened)
-            }
+        item {
+            StrategyMemoSection(opened)
         }
         item { DetailSectionTitle("Subtasks", "${subtasks.size}") }
         item {
@@ -3672,24 +3665,33 @@ private fun StrategyScreen(
 private fun StrategyMemoSection(thread: StrategyThread) {
     Surface(color = ResolveColors.Surface, shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (thread.currentHypothesis.isNotBlank()) {
-                StrategyMemoBlock("当前假设", listOf(thread.currentHypothesis))
-            }
-            if (thread.keyQuestions.isNotEmpty()) {
-                StrategyMemoBlock("关键问题", thread.keyQuestions)
-            }
-            if (thread.recentThoughts.isNotEmpty()) {
-                StrategyMemoBlock("最近思考", thread.recentThoughts)
-            }
-            if (thread.decisionRecords.isNotEmpty()) {
-                StrategyMemoBlock("决策记录", thread.decisionRecords)
-            }
+            StrategyMemoBlock(
+                title = "当前假设",
+                lines = listOf(thread.currentHypothesis),
+                hint = "这里留给你写当前对这个方向的核心判断。"
+            )
+            StrategyMemoBlock(
+                title = "关键问题",
+                lines = thread.keyQuestions,
+                hint = "每行一个需要持续回答、验证或复盘的问题。"
+            )
+            StrategyMemoBlock(
+                title = "最近思考",
+                lines = thread.recentThoughts,
+                hint = "记录最近出现的新信号、新观察或新疑问。"
+            )
+            StrategyMemoBlock(
+                title = "决策记录",
+                lines = thread.decisionRecords,
+                hint = "记录已经做出的判断，方便之后回看原因。"
+            )
         }
     }
 }
 
 @Composable
-private fun StrategyMemoBlock(title: String, lines: List<String>) {
+private fun StrategyMemoBlock(title: String, lines: List<String>, hint: String) {
+    val visibleLines = lines.filter { it.isNotBlank() }
     Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
         Text(
             title,
@@ -3698,13 +3700,22 @@ private fun StrategyMemoBlock(title: String, lines: List<String>) {
             lineHeight = 14.sp,
             fontWeight = FontWeight.SemiBold
         )
-        lines.filter { it.isNotBlank() }.forEach { line ->
+        if (visibleLines.isEmpty()) {
             Text(
-                line,
-                color = ResolveColors.Text,
+                hint,
+                color = ResolveColors.Muted,
                 fontSize = ResolveType.BodySmall,
                 lineHeight = 17.sp
             )
+        } else {
+            visibleLines.forEach { line ->
+                Text(
+                    line,
+                    color = ResolveColors.Text,
+                    fontSize = ResolveType.BodySmall,
+                    lineHeight = 17.sp
+                )
+            }
         }
     }
 }
